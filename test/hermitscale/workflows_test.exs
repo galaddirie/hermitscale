@@ -50,5 +50,33 @@ defmodule Hermitscale.WorkflowsTest do
       assert run.status == :complete
       assert run.completed_at
     end
+
+    test "resolves credential references into run context before execution" do
+      attrs =
+        graph_attrs(
+          id: "wf_runner_credentials_test",
+          name: "runner_credentials_test",
+          definition: credential_probe_graph()
+        )
+
+      assert {:ok, graph} = Workflows.create_graph(attrs)
+
+      assert {:ok, %Run{} = run} =
+               Workflows.start_run(graph, %{"input" => true}, executor: :inline)
+
+      assert {:ok, results} = Runic.Runner.get_results(Hermitscale.WorkflowRunner, run.id)
+
+      assert Enum.any?(
+               results,
+               &match?(
+                 %{
+                   "input" => true,
+                   "access_token" => "token:cred_default",
+                   "scopes" => ["scope:a"]
+                 },
+                 &1
+               )
+             )
+    end
   end
 end

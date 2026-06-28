@@ -1,6 +1,7 @@
 # Workflow Node Authoring Kit
 
-Status: **phase 1 implemented** · Scope: `lib/hermitscale/workflows/nodes/**`
+Status: **phase 2 backend implemented** · Scope:
+`lib/hermitscale/workflows/nodes/**`, `lib/hermitscale/integrations/**`
 
 This document designs the kit for authoring catalog nodes in the new workflow
 engine. The engine's hard problems — durable execution (Runic + event-sourced
@@ -764,17 +765,18 @@ that depends on them.
 
 ### Phase 2 — Integration layer (Google reference) (§8, §12)
 
-- [ ] `Integrations.Provider` behaviour + code-first `persistent_term` index (§8.3).
-- [ ] `Integrations.Google` `use` macro injecting `provider` + `default_policy` (§12.2).
-- [ ] `Integrations.Google.OAuth` — `Provider` impl: `fetch_token/2` with refresh,
+- [x] `Integrations.Provider` behaviour + code-first `persistent_term` index (§8.3).
+- [x] `Integrations.Google` `use` macro injecting `provider` + `default_policy` (§12.2).
+- [x] `Integrations.Google.OAuth` — `Provider` impl: `fetch_token/2` with refresh,
       `network_domains/0` (§8.3).
-- [ ] `Integrations.Google.Sheets.Client` — Req-based API client (§12.1).
-- [ ] Reference nodes: `google.sheets.append_row`, `google.sheets.read_rows` (§12.2).
-- [ ] Run-start credential resolver: build `run_context` keyed by node id, then
+- [x] `Integrations.Google.Sheets.Client` — Req-based API client (§12.1).
+- [x] Reference nodes: `google.sheets.append_row`, `google.sheets.read_rows` (§12.2).
+- [x] Run-start credential resolver: build `run_context` keyed by node id, then
       `validate_run_context/2` before executing (§8.4).
-- [ ] Editor: credential picker, shared-per-provider binding + override, scope
-      union for consent (§8.5).
-- [ ] Tests: provider resolution, integration node, run-context validation.
+- [ ] Editor UI: credential picker, shared-per-provider binding + override, scope
+      union for consent (§8.5). Backend support exists via
+      `Workflows.Credentials.requirements/1`; no editor surface exists yet.
+- [x] Tests: provider resolution, integration node, run-context validation.
 
 ### Decisions to settle (§14)
 

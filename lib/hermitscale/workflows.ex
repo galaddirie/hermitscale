@@ -6,7 +6,7 @@ defmodule Hermitscale.Workflows do
   import Ecto.Query
 
   alias Hermitscale.Repo
-  alias Hermitscale.Workflows.{Compiler, Graph, Run, Validator}
+  alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Run, Validator}
   alias Runic.Workflow
 
   @runner Hermitscale.WorkflowRunner
@@ -71,6 +71,13 @@ defmodule Hermitscale.Workflows do
     now = DateTime.utc_now(:second)
 
     with {:ok, workflow} <- Compiler.compile(graph.definition),
+         {:ok, run_context} <-
+           Credentials.resolve_run_context(
+             graph.definition,
+             workflow,
+             Keyword.get(opts, :run_context, %{})
+           ),
+         workflow <- Workflow.put_run_context(workflow, run_context),
          {:ok, run} <-
            create_run(graph, %{
              input: json_payload(input),
@@ -84,7 +91,7 @@ defmodule Hermitscale.Workflows do
              workflow,
              runner_opts(opts)
            ),
-         :ok <- Runic.Runner.run(@runner, run.id, input, run_opts(opts)) do
+         :ok <- Runic.Runner.run(@runner, run.id, input, run_opts(opts, run_context)) do
       {:ok, maybe_mark_inline_complete(run, opts)}
     end
   end
@@ -94,9 +101,19 @@ defmodule Hermitscale.Workflows do
 
     with %Graph{} = graph <- run.graph,
          {:ok, base_workflow} <- Compiler.compile(graph.definition),
+         {:ok, run_context} <-
+           Credentials.resolve_run_context(
+             graph.definition,
+             base_workflow,
+             Keyword.get(opts, :run_context, %{})
+           ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
          {:ok, event_stream} <- store_module.stream(run.id, store_state) do
-      workflow = Workflow.from_events(Enum.to_list(event_stream), base_workflow)
+      workflow =
+        event_stream
+        |> Enum.to_list()
+        |> Workflow.from_events(base_workflow)
+        |> Workflow.put_run_context(run_context)
 
       Runic.Runner.start_workflow(
         @runner,
@@ -133,7 +150,11 @@ defmodule Hermitscale.Workflows do
     |> Keyword.put_new(:on_complete, {__MODULE__, :mark_run_complete, []})
   end
 
-  defp run_opts(opts), do: Keyword.take(opts, [:run_context, :scheduler_policies])
+  defp run_opts(opts, run_context) do
+    opts
+    |> Keyword.take([:scheduler_policies])
+    |> Keyword.put(:run_context, run_context)
+  end
 
   defp maybe_mark_inline_complete(%Run{} = run, opts) do
     case Keyword.get(opts, :executor) do

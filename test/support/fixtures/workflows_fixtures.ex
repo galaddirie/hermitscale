@@ -65,4 +65,35 @@ defmodule Hermitscale.WorkflowsFixtures do
       attrs
     )
   end
+
+  def credential_probe_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_credential_probe",
+        "name" => "credential_probe",
+        "nodes" => [
+          %{
+            "id" => "probe",
+            "type" => "test.credential_probe",
+            "version" => 1,
+            "params" => %{}
+          }
+        ],
+        "connections" => [],
+        "credentials" => %{
+          "providers" => %{
+            "test.credentials" => %{
+              "provider" => "test.credentials",
+              "credential_id" => "cred_default"
+            }
+          },
+          "nodes" => %{}
+        }
+      },
+      attrs
+    )
+  end
 end
