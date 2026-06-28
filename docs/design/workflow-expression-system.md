@@ -6,7 +6,7 @@
 | **Authors** | Galad Dirie |
 | **Reviewers** | [name(s)] |
 | **Last updated** | 2026-06-28 |
-| **Related docs** | Runic (https://github.com/zblanco/runic) · Solid (https://solid.hexdocs.pm/readme.html) · `lib/hermitscale/workflows/template.ex` (system being replaced) |
+| **Related docs** | Runic (https://github.com/zblanco/runic) · Solid (https://solid.hexdocs.pm/readme.html) · `lib/hermitscale/workflows/template.ex` (system being replaced) · **Prior art:** the `fizz` expression system (`Fizz.Workflows.Expressions` + `…/expressions/access_plan.ex`) — a shipped Solid-backed engine that prefigures this design; lessons folded in throughout |
 
 ---
 
@@ -43,7 +43,7 @@ The catalog/compiler foundation (durable Runic workflows, the node authoring kit
 
 ### 3.1 Goals
 
-- **n8n-familiar syntax.** Support `{{ … }}` interpolation with the `$json`, `$node["Name"]`, `$vars`, `$env`, `$workflow`, `$execution`, `$now`, `$today` namespaces.
+- **n8n-familiar *interpolation and namespaces*.** Support `{{ … }}` interpolation with the `$json`, `$node["Name"]`, `$vars`, `$env`, `$workflow`, `$execution`, `$now`, `$today` namespaces. **Be explicit about where the familiarity ends:** Liquid has no infix operators, so the *expression body* is not n8n-compatible past simple access. n8n's `{{ $json.total > 100 && $json.active }}` has no direct form — comparisons and boolean logic become filter pipelines (`{{ $json.total | gt: 100 }}`), and there are no ternaries or arithmetic operators (use `plus`/`minus`/`times` filters). This is the largest expectation gap for authors arriving from n8n; the editor/docs must teach the filter-pipeline idiom, not imply JS-expression parity. `fizz` shipped exactly this constraint (e.g. `input.total | gt: 100`) and it held up — but it must be stated, not discovered.
 - **Sandboxed evaluation.** No arbitrary code execution; expressions cannot touch the filesystem, network, or other templates. Liquid's restricted object+filter grammar is the entire surface.
 - **Type preservation.** A field that is exactly one expression (`{{ $json.count }}`) returns the native value (integer, map, list); a field that mixes literals and expressions returns a string.
 - **Centrally enforced plumbing.** Node authors implement a pure `work/3`; the `Behaviour` macro generates the `build/2` that resolves params, assembles context, and threads the cross-node envelope. No node can break the `$node` chain.
@@ -106,7 +106,8 @@ flowchart LR
 - **Plumbing lives in the `Behaviour` macro, not in `build/2`.** Expression resolution is a cross-cutting concern. The macro knows `kind` and `requires` statically, so it generates a kind-appropriate `build/2` and unrolls `requires` into literal `context/1` calls. Authors implement pure `work/3`. `build/2` remains `defoverridable` as an escape hatch.
 - **Two render paths for type preservation.** "Whole field is one expression" → a focused object evaluator that returns native types; "string with expressions" → `Solid.render!` returning a binary. This matches n8n's own behavior and is unavoidable since Liquid always renders to iodata.
 - **`$`-prefix rewrite is region-scoped.** Solid does strict Liquid lexing and `$` is not a legal identifier char. We rewrite `$ident → ident` **only inside `{{ }}`/`{% %}` regions**, never in literal text (so an OData `?$top=5` in a URL survives).
-- **`$node` via an envelope fact, not global mutable state.** Each generated step emits `%{"json" => result, "node" => %{...prior outputs}}`. This is the only way to give a node access to non-parent ancestors within Runic's parent-only dataflow.
+- **`$node` via an envelope fact, not global mutable state.** Each generated step emits `%{"json" => result, "node" => %{...prior outputs}}`. This is the only way to give a node access to non-parent ancestors within Runic's parent-only dataflow. **This is the one part of the design with no `fizz` precedent to copy:** `fizz` accumulates step outputs in a central `ExecutionContext.steps` map because it isn't on Runic's parent-only model. The envelope is our forced adaptation — and `fizz`'s central-context approach quietly confirms the §10.2 pruning worry is real (it never hit unbounded growth precisely because nothing was threaded per-fact). Give the envelope the heaviest test coverage; it is the novel part.
+- **`$node` references resolve by stable node ID, not display name.** `$node["X"]` keys on the graph's immutable node ID; the editor may *show* a human label, but a label→ID map is resolved at compile time (`fizz` does this for `steps["Fetch Orders"]` via a `step_name_to_id` map, `expressions.ex:230-240`). This makes node renames a no-op for expressions — only the editor's label map changes, never the stored expression. `fizz` chose ID-keyed referencing and *still* logged automatic rename-rewriting as a painful deferred item; keying on ID from day one avoids that debt entirely.
 - **Validation is split by what's knowable when.** Syntax + `$node` reference existence are checked at compile time; value types of expression fields are deferred to run time (the value doesn't exist at compile time). Expressionable fields are marked in the spec, not in the `NimbleOptions` schema (which rejects unknown keys).
 
 ---
@@ -117,7 +118,7 @@ flowchart LR
 
 #### 5.1.1 `Hermitscale.Workflows.Expr`
 
-**Responsibility.** Compile a raw param value into a tagged, pre-parsed form at graph-compile time, and render it against a runtime context at run time.
+**Responsibility.** Compile a raw param value into a tagged, pre-parsed form at graph-compile time, render it against a runtime context at run time, **and preview it against sample context at edit time.** `preview/2` (compile one expression string + render against the current upstream outputs, returning `{:ok, value} | {:error, located_message}`) is engine surface even though the visual builder UI is out of scope (§3.2) — the *evaluation* half of preview belongs here, only the rendering UI is separate. `fizz` exposes exactly this as `Expressions.preview/2` and the editor LiveView calls it.
 
 **Owns.** The compiled-value representation, the `$`-rewrite, the type-preserving object evaluator, context assembly, and the envelope protocol.
 
@@ -127,22 +128,29 @@ flowchart LR
 
 ```elixir
 @type compiled ::
-        {:literal, term()}              # no expression — passed through untouched
-        | {:interp, Solid.Template.t()} # mixed literal/expression — renders to a string
-        | {:expr, source :: String.t()} # lone expression — type-preserving native value
+        {:literal, term()}                          # no expression — passed through untouched
+        | {:interp, Solid.Template.t()}              # mixed literal/expression — renders to a string
+        | {:expr, path :: [String.t()] | nil, Solid.Template.t()}  # lone expression — native value
+        | {:predicate, Solid.Template.t()}           # boolean field — resolves to a real boolean
 ```
 
-`compile/1`: non-binary → `{:literal, v}`; binary without `{{`/`{%` → `{:literal, v}`; a single whole-string `{{ … }}` → `{:expr, inner}`; anything else → `{:interp, Solid.parse!(normalized, tags: safe_tags)}`. `normalize/1` applies the region-scoped `$`-rewrite. `render/2` dispatches on the tag. `build_context/2` produces the Solid context map from the envelope (`$json`, `$item`, `$node`) and the per-run runtime map (`$vars`, `$env`, `$workflow`, `$execution`, `$now`, `$today`). `put_output/3` re-wraps a node result into the envelope under the node name.
+`compile/1`: non-binary → `{:literal, v}`; binary without `{{`/`{%` → `{:literal, v}`; a single whole-string `{{ … }}` → `{:expr, …}` (or `{:predicate, …}` for fields a node declares boolean — see below); anything else → `{:interp, Solid.parse!(normalized, tags: safe_tags)}`. `normalize/1` applies the region-scoped `$`-rewrite. `render/2` dispatches on the tag. `build_context/2` produces the Solid context map from the envelope (`$json`, `$item`, `$node`) and the per-run runtime map (`$vars`, `$env`, `$workflow`, `$execution`, `$now`, `$today`). `put_output/3` re-wraps a node result into the envelope under the node name.
 
-The `{:expr, src}` path reimplements a **subset** of Liquid's object grammar — dotted/bracket access plus a filter pipeline — precisely so it can return native types. Full Liquid semantics (`for`, `if`, default chains) are only available in the `{:interp, …}` path, which always yields a string. This split is deliberate and matches n8n.
+**Type preservation — do not hand-roll a Liquid subset.** An earlier sketch had the lone-expression path reimplement dotted/bracket access plus a filter pipeline so it could return native types. The `fizz` engine demonstrates a strictly better approach that we adopt: **reuse Solid's own evaluator on the single extracted object.** For a lone `{{ … }}`, pull the one `%Solid.Object{argument: arg, filters: fs}` out of the parsed template and call `Solid.Argument.get(arg, %Solid.Context{vars: bindings}, fs, custom_filters: Filters)`. That runs the access path **and the filter pipeline** and returns the raw Elixir term — so `{{ $json.count | to_number }}` yields an integer with zero reimplemented grammar (`fizz`: `Expressions.render_object_value/2`, `expressions.ex:270-277`).
 
-> **Rejected alternative for type preservation:** introspecting `%Solid.Template{}`'s parsed parts to detect a lone object and pull its value. This couples us to Solid's internal AST shape, which is version-dependent (currently v1.3.2). Avoided.
+On top of that, a **compile-time fast path**: when the lone expression is a pure literal access with no filters, store its path (`["json","email"]`) and resolve at run time with a direct map walk, skipping Solid entirely (`fizz`: `resolve/2` clause at `expressions.ex:127-133`, falling back to the object evaluator otherwise). Hence `{:expr, path, parsed}` carries both — `path` when extractable for the fast walk, `parsed` always for the `Argument.get` fallback.
+
+Full Liquid semantics (`for`, `if`, default chains) remain only in the `{:interp, …}` path, which always yields a string. The `{:predicate, …}` path evaluates the same single-object way and coerces the result through a `truthy?/1` — it exists because boolean fields (branch/conditional nodes) need a real boolean, and Liquid's lack of infix operators means predicates are written as filter pipelines (`{{ $json.total | gt: 100 }}`).
+
+> **The seam we couple to (and the one we don't).** `Argument.get/4` and the `%Solid.Object{}`/`%Solid.Context{}` shapes are a semi-internal Solid API. We accept that coupling because it is *small and stable* — and far cheaper than reimplementing and maintaining Liquid's object+filter semantics ourselves (which would also drift from the string path's behavior). **Rejected alternative:** walking `%Solid.Template{}`'s full parsed `parts` list to detect a lone object — that couples us to the *structure* of the AST (version-dependent, currently v1.3.2), a broader and more fragile surface than calling the evaluation functions. Pin the Solid version; cover the `Argument.get` path with tests that assert native-type return across each custom filter.
 
 #### 5.1.2 `Hermitscale.Workflows.Expr.Filters`
 
 **Responsibility.** Expose n8n-style helpers as Liquid filters, called by Solid as `Module.fun(value, args...)`.
 
-**Owns.** `to_json/1`, `from_json/1`, `to_number/1`, `is_empty/1`, `uuid/1`, plus any future additions. Liquid's built-ins (`upcase`, `downcase`, `default`, `date`, `plus`/`minus`, `size`, `join`, `split`, `first`/`last`, `replace`, `truncate`) already cover most of n8n's string/number/array surface.
+**Owns.** `to_json/1`, `from_json/1`, `to_number/1`, `is_empty/1`, `uuid/1`, the predicate comparators (`eq`, `ne`, `gt`, `gte`, `lt`, `lte` — these are how `{:predicate,_}` fields express comparisons, since Liquid has no `>`), plus any future additions. Liquid's built-ins (`upcase`, `downcase`, `default`, `date`, `plus`/`minus`, `size`, `join`, `split`, `first`/`last`, `replace`, `truncate`) cover most of n8n's string/number/array surface.
+
+**The catalog is an explicit allowlist, not "whatever Solid ships."** `fizz` curates the set of permitted built-ins *and* custom filters and rejects anything outside it at publish time (`expressions.ex:13-49`, the `@allowed_filters` union; `expression-filter-catalog.md` decision record). We do the same: the allowlist is the public, documentable surface; an unknown filter is a compile-time error (see §5.1.6), not a silent run-time no-op. This keeps the sandbox auditable and the author-facing vocabulary bounded.
 
 **Depends on.** `Jason`; a UUID source (`Ecto.UUID` or `:crypto`).
 
@@ -169,6 +177,8 @@ The `{:expr, src}` path reimplements a **subset** of Liquid's object grammar —
 
 **Notes.** Expressionable fields accept **either** a literal or an expression and defer their type check to run time. Plain fields are unchanged.
 
+**Open design tension — per-field vs per-leaf expressionability.** The `expr: [:url]` whitelist treats expressionability as a property of a *top-level field*. `fizz` instead walks the **entire nested config tree** and evaluates any string leaf containing tags (`config_resolver.ex:29-37`, recursing through maps and lists), passing literal strings through untouched. Its TODO (TODO.md:169-171) records *why*: the per-field "fixed vs expression" distinction turned out leaky — a map/table editor is nominally a "fixed" input yet still needs to evaluate expressions inside individual cells, and the team openly questioned whether the distinction should exist at all. Our flat `expr: [:url]` cannot express "this param is a map whose cells may contain expressions." Decide deliberately (§10.2) whether expressionability is a top-level-field flag or a property of any string leaf in a possibly-nested param; `fizz`'s experience pushes toward the latter.
+
 #### 5.1.5 `Hermitscale.Workflows.Compiler` (extended)
 
 **Responsibility.** Pass `spec.expr_fields` into `Params.cast!/3`, seed the per-run `_expr` context, and start runs with a wrapped envelope fact.
@@ -177,13 +187,17 @@ The `{:expr, src}` path reimplements a **subset** of Liquid's object grammar —
 
 #### 5.1.6 `Hermitscale.Workflows.Validator` (extended)
 
-**Responsibility.** Add a pass that extracts `$node["X"]` references from each compiled `{:interp,_}`/`{:expr,_}` and checks them against the graph's node set (and optionally against connectivity), folding violations into the existing topo/connection checks.
+**Responsibility.** Three static passes over each compiled expression, folded into the existing topo/connection checks:
 
-**Notes.** This is what makes "expression references a node that doesn't exist / isn't upstream" a compile-time error, matching n8n's save-time validation.
+1. **`$node` reference existence** — extract `$node["X"]` references and check them against the graph's node set (and optionally connectivity). Makes "references a node that doesn't exist / isn't upstream" a compile-time error.
+2. **Filter allowlist + arity** — walk the parsed template collecting every filter name, reject any outside the §5.1.2 allowlist, and check argument arity against the exported function. `fizz` does exactly this at publish (`expressions.ex:313-373`); an unknown or misused filter is a located compile error, same channel as a bad `$node` ref.
+3. **Dependency extraction (not just checking).** The same walk that finds `$node["X"]` also *yields* the set of referenced nodes and runtime namespaces. `fizz`'s `dependencies/1` (`expressions.ex:206-228`) returns `%{step_ids, runtime_keys}` from a parsed template. We use this two ways: to drive the connectivity check ("`$node["X"]` ⇒ X must be upstream"), and as a potential source of implicit DAG edges — an expression reference is a real data dependency, so the graph need not redundantly declare the edge. (Whether we *auto-add* edges or merely *validate* declared ones is an open question — §10.2.)
+
+**Two-tier strictness — lenient draft, strict publish.** `fizz` accepts incomplete/partial expressions on draft save and runs full validation (filter strictness + known-node set) only at publish. We adopt the same split: parse-lenient while editing (so autosave doesn't hard-fail mid-keystroke), fully strict at publish/compile. The `Validator` takes a `strict?`/`known_nodes` flag that the draft path leaves off.
 
 ### 5.2 Data model
 
-No new persistent state. The only new in-memory structures are the **compiled param** tagged tuple (`{:literal|:interp|:expr, …}`, embedded in the compiled `Runic.Workflow`) and the **envelope** fact (`%{"json" => term, "node" => %{name => %{"json" => term}}}`) that flows between nodes at run time. Run-scoped `_expr` data lives in Runic's `context`, which is intentionally *not* part of the serialized workflow hash.
+No new persistent state. The only new in-memory structures are the **compiled param** tagged tuple (`{:literal | :interp | :expr | :predicate, …}`, embedded in the compiled `Runic.Workflow`) and the **envelope** fact (`%{"json" => term, "node" => %{name => %{"json" => term}}}`) that flows between nodes at run time. Run-scoped `_expr` data lives in Runic's `context`, which is intentionally *not* part of the serialized workflow hash.
 
 ### 5.3 Interfaces / APIs
 
@@ -311,11 +325,15 @@ The `:map`/`:reduce` generated clauses differ only in **what `build_context` poi
 
 ### 7.1 Security
 
-The headline security property is **the sandbox**: Liquid has no `eval`, no I/O, no network. We further drop filesystem/template-include tags (`render`, `include`) from the default tag set so an expression cannot pull in other templates. Secrets and env values reach expressions only via the per-run `_expr` context (`$env`, `$vars`), which is populated by the compiler/run-starter from trusted sources — never from user-controlled graph JSON. The existing `Nodes.Params` discipline (only schema-declared keys become atoms) is preserved, so user input never creates arbitrary atoms. **Threat to watch:** expressions can read whatever is placed in `$env`/`$vars`, so the run-starter must scope those maps to what the workflow is authorized to see (ties into the credential-resolution work).
+The headline security property is **the sandbox**: Liquid has no `eval`, no I/O, no network. We further drop filesystem/template-include tags (`render`, `include`) from the default tag set so an expression cannot pull in other templates. The existing `Nodes.Params` discipline (only schema-declared keys become atoms) is preserved, so user input never creates arbitrary atoms.
+
+**Credentials never enter the expression namespace.** `$env`/`$vars` carry *non-secret* run config only, populated by the compiler/run-starter from trusted sources — never from user-controlled graph JSON. Secrets do **not** flow through `$env`/`$vars`: they reach a node through the separate `requires: [credentials: …]` path, resolved at run time. This mirrors `fizz`, which keeps credentials out of its Liquid bindings entirely (`solid_bindings/4` exposes only `input/json/steps/workflow/env`) and resolves them through a distinct `CredentialRef` + injected 4-arity resolver (`access_plan.ex:44-61`, `expressions.ex:150-178`). The property we get: **an expression can never print a secret**, because no secret is ever bound into the expression context. *(This corrects an earlier draft that routed secrets through `$env`/`$vars`.)* **Threat to watch:** the run-starter must still scope `$env`/`$vars` to what the workflow is authorized to see.
 
 ### 7.2 Privacy & data handling
 
-N/A for the engine itself — it adds no new storage or PII categories. It does *move* item data through the envelope (`$node` outputs accumulate across the run, in memory only). Note: the accumulating envelope means a node's output is visible to all downstream nodes via `$node["…"]`; if a step handles sensitive fields, that exposure is by design and bounded to the single run's in-memory facts.
+The engine adds no new storage or PII categories, but it does *move* item data through the envelope (`$node` outputs accumulate across the run). In-memory flow is by design and bounded to the run.
+
+**The real exposure is persistence/serialization, not the in-memory envelope.** `fizz`'s TODO records a concrete, lived leak: *evaluated* config gets written into step execution metadata, and that metadata is encoded to the client — so resolved values (and anything they incorporated) can surface in client logs/UI. The lesson for us: the danger isn't the fact flowing between nodes, it's any path that **persists or transmits resolved expression values**. Two mitigations, made requirements: (1) since credentials never enter the expression namespace (§7.1), resolved expression values cannot *contain* a secret by construction — the most important safeguard; (2) when we persist run state for durability/replay or ship step I/O to the editor, resolved values that derived from `$env`/`$vars` must be redactable, and we should default to not serializing the fully-resolved param map to the client. Treat "evaluated config → execution metadata → client" as an exfiltration path to design against, not an afterthought.
 
 ### 7.3 Observability
 
@@ -396,10 +414,10 @@ Phases 1–3 are reversible (pure additions). Phase 5's `Template` deletion is t
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Solid internal AST relied on for type preservation breaks across versions | L | M | `{:expr,_}` path uses our own evaluator, not Solid internals; pin the version |
+| Solid evaluation API (`Argument.get/4`, `%Object{}`/`%Context{}`) shifts across versions | L | M | We deliberately reuse this *small* API for native-type return (§5.1.1, proven by `fizz`) instead of reimplementing Liquid or introspecting the parsed-AST structure; pin the version, test native-type return per filter |
 | Runic alpha API (`context/1`, `put_run_context`, fact shape) changes | M | M | Envelope + context wiring isolated to `Expr`/macro/compiler; pin Runic; small blast radius |
 | `$`-rewrite mangles literal text (e.g. OData `$top`) | M | M | Region-scoped rewrite (only inside `{{ }}`/`{% %}`); explicit test |
-| Hand-rolled object evaluator diverges from Liquid semantics, confusing authors | M | L | Keep it to documented dotted/bracket+filter subset; full semantics only in string path; document the split |
+| ~~Hand-rolled object evaluator diverges from Liquid semantics~~ — **eliminated** | — | — | Resolved: the `{:expr,_}` path calls Solid's own `Argument.get/4` (per `fizz`), so there is no hand-rolled grammar to diverge. Native types and the filter pipeline come from the same engine as the string path |
 | Macro-generated `build/2` per kind has a subtle context bug (esp. `:map`/`:reduce`) | M | M | Centralized + heavily tested; escape hatch `build/2` for unusual topologies |
 | Accumulating envelope leaks sensitive node output downstream | L | M | By-design and run-scoped; prune to referenced nodes if needed; scope `$env`/`$vars` |
 
@@ -410,6 +428,9 @@ Phases 1–3 are reversible (pure additions). Phase 5's `Template` deletion is t
 - **`$node` pruning.** Do we keep the full envelope or prune to statically-referenced nodes? Defer until a large workflow forces it. Owner: [TBD].
 - **`$items` / multi-item access.** n8n exposes whole-input-list helpers; do we model these now or after single-item works? Owner: [TBD].
 - **UUID source for the `uuid` filter** (`Ecto.UUID` vs `:crypto`) and whether non-deterministic filters are even desirable in a re-runnable workflow. Owner: [TBD].
+- **Per-field vs per-leaf expressionability** (§5.1.4). Is `expr` a top-level-field whitelist, or do we evaluate any string leaf in a (nested) param like `fizz` does? Forced by the first structured/table field that needs per-cell expressions. Owner: [TBD].
+- **Implicit DAG edges from expression dependencies** (§5.1.6). Do `$node["X"]` references *create* graph edges, or merely get *validated* against declared ones? `fizz`'s `dependencies/1` makes the former cheap. Owner: [TBD].
+- **How a node declares a field is a predicate** (§5.1.1's `{:predicate,_}`). Likely a `predicate: [atoms]` spec option parallel to `expr:`; confirm and define the truthiness rule. Owner: [TBD].
 
 ---
 
@@ -422,9 +443,11 @@ Phases 1–3 are reversible (pure additions). Phase 5's `Template` deletion is t
 | **Expression** | A `{{ … }}` fragment in a param field, evaluated at run time against the workflow context. |
 | **Envelope** | The fact shape threaded between nodes: `%{"json" => result, "node" => %{name => %{"json" => …}}}`. Enables `$node` references. |
 | **Expressionable field** | A param listed in a node's `expr: [...]` option; accepts a literal or an expression and defers its type check to run time. |
-| **Compiled value** | The tagged result of `Expr.compile/1`: `{:literal, v}`, `{:interp, template}`, or `{:expr, src}`. |
-| **Per-run context (`_expr`)** | Static run data (`$vars`, `$env`, `$workflow`, `$execution`) placed in Runic `context`, not in the serialized workflow. |
-| **Pure expression** | A field that is exactly one `{{ … }}`; resolves to a native value rather than a string. |
+| **Compiled value** | The tagged result of `Expr.compile/1`: `{:literal, v}`, `{:interp, template}`, `{:expr, path, template}`, or `{:predicate, template}`. |
+| **Per-run context (`_expr`)** | Static, *non-secret* run data (`$vars`, `$env`, `$workflow`, `$execution`) placed in Runic `context`, not in the serialized workflow. Credentials are not here — they resolve via the `requires` path (§7.1). |
+| **Pure expression** | A field that is exactly one `{{ … }}`; resolves to a native value rather than a string, via Solid's `Argument.get/4` on the single object (with a literal-path fast walk when there are no filters). |
+| **Predicate expression** | A boolean field that is one `{{ … }}` using comparator filters (`{{ $json.total | gt: 100 }}`), coerced to a real boolean. Exists because Liquid has no infix operators. |
+| **Filter allowlist** | The curated, validated set of permitted built-in + custom filters; an unknown filter is a compile-time error. |
 
 ### Appendix B — References
 
@@ -433,3 +456,10 @@ Phases 1–3 are reversible (pure additions). Phase 5's `Template` deletion is t
 - System being replaced: `lib/hermitscale/workflows/template.ex`
 - Current sole call site: `lib/hermitscale/workflows/nodes/http_request/v2.ex`
 - Related: node authoring kit, durable Runic workflow system, integration credential resolution (recent commits)
+- **Prior art — the `fizz` expression system** (sibling project, shipped). Most lessons in this doc are drawn from it:
+  - `lib/fizz/workflows/expressions.ex` — facade, `classify/1`, `resolve/2`, `to_access_plan/2`, `dependencies/1`, `validate/2`, `preview/2`, the single-object native-type evaluator (`render_object_value/2`)
+  - `lib/fizz/workflows/expressions/access_plan.ex` — the `Literal | ValueExpression | TemplateExpression | PredicateExpression | CredentialRef` representation
+  - `lib/fizz/workflows/expressions/filters.ex` — the custom filter catalog (incl. predicate comparators)
+  - `lib/fizz/workflows/compiler/expression_compiler.ex` — compile-time pass; `lib/fizz/workflows/runtime/config_resolver.ex` — deep recursive resolution
+  - `docs/plans/expression-design.md`, `docs/spec/decisions/expression-filter-catalog.md` — fizz's own design + filter-allowlist decision
+  - Scars worth reading: `TODO.md:169-171` (fixed-vs-expression leakiness) and the deferred rename-rewrite / evaluated-config-in-client-metadata notes
