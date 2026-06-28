@@ -69,28 +69,6 @@ defmodule Hermitscale.Workflows.Catalog do
     end
   end
 
-  @doc """
-  Projects the in-code catalog into editor-friendly JSON data.
-  """
-  def manifest do
-    index()
-    |> Map.values()
-    |> Enum.map(fn module ->
-      spec = module.__catalog_node__()
-
-      %{
-        id: spec.id,
-        version: spec.version,
-        kind: spec.kind,
-        inputs: spec.inputs,
-        outputs: spec.outputs,
-        deprecated: spec.deprecated,
-        params_schema: Hermitscale.Workflows.JsonSchema.from_nimble(spec.params_schema)
-      }
-    end)
-    |> Enum.sort_by(&{&1.id, &1.version})
-  end
-
   defp catalog_node?(module) do
     Code.ensure_loaded?(module) and function_exported?(module, :__catalog_node__, 0)
   end
