@@ -40,5 +40,33 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       assert {:error, issues} = Validator.validate(graph)
       assert Enum.any?(issues, &(&1.code == :join_input_slots))
     end
+
+    test "runs node validate_params callback after schema params casting" do
+      graph =
+        authoring_probe_graph(%{
+          "nodes" => [
+            %{
+              "id" => "probe",
+              "type" => "test.authoring_probe",
+              "version" => 1,
+              "params" => %{"count" => 3}
+            }
+          ]
+        })
+
+      assert {:error, issues} = Validator.validate(graph)
+
+      assert Enum.any?(
+               issues,
+               &match?(
+                 %Validator.Issue{
+                   path: "$.nodes[0].params",
+                   code: :invalid_params,
+                   message: "count must be even"
+                 },
+                 &1
+               )
+             )
+    end
   end
 end

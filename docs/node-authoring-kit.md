@@ -1,6 +1,6 @@
 # Workflow Node Authoring Kit
 
-Status: **proposal** · Scope: `lib/hermitscale/workflows/nodes/**`
+Status: **phase 1 implemented** · Scope: `lib/hermitscale/workflows/nodes/**`
 
 This document designs the kit for authoring catalog nodes in the new workflow
 engine. The engine's hard problems — durable execution (Runic + event-sourced
@@ -747,20 +747,20 @@ that depends on them.
 
 ### Phase 1 — Node authoring kit (§2–§11)
 
-- [ ] Extend `Workflows.Nodes.Behaviour` with the `use` macro and
+- [x] Extend `Workflows.Nodes.Behaviour` with the `use` macro and
       `__compile_spec__!/2`, validating `kind`, `id`, `version`, ports, and the
       params schema at compile time (§3).
-- [ ] Add `requires` and `default_policy` to the spec; add the optional
+- [x] Add `requires` and `default_policy` to the spec; add the optional
       `validate_params/1` callback (§2).
-- [ ] New `Workflows.Nodes.Params` with `cast/2` + `cast!/2` (§5).
-- [ ] Refactor `Validator.params_issues/3` to call `Params.cast/2` (drop the
+- [x] New `Workflows.Nodes.Params` with `cast/2` + `cast!/2` (§5).
+- [x] Refactor `Validator.params_issues/3` to call `Params.cast/2` (drop the
       duplicated options loop); invoke `validate_params/1` when exported (§5).
-- [ ] `Compiler`: cast params before `build/2`; resolve policy as
+- [x] `Compiler`: cast params before `build/2`; resolve policy as
       `node policy ▸ spec.default_policy ▸ engine default` (§13).
-- [ ] Migrate `http_request`, `merge_decision`, `validate_order` to the macro and
+- [x] Migrate `http_request`, `merge_decision`, `validate_order` to the macro and
       atom-keyed params (§3, §6).
-- [ ] Tests: macro compile-time failures, `Params.cast/2`, migrated nodes (§11).
-- [ ] `mix precommit` green.
+- [x] Tests: macro compile-time failures, `Params.cast/2`, migrated nodes (§11).
+- [x] `mix precommit` green.
 
 ### Phase 2 — Integration layer (Google reference) (§8, §12)
 

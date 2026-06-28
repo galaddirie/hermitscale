@@ -29,5 +29,37 @@ defmodule Hermitscale.Workflows.CompilerTest do
       assert {:error, issues} = Compiler.compile(graph)
       assert Enum.any?(issues, &(&1.code == :missing_node))
     end
+
+    test "casts params and merges graph policy over node default policy" do
+      input = %{"source" => "test"}
+
+      graph =
+        authoring_probe_graph(%{
+          "nodes" => [
+            %{
+              "id" => "probe",
+              "type" => "test.authoring_probe",
+              "version" => 1,
+              "params" => %{"count" => 2},
+              "policy" => %{"max_retries" => 5}
+            }
+          ]
+        })
+
+      assert {:ok, workflow} = Compiler.compile(graph)
+      assert [{{:name, name_matcher}, policy}] = workflow.scheduler_policies
+      assert Regex.match?(name_matcher, "probe")
+      assert %{backoff: :linear, max_retries: 5, timeout_ms: 10} = policy
+
+      results =
+        workflow
+        |> Workflow.react_until_satisfied(input)
+        |> Workflow.raw_productions()
+
+      assert Enum.any?(
+               results,
+               &match?(%{authoring_probe: %{count: 2, flag: false}}, &1)
+             )
+    end
   end
 end

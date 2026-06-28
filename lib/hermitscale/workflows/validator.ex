@@ -3,7 +3,8 @@ defmodule Hermitscale.Workflows.Validator do
   Validates stored workflow graph JSON before it is compiled into Runic structs.
   """
 
-  alias Hermitscale.Workflows.Catalog
+  alias Hermitscale.Workflows.{Catalog, Policy}
+  alias Hermitscale.Workflows.Nodes.Params
 
   defmodule Issue do
     @moduledoc """
@@ -16,13 +17,6 @@ defmodule Hermitscale.Workflows.Validator do
 
   @node_id_pattern ~r/^[A-Za-z][A-Za-z0-9_:-]*$/
   @max_nodes 100
-  @policy_values %{
-    "backoff" => ~w(none linear exponential jitter),
-    "execution_mode" => ~w(sync async durable),
-    "on_failure" => ~w(halt skip),
-    "priority" => ~w(low normal high critical)
-  }
-  @integer_policy_keys ~w(max_retries base_delay_ms max_delay_ms timeout_ms deadline_ms)
 
   @doc """
   Validates a graph and returns all issues at once.
@@ -290,7 +284,7 @@ defmodule Hermitscale.Workflows.Validator do
         params = Map.get(node, "params", %{})
         spec = module.__catalog_node__()
 
-        issues ++ params_issues(params, spec.params_schema, "$.nodes[#{index}].params")
+        issues ++ params_issues(params, module, spec, "$.nodes[#{index}].params")
 
       {:error, :not_found} ->
         issues
@@ -327,8 +321,8 @@ defmodule Hermitscale.Workflows.Validator do
     end
   end
 
-  defp params_issues(params, schema, path) when is_map(params) do
-    allowed = MapSet.new(schema, fn {field, _opts} -> Atom.to_string(field) end)
+  defp params_issues(params, module, spec, path) when is_map(params) do
+    allowed = MapSet.new(spec.params_schema, fn {field, _opts} -> Atom.to_string(field) end)
 
     unknown_issues =
       params
@@ -336,24 +330,28 @@ defmodule Hermitscale.Workflows.Validator do
       |> Enum.reject(&MapSet.member?(allowed, &1))
       |> Enum.map(&issue("#{path}.#{&1}", :unknown_param, "unknown param #{inspect(&1)}"))
 
-    options =
-      for {field, _opts} <- schema,
-          param_key = Atom.to_string(field),
-          Map.has_key?(params, param_key) do
-        {field, Map.fetch!(params, param_key)}
-      end
-
-    case NimbleOptions.validate(options, schema) do
-      {:ok, _validated} ->
-        unknown_issues
+    case Params.cast(params, spec.params_schema) do
+      {:ok, normalized} ->
+        unknown_issues ++ validate_node_params_callback(module, normalized, path)
 
       {:error, error} ->
         [issue(path, :invalid_params, Exception.message(error)) | unknown_issues]
     end
   end
 
-  defp params_issues(_params, _schema, path) do
+  defp params_issues(_params, _module, _spec, path) do
     [issue(path, :invalid_type, "params must be an object")]
+  end
+
+  defp validate_node_params_callback(module, params, path) do
+    if function_exported?(module, :validate_params, 1) do
+      case module.validate_params(params) do
+        :ok -> []
+        {:error, message} when is_binary(message) -> [issue(path, :invalid_params, message)]
+      end
+    else
+      []
+    end
   end
 
   defp connection_issues(connections, nodes_by_id) do
@@ -477,7 +475,7 @@ defmodule Hermitscale.Workflows.Validator do
   end
 
   defp validate_policy(policy, index) do
-    known_keys = MapSet.new(Map.keys(@policy_values) ++ @integer_policy_keys)
+    known_keys = MapSet.new(Policy.known_keys())
 
     unknown =
       policy
@@ -492,7 +490,7 @@ defmodule Hermitscale.Workflows.Validator do
       )
 
     enum_issues =
-      Enum.flat_map(@policy_values, fn {key, values} ->
+      Enum.flat_map(Policy.enum_values(), fn {key, values} ->
         case Map.fetch(policy, key) do
           {:ok, value} ->
             if value in values do
@@ -513,7 +511,7 @@ defmodule Hermitscale.Workflows.Validator do
       end)
 
     integer_issues =
-      Enum.flat_map(@integer_policy_keys, fn key ->
+      Enum.flat_map(Policy.integer_keys(), fn key ->
         case Map.fetch(policy, key) do
           {:ok, value} when is_integer(value) and value >= 0 ->
             []

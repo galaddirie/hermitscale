@@ -43,4 +43,26 @@ defmodule Hermitscale.WorkflowsFixtures do
       attrs
     )
   end
+
+  def authoring_probe_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_authoring_probe",
+        "name" => "authoring_probe",
+        "nodes" => [
+          %{
+            "id" => "probe",
+            "type" => "test.authoring_probe",
+            "version" => 1,
+            "params" => %{"count" => 2}
+          }
+        ],
+        "connections" => []
+      },
+      attrs
+    )
+  end
 end
