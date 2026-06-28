@@ -11,6 +11,14 @@ config :hermitscale,
   ecto_repos: [Hermitscale.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :hermitscale, Oban,
+  engine: Oban.Engines.Basic,
+  repo: Hermitscale.Repo,
+  queues: [default: 10],
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}
+  ]
+
 # Configure the endpoint
 config :hermitscale, HermitscaleWeb.Endpoint,
   url: [host: "localhost"],

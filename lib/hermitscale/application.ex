@@ -10,8 +10,13 @@ defmodule Hermitscale.Application do
     children = [
       HermitscaleWeb.Telemetry,
       Hermitscale.Repo,
+      {Oban, Application.fetch_env!(:hermitscale, Oban)},
       {DNSCluster, query: Application.get_env(:hermitscale, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Hermitscale.PubSub},
+      {Runic.Runner,
+       name: Hermitscale.WorkflowRunner,
+       store: Hermitscale.Workflows.PostgresStore,
+       store_opts: [repo: Hermitscale.Repo]},
       # Start a worker by calling: Hermitscale.Worker.start_link(arg)
       # {Hermitscale.Worker, arg},
       # Start to serve requests, typically the last entry
