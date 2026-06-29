@@ -44,7 +44,10 @@ defmodule Hermitscale.WorkflowsTest do
       assert {:ok, %Run{} = run} = Workflows.start_run(graph, input, executor: :inline)
       assert {:ok, results} = Runic.Runner.get_results(Hermitscale.WorkflowRunner, run.id)
 
-      assert Enum.any?(results, &match?(%{left: ^input, right: ^input}, &1))
+      assert Enum.any?(
+               results,
+               &match?(%{merged: [^input, ^input]}, &1)
+             )
 
       run = Workflows.get_run!(run.id)
       assert run.status == :complete

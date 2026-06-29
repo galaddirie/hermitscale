@@ -68,5 +68,75 @@ defmodule Hermitscale.Workflows.ValidatorTest do
                )
              )
     end
+
+    test "rejects expressions that reference missing nodes" do
+      graph =
+        expression_probe_graph(%{
+          "nodes" => [
+            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{
+              "id" => "probe",
+              "type" => "test.expression_probe",
+              "version" => 1,
+              "params" => %{"message" => "{{ $node[\"missing\"].json.email }}"}
+            }
+          ],
+          "connections" => [%{"from" => "source", "to" => "probe"}]
+        })
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :missing_expression_node))
+    end
+
+    test "rejects expressions that reference non-upstream nodes" do
+      graph =
+        expression_probe_graph(%{
+          "nodes" => [
+            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{"id" => "other", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{
+              "id" => "probe",
+              "type" => "test.expression_probe",
+              "version" => 1,
+              "params" => %{"message" => "{{ $node[\"other\"].json.email }}"}
+            }
+          ],
+          "connections" => [%{"from" => "source", "to" => "probe"}]
+        })
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :non_upstream_expression_node))
+    end
+
+    test "rejects $node references inside reduce nodes" do
+      graph =
+        map_reduce_graph(%{
+          "nodes" => [
+            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{
+              "id" => "mapper",
+              "type" => "test.expression_map_probe",
+              "version" => 1,
+              "params" => %{"value" => "{{ $json.n }}"}
+            },
+            %{
+              "id" => "summer",
+              "type" => "test.expression_reduce_probe",
+              "version" => 1,
+              "params" => %{
+                "initial" => 0,
+                "value" => "{{ $node[\"source\"].json }}"
+              }
+            }
+          ],
+          "connections" => [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "summer"}
+          ]
+        })
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :node_ref_unsupported_in_reduce))
+    end
   end
 end

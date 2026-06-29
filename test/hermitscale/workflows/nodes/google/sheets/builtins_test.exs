@@ -12,10 +12,11 @@ defmodule Hermitscale.Workflows.Nodes.Google.Sheets.BuiltinsTest do
       params =
         Params.cast!(
           %{"spreadsheet_id" => "sheet_123", "range" => "Sheet1!A:B"},
-          spec.params_schema
+          spec.params_schema,
+          spec.expr_fields
         )
 
-      step = AppendRow.build(params, %{name: "append", inputs: []})
+      step = AppendRow.build(params, %{name: "append", parents: [], main_count: 0})
 
       assert step.name == "append"
     end
@@ -28,10 +29,11 @@ defmodule Hermitscale.Workflows.Nodes.Google.Sheets.BuiltinsTest do
       params =
         Params.cast!(
           %{"spreadsheet_id" => "sheet_123", "range" => "Sheet1!A:B"},
-          spec.params_schema
+          spec.params_schema,
+          spec.expr_fields
         )
 
-      step = ReadRows.build(params, %{name: "read", inputs: []})
+      step = ReadRows.build(params, %{name: "read", parents: [], main_count: 0})
 
       assert step.name == "read"
     end

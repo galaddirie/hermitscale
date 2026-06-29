@@ -22,6 +22,28 @@ defmodule Hermitscale.Workflows.Nodes.ParamsTest do
     end
   end
 
+  describe "cast/3" do
+    test "compiles expressionable fields and keeps defaults from the schema" do
+      schema =
+        NimbleOptions.new!(
+          count: [type: :non_neg_integer, required: true],
+          flag: [type: :boolean, default: false]
+        ).schema
+
+      assert {:ok, %{count: {:expr, nil, %Solid.Template{}}, flag: false}} =
+               Params.cast(%{"count" => "{{ $json.count | to_number }}"}, schema, [:count])
+    end
+
+    test "returns expression compile errors" do
+      schema = NimbleOptions.new!(count: [type: :any, required: true]).schema
+
+      assert {:error, %Hermitscale.Workflows.Expr.CompileError{} = error} =
+               Params.cast(%{"count" => "{{ $json.count | unknown_filter }}"}, schema, [:count])
+
+      assert Exception.message(error) =~ "unknown expression filter"
+    end
+  end
+
   describe "cast!/2" do
     test "raises on validation errors" do
       assert_raise ArgumentError, ~r/required :method option not found/, fn ->

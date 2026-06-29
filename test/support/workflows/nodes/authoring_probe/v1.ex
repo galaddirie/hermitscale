@@ -13,17 +13,12 @@ defmodule Hermitscale.Workflows.Nodes.AuthoringProbe.V1 do
       flag: [type: :boolean, default: false, doc: "Optional flag."]
     ]
 
-  require Runic
-
   @impl true
   def validate_params(%{count: count}) when rem(count, 2) == 0, do: :ok
   def validate_params(_params), do: {:error, "count must be even"}
 
   @impl true
-  def build(%{count: count, flag: flag}, %{name: name}) do
-    Runic.step(
-      fn input -> Map.put(input, :authoring_probe, %{count: ^count, flag: ^flag}) end,
-      name: name
-    )
+  def work(%{count: count, flag: flag}, input, _deps) do
+    Map.put(input, :authoring_probe, %{count: count, flag: flag})
   end
 end

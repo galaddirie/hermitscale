@@ -8,6 +8,7 @@ defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2 do
     inputs: [:main],
     outputs: [:main],
     requires: [credentials: []],
+    expr: [:url],
     params: [
       method: [
         type: {:in, ~w(GET POST PUT PATCH DELETE)},
@@ -17,25 +18,15 @@ defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2 do
       url: [
         type: :string,
         required: true,
-        doc: "URL template using constrained workflow interpolation."
+        doc: "URL or expression-resolved URL."
       ]
     ]
 
-  require Runic
-
   @impl true
-  def build(%{method: method, url: url_template}, %{name: name}) do
-    Runic.step(
-      fn input ->
-        url = Hermitscale.Workflows.Template.render!(^url_template, input)
-        auth = context(:credentials, default: nil)
-
-        case Hermitscale.HTTP.request(^method, url, body: input, auth: auth) do
-          {:ok, response} -> response.body
-          {:error, reason} -> raise "HTTP request failed: #{inspect(reason)}"
-        end
-      end,
-      name: name
-    )
+  def work(%{method: method, url: url}, input, %{credentials: credentials}) do
+    case Hermitscale.HTTP.request(method, url, body: input, auth: credentials) do
+      {:ok, response} -> response.body
+      {:error, reason} -> raise "HTTP request failed: #{inspect(reason)}"
+    end
   end
 end

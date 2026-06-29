@@ -29,6 +29,7 @@ defmodule Hermitscale.Workflows.Credentials do
   def resolve_run_context(graph, %Workflow{} = workflow, base_context \\ %{})
       when is_map(graph) do
     with {:ok, credential_context} <- credential_context(graph),
+         base_context <- merge_context(Workflow.get_run_context(workflow), base_context),
          run_context <- merge_context(base_context, credential_context),
          :ok <- validate_run_context(workflow, run_context) do
       {:ok, run_context}

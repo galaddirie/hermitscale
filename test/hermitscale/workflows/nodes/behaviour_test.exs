@@ -75,7 +75,7 @@ defmodule Hermitscale.Workflows.Nodes.BehaviourTest do
           use Hermitscale.Workflows.Nodes.Behaviour, unquote(Macro.escape(opts))
 
           @impl true
-          def build(_params, _ctx), do: :ok
+          def work(_params, item, _deps), do: item
         end
       end
     )

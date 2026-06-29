@@ -67,7 +67,8 @@ defmodule Hermitscale.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:runic, "~> 0.1.0-alpha.8"}
+      {:runic, "~> 0.1.0-alpha.8"},
+      {:solid, "~> 1.3.2"}
     ]
   end
 

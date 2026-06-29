@@ -8,10 +8,6 @@ defmodule Hermitscale.Workflows.Nodes.ValidateOrder.V1 do
     inputs: [:main],
     outputs: [:main]
 
-  require Runic
-
   @impl true
-  def build(_params, %{name: name}) do
-    Runic.step(fn input -> input end, name: name)
-  end
+  def work(_params, input, _deps), do: input
 end

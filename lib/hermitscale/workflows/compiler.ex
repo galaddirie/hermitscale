@@ -5,7 +5,7 @@ defmodule Hermitscale.Workflows.Compiler do
 
   require Runic
 
-  alias Hermitscale.Workflows.{Catalog, Policy, Validator}
+  alias Hermitscale.Workflows.{Catalog, Expr, Policy, Validator}
   alias Hermitscale.Workflows.Nodes.Params
   alias Runic.Workflow
 
@@ -33,25 +33,100 @@ defmodule Hermitscale.Workflows.Compiler do
     catalog = Catalog.index()
     node_specs = Validator.node_specs(graph)
     nodes = Map.new(node_specs, &{&1["id"], &1})
-    parents = Validator.parent_map(graph["connections"] || [])
+    main_parents = Validator.parent_map(graph["connections"] || [])
+    # Reduce reducers run under Runic's fan-in coordinator, which calls them as
+    # `reducer/2` (no `context/1`). The ambient namespaces come from the graph
+    # at compile time, so we bake them into the reduce closure instead.
+    ambient = expr_runtime(graph)
 
-    Enum.reduce(order, Runic.workflow(name: graph["name"]), fn id, workflow ->
+    Enum.reduce(order, base_workflow(graph), fn id, workflow ->
       node_spec = Map.fetch!(nodes, id)
       module = Catalog.fetch!(catalog, node_spec["type"], node_spec["version"])
       spec = module.__catalog_node__()
-      node_parents = Map.get(parents, id, [])
-      params = Params.cast!(node_spec["params"] || %{}, spec.params_schema)
+      mains = Map.get(main_parents, id, [])
 
-      node =
-        module.build(params, %{
-          name: id,
-          inputs: node_parents
-        })
+      params =
+        Params.cast!(
+          node_spec["params"] || %{},
+          spec.params_schema,
+          spec.expr_fields,
+          spec.predicate_fields
+        )
+
+      # `$node["X"]` references become explicit edges. Refs are validated to be
+      # upstream ancestors, so they are already earlier in the topo order; we
+      # only add the edge and let the node rebuild its `$node` view from inputs.
+      refs = Expr.node_references(params) -- mains
+      parents = mains ++ refs
+
+      ctx = %{
+        name: id,
+        main_count: length(mains),
+        parents: parents,
+        ref_ids: refs,
+        map_name: map_name(mains, nodes, catalog),
+        ambient: ambient
+      }
+
+      node = module.build(params, ctx)
 
       workflow
-      |> add_node(node, node_parents)
+      |> add_built(spec.kind, node, mains, parents)
       |> add_policy(node_spec, spec)
     end)
+  end
+
+  # A map is a spread step + a Runic.map; wire the spread to the node's parents
+  # (collection + any reference edges) and the map to the spread.
+  defp add_built(workflow, :map, {:pipeline, spread, mapper}, _mains, parents) do
+    workflow
+    |> add_node(spread, parents)
+    |> Workflow.add(mapper, to: spread.name)
+  end
+
+  # A reduce fans in from its upstream map (lazy) or a list-producing step.
+  defp add_built(workflow, :reduce, reduce, mains, _parents) do
+    add_node(workflow, reduce, mains)
+  end
+
+  defp add_built(workflow, _kind, node, _mains, parents) do
+    add_node(workflow, node, parents)
+  end
+
+  # The upstream map name enables Runic's lazy fan-in; nil for an enumerable
+  # reduce that follows a plain list-producing step.
+  defp map_name([parent], nodes, catalog) do
+    with %{} = parent_spec <- Map.get(nodes, parent),
+         {:ok, module} <- Catalog.fetch(catalog, parent_spec["type"], parent_spec["version"]),
+         %{kind: :map} <- module.__catalog_node__() do
+      parent
+    else
+      _other -> nil
+    end
+  end
+
+  defp map_name(_mains, _nodes, _catalog), do: nil
+
+  defp base_workflow(graph) do
+    graph
+    |> expr_run_context()
+    |> then(&(Runic.workflow(name: graph["name"]) |> Workflow.put_run_context(&1)))
+  end
+
+  defp expr_run_context(graph) do
+    %{_global: %{_expr: expr_runtime(graph)}}
+  end
+
+  defp expr_runtime(graph) do
+    %{
+      env: Map.get(graph, "env", %{}),
+      execution: %{},
+      vars: Map.get(graph, "vars", %{}),
+      workflow: %{
+        "id" => graph["id"],
+        "name" => graph["name"]
+      }
+    }
   end
 
   defp add_node(workflow, node, []), do: Workflow.add(workflow, node)

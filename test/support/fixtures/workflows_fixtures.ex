@@ -15,7 +15,7 @@ defmodule Hermitscale.WorkflowsFixtures do
           %{"id" => "validate", "type" => "validate_order", "version" => 1, "params" => %{}},
           %{"id" => "inventory", "type" => "validate_order", "version" => 1, "params" => %{}},
           %{"id" => "fraud", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "decide", "type" => "merge_decision", "version" => 1, "params" => %{}}
+          %{"id" => "decide", "type" => "test.join_probe", "version" => 1, "params" => %{}}
         ],
         "connections" => [
           %{"from" => "validate", "to" => "inventory"},
@@ -92,6 +92,127 @@ defmodule Hermitscale.WorkflowsFixtures do
           },
           "nodes" => %{}
         }
+      },
+      attrs
+    )
+  end
+
+  def map_probe_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_map_probe",
+        "name" => "map_probe",
+        "nodes" => [
+          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{
+            "id" => "mapper",
+            "type" => "test.expression_map_probe",
+            "version" => 1,
+            "params" => %{
+              "value" => "{{ $json.n | times: 10 }}",
+              "label" => "item-{{ $json.n }}"
+            }
+          }
+        ],
+        "connections" => [%{"from" => "source", "to" => "mapper"}]
+      },
+      attrs
+    )
+  end
+
+  def map_reduce_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_map_reduce",
+        "name" => "map_reduce",
+        "nodes" => [
+          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{
+            "id" => "mapper",
+            "type" => "test.expression_map_probe",
+            "version" => 1,
+            "params" => %{"value" => "{{ $json.n | times: 10 }}"}
+          },
+          %{
+            "id" => "summer",
+            "type" => "test.expression_reduce_probe",
+            "version" => 1,
+            "params" => %{"initial" => 0, "value" => "{{ $acc | plus: $json.params.value }}"}
+          }
+        ],
+        "connections" => [
+          %{"from" => "source", "to" => "mapper"},
+          %{"from" => "mapper", "to" => "summer"}
+        ]
+      },
+      attrs
+    )
+  end
+
+  def node_ref_map_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_node_ref_map",
+        "name" => "node_ref_map",
+        "nodes" => [
+          %{"id" => "ctx_src", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "list_src", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{
+            "id" => "mapper",
+            "type" => "test.expression_map_probe",
+            "version" => 1,
+            "params" => %{
+              "value" => "{{ $json.n }}",
+              "label" => "{{ $node[\"ctx_src\"].json | size }}"
+            }
+          }
+        ],
+        # ctx_src is an upstream ancestor of mapper (via list_src) but not a
+        # direct parent; the $node reference makes the compiler add the edge.
+        "connections" => [
+          %{"from" => "ctx_src", "to" => "list_src"},
+          %{"from" => "list_src", "to" => "mapper"}
+        ]
+      },
+      attrs
+    )
+  end
+
+  def expression_probe_graph(attrs \\ %{}) do
+    attrs = Map.new(attrs)
+
+    Map.merge(
+      %{
+        "schema_version" => 1,
+        "id" => "wf_expression_probe",
+        "name" => "expression_probe",
+        "nodes" => [
+          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{
+            "id" => "probe",
+            "type" => "test.expression_probe",
+            "version" => 1,
+            "params" => %{
+              "count" => "{{ $json.count | to_number }}",
+              "message" => "{{ $env.API_BASE }}/users/{{ $json.id }}",
+              "payload" => %{
+                "email" => "{{ $node[\"source\"].json.email }}",
+                "count" => "{{ $json.count | to_number }}"
+              }
+            }
+          }
+        ],
+        "connections" => [%{"from" => "source", "to" => "probe"}],
+        "env" => %{"API_BASE" => "https://api.example.test"}
       },
       attrs
     )

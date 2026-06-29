@@ -3,7 +3,7 @@ defmodule Hermitscale.Workflows.Validator do
   Validates stored workflow graph JSON before it is compiled into Runic structs.
   """
 
-  alias Hermitscale.Workflows.{Catalog, Policy}
+  alias Hermitscale.Workflows.{Catalog, Expr, Policy}
   alias Hermitscale.Workflows.Nodes.Params
 
   defmodule Issue do
@@ -45,6 +45,7 @@ defmodule Hermitscale.Workflows.Validator do
       base_issues ++
         duplicate_node_issues(nodes) ++
         node_issues(nodes, catalog, connections) ++
+        expression_reference_issues(nodes, catalog, connections, nodes_by_id) ++
         connection_issues(connections, nodes_by_id) ++
         arity_issues(nodes, catalog, connections) ++
         policy_issues(nodes) ++
@@ -330,7 +331,7 @@ defmodule Hermitscale.Workflows.Validator do
       |> Enum.reject(&MapSet.member?(allowed, &1))
       |> Enum.map(&issue("#{path}.#{&1}", :unknown_param, "unknown param #{inspect(&1)}"))
 
-    case Params.cast(params, spec.params_schema) do
+    case Params.cast(params, spec.params_schema, spec.expr_fields, spec.predicate_fields) do
       {:ok, normalized} ->
         unknown_issues ++ validate_node_params_callback(module, normalized, path)
 
@@ -351,6 +352,79 @@ defmodule Hermitscale.Workflows.Validator do
       end
     else
       []
+    end
+  end
+
+  defp expression_reference_issues(nodes, catalog, connections, nodes_by_id) do
+    ancestors = ancestor_map(nodes, connections)
+
+    nodes
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {node, index} ->
+      expression_reference_issues(node, index, catalog, nodes_by_id, ancestors)
+    end)
+  end
+
+  defp expression_reference_issues(
+         %{"id" => id, "type" => type, "version" => version} = node,
+         index,
+         catalog,
+         nodes_by_id,
+         ancestors
+       ) do
+    with {:ok, module} <- Catalog.fetch(catalog, type, version),
+         spec <- module.__catalog_node__(),
+         {:ok, params} <-
+           Params.cast(
+             Map.get(node, "params", %{}),
+             spec.params_schema,
+             spec.expr_fields,
+             spec.predicate_fields
+           ) do
+      refs = Expr.node_references(params)
+
+      cond do
+        spec.kind == :reduce and refs != [] ->
+          [
+            issue(
+              "$.nodes[#{index}].params",
+              :node_ref_unsupported_in_reduce,
+              "reduce nodes cannot reference other nodes via $node[...] (got #{inspect(refs)})"
+            )
+          ]
+
+        true ->
+          Enum.flat_map(refs, &node_reference_issues(&1, id, index, nodes_by_id, ancestors))
+      end
+    else
+      _other -> []
+    end
+  end
+
+  defp expression_reference_issues(_node, _index, _catalog, _nodes_by_id, _ancestors), do: []
+
+  defp node_reference_issues(ref, id, index, nodes_by_id, ancestors) do
+    cond do
+      not Map.has_key?(nodes_by_id, ref) ->
+        [
+          issue(
+            "$.nodes[#{index}].params",
+            :missing_expression_node,
+            "expression references missing node #{inspect(ref)}"
+          )
+        ]
+
+      not MapSet.member?(Map.get(ancestors, id, MapSet.new()), ref) ->
+        [
+          issue(
+            "$.nodes[#{index}].params",
+            :non_upstream_expression_node,
+            "expression references node #{inspect(ref)} which is not upstream of #{inspect(id)}"
+          )
+        ]
+
+      true ->
+        []
     end
   end
 
@@ -544,6 +618,26 @@ defmodule Hermitscale.Workflows.Validator do
     connections
     |> Enum.group_by(& &1["from"])
     |> Map.new(fn {from, edges} -> {from, Enum.map(edges, & &1["to"])} end)
+  end
+
+  defp ancestor_map(nodes, connections) do
+    parents = parent_map(connections)
+
+    nodes
+    |> Enum.map(& &1["id"])
+    |> Map.new(fn id -> {id, collect_ancestors(id, parents, MapSet.new())} end)
+  end
+
+  defp collect_ancestors(id, parents, seen) do
+    parents
+    |> Map.get(id, [])
+    |> Enum.reduce(seen, fn parent, seen ->
+      if MapSet.member?(seen, parent) do
+        seen
+      else
+        collect_ancestors(parent, parents, MapSet.put(seen, parent))
+      end
+    end)
   end
 
   defp do_topo(queue, incoming_counts, children, sorted) do

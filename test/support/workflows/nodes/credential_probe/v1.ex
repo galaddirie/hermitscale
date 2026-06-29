@@ -14,19 +14,10 @@ defmodule Hermitscale.Workflows.Nodes.CredentialProbe.V1 do
       ]
     ]
 
-  require Runic
-
   @impl true
-  def build(_params, %{name: name}) do
-    Runic.step(
-      fn input ->
-        credentials = context(:credentials)
-
-        input
-        |> Map.put("access_token", credentials.access_token)
-        |> Map.put("scopes", credentials.scopes)
-      end,
-      name: name
-    )
+  def work(_params, input, %{credentials: credentials}) do
+    input
+    |> Map.put("access_token", credentials.access_token)
+    |> Map.put("scopes", credentials.scopes)
   end
 end
