@@ -8,9 +8,7 @@ defmodule Hermitscale.Workflows.Policy do
       "exponential" => :exponential,
       "jitter" => :jitter
     },
-    execution_mode: %{"sync" => :sync, "async" => :async, "durable" => :durable},
-    on_failure: %{"halt" => :halt, "skip" => :skip},
-    priority: %{"low" => :low, "normal" => :normal, "high" => :high, "critical" => :critical}
+    on_failure: %{"halt" => :halt, "skip" => :skip}
   }
   @integer_keys [:max_retries, :base_delay_ms, :max_delay_ms, :timeout_ms, :deadline_ms]
 

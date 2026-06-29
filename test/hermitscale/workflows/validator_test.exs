@@ -74,6 +74,63 @@ defmodule Hermitscale.Workflows.ValidatorTest do
              )
     end
 
+    test "rejects removed scheduler policy fields" do
+      graph =
+        valid_join_graph(%{
+          "nodes" => [
+            %{
+              "id" => "validate",
+              "type" => "test.identity_probe",
+              "version" => 1,
+              "params" => %{},
+              "policy" => %{"execution_mode" => "sync", "priority" => "normal"}
+            },
+            %{
+              "id" => "inventory",
+              "type" => "test.identity_probe",
+              "version" => 1,
+              "params" => %{}
+            },
+            %{
+              "id" => "fraud",
+              "type" => "test.identity_probe",
+              "version" => 1,
+              "params" => %{}
+            },
+            %{
+              "id" => "decide",
+              "type" => "test.join_probe",
+              "version" => 1,
+              "params" => %{}
+            }
+          ]
+        })
+
+      assert {:error, issues} = Validator.validate(graph)
+
+      assert Enum.any?(
+               issues,
+               &match?(
+                 %Validator.Issue{
+                   path: "$.nodes[0].policy.execution_mode",
+                   code: :unknown_policy
+                 },
+                 &1
+               )
+             )
+
+      assert Enum.any?(
+               issues,
+               &match?(
+                 %Validator.Issue{
+                   path: "$.nodes[0].policy.priority",
+                   code: :unknown_policy
+                 },
+                 &1
+               )
+             )
+    end
+
     test "rejects expressions that reference missing nodes" do
       graph =
         expression_probe_graph(%{
