@@ -134,7 +134,7 @@ caught at runtime, if at all). The macro keeps the declaration flat and explicit
 while validating it **at compile time**:
 
 ```elixir
-defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2 do
   use Hermitscale.Workflows.Nodes.Behaviour,
     id: "http_request",
     version: 2,
@@ -309,8 +309,8 @@ contains today — one source of truth for "what are this node's params."
 For a join, the list defines arity and slot order:
 
 ```elixir
-# merge_decision/v1.ex
-use Hermitscale.Workflows.Nodes.Behaviour, id: "merge_decision", version: 1,
+# builtin/merge/v1.ex
+use Hermitscale.Workflows.Nodes.Behaviour, id: "merge", version: 1,
   kind: :join, inputs: [:left, :right], outputs: [:main]
 
 def build(_params, ctx) do
@@ -534,10 +534,10 @@ A node is a pure builder, so a test builds the component and runs it through a
 one-node Runic workflow:
 
 ```elixir
-defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2Test do
+defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2Test do
   use ExUnit.Case, async: true
 
-  alias Hermitscale.Workflows.Nodes.HttpRequest.V2
+  alias Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2
   alias Hermitscale.Workflows.Nodes.Params
 
   test "spec is well-formed and discoverable" do
@@ -703,7 +703,7 @@ clean:
 | `workflows/nodes/params.ex` | **New.** `cast/2` + `cast!/2`. |
 | `workflows/compiler.ex` | Cast params via `Params.cast!/2` before `build/2`; pass atom-keyed params. Resolve policy as `node policy ▸ spec.default_policy ▸ engine default`. |
 | `workflows/validator.ex` | Call `Params.cast/2` from `params_issues/3` (drop the duplicated `options` loop); call `validate_params/1` when exported. |
-| `workflows/nodes/{http_request,merge_decision,validate_order}/*.ex` | Migrate to `use Hermitscale.Workflows.Nodes.Behaviour`; match atom-keyed params. |
+| `workflows/nodes/builtin/{http_request,map,merge,reduce}/**` | Built-in catalog nodes using `Hermitscale.Workflows.Nodes.Behaviour`; match atom-keyed params. |
 
 No migration to `Catalog`, `Graph`, `Run`, `RunEvent`, or the policy machinery.
 
@@ -767,8 +767,8 @@ that depends on them.
       duplicated options loop); invoke `validate_params/1` when exported (§5).
 - [x] `Compiler`: cast params before `build/2`; resolve policy as
       `node policy ▸ spec.default_policy ▸ engine default` (§13).
-- [x] Migrate `http_request`, `merge_decision`, `validate_order` to the macro and
-      atom-keyed params (§3, §6).
+- [x] Group built-in workflow nodes under `workflows/nodes/builtin/**` and
+      migrate them to the macro with atom-keyed params (§3, §6).
 - [x] Tests: macro compile-time failures, `Params.cast/2`, migrated nodes (§11).
 - [x] `mix precommit` green.
 

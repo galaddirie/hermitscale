@@ -2,7 +2,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
   use ExUnit.Case, async: true
 
   alias Hermitscale.Workflows.Compiler
-  alias Hermitscale.Workflows.Nodes.Merge.V1, as: Merge
+  alias Hermitscale.Workflows.Nodes.Builtin.Merge.V1, as: Merge
   alias Runic.Workflow
 
   defp node(id, type, params),
@@ -32,7 +32,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
   # A source that simply forwards the workflow input, then a `map`.
   defp map_graph(map_params, extra \\ %{}) do
     graph(
-      [node("source", "validate_order", %{}), node("m", "map", map_params)],
+      [node("source", "test.identity_probe", %{}), node("m", "map", map_params)],
       [%{"from" => "source", "to" => "m"}],
       extra
     )
@@ -42,7 +42,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
   defp map_reduce_graph(map_params, reduce_params, extra \\ %{}) do
     graph(
       [
-        node("source", "validate_order", %{}),
+        node("source", "test.identity_probe", %{}),
         node("m", "map", map_params),
         node("r", "reduce", reduce_params)
       ],
@@ -210,9 +210,9 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
       composed =
         graph(
           [
-            node("validate", "validate_order", %{}),
-            node("a", "validate_order", %{}),
-            node("b", "validate_order", %{}),
+            node("validate", "test.identity_probe", %{}),
+            node("a", "test.identity_probe", %{}),
+            node("b", "test.identity_probe", %{}),
             node("merged", "merge", %{"mode" => "append"}),
             node("each", "map", %{"value" => "{{ $json.v }}"})
           ],

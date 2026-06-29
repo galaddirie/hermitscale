@@ -1,7 +1,7 @@
 defmodule Hermitscale.Workflows.Nodes.BuiltinsTest do
   use ExUnit.Case, async: true
 
-  alias Hermitscale.Workflows.Nodes.HttpRequest.V2, as: HttpRequest
+  alias Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2, as: HttpRequest
   alias Hermitscale.Workflows.Nodes.Params
 
   describe "http_request v2" do

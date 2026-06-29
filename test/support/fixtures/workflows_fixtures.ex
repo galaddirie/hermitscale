@@ -12,9 +12,14 @@ defmodule Hermitscale.WorkflowsFixtures do
         "id" => "wf_order_fulfillment",
         "name" => "order_fulfillment",
         "nodes" => [
-          %{"id" => "validate", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "inventory", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "fraud", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "validate", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{
+            "id" => "inventory",
+            "type" => "test.identity_probe",
+            "version" => 1,
+            "params" => %{}
+          },
+          %{"id" => "fraud", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{"id" => "decide", "type" => "test.join_probe", "version" => 1, "params" => %{}}
         ],
         "connections" => [
@@ -106,7 +111,7 @@ defmodule Hermitscale.WorkflowsFixtures do
         "id" => "wf_map_probe",
         "name" => "map_probe",
         "nodes" => [
-          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "mapper",
             "type" => "test.expression_map_probe",
@@ -132,7 +137,7 @@ defmodule Hermitscale.WorkflowsFixtures do
         "id" => "wf_map_reduce",
         "name" => "map_reduce",
         "nodes" => [
-          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "mapper",
             "type" => "test.expression_map_probe",
@@ -164,8 +169,8 @@ defmodule Hermitscale.WorkflowsFixtures do
         "id" => "wf_node_ref_map",
         "name" => "node_ref_map",
         "nodes" => [
-          %{"id" => "ctx_src", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "list_src", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "ctx_src", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{"id" => "list_src", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "mapper",
             "type" => "test.expression_map_probe",
@@ -196,7 +201,7 @@ defmodule Hermitscale.WorkflowsFixtures do
         "id" => "wf_expression_probe",
         "name" => "expression_probe",
         "nodes" => [
-          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "probe",
             "type" => "test.expression_probe",

@@ -204,7 +204,7 @@ No new persistent state. The only new in-memory structures are the **compiled pa
 Node-author contract — implement `work/3`, get expressions for free:
 
 ```elixir
-defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2 do
   use Hermitscale.Workflows.Nodes.Behaviour,
     id: "http_request", version: 2, kind: :step,
     requires: [credentials: []],
@@ -454,7 +454,7 @@ Phases 1–3 are reversible (pure additions). Phase 5's `Template` deletion is t
 - Runic — DAG workflow composition for Elixir: https://github.com/zblanco/runic
 - Solid — Liquid template engine for Elixir (v1.3.2): https://solid.hexdocs.pm/readme.html
 - System being replaced: `lib/hermitscale/workflows/template.ex`
-- Current sole call site: `lib/hermitscale/workflows/nodes/http_request/v2.ex`
+- Current sole call site: `lib/hermitscale/workflows/nodes/builtin/http_request/v2.ex`
 - Related: node authoring kit, durable Runic workflow system, integration credential resolution (recent commits)
 - **Prior art — the `fizz` expression system** (sibling project, shipped). Most lessons in this doc are drawn from it:
   - `lib/fizz/workflows/expressions.ex` — facade, `classify/1`, `resolve/2`, `to_access_plan/2`, `dependencies/1`, `validate/2`, `preview/2`, the single-object native-type evaluator (`render_object_value/2`)

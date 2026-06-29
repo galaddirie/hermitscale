@@ -15,7 +15,12 @@ defmodule Hermitscale.Workflows.ValidatorTest do
         valid_join_graph(%{
           "nodes" => [
             %{"id" => "validate", "type" => "missing", "version" => 1, "params" => %{}},
-            %{"id" => "validate", "type" => "validate_order", "version" => 1, "params" => %{}}
+            %{
+              "id" => "validate",
+              "type" => "test.identity_probe",
+              "version" => 1,
+              "params" => %{}
+            }
           ],
           "connections" => [%{"from" => "validate", "to" => "missing"}]
         })
@@ -73,7 +78,7 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       graph =
         expression_probe_graph(%{
           "nodes" => [
-            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
             %{
               "id" => "probe",
               "type" => "test.expression_probe",
@@ -92,8 +97,8 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       graph =
         expression_probe_graph(%{
           "nodes" => [
-            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
-            %{"id" => "other", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+            %{"id" => "other", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
             %{
               "id" => "probe",
               "type" => "test.expression_probe",
@@ -112,7 +117,7 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       graph =
         map_reduce_graph(%{
           "nodes" => [
-            %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+            %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
             %{
               "id" => "mapper",
               "type" => "test.expression_map_probe",

@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workflows.Nodes.HttpRequest.V2 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2 do
   @moduledoc false
 
   use Hermitscale.Workflows.Nodes.Behaviour,

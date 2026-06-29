@@ -1,8 +1,8 @@
-defmodule Hermitscale.Workflows.Nodes.ValidateOrder.V1 do
+defmodule Hermitscale.Workflows.Nodes.IdentityProbe.V1 do
   @moduledoc false
 
   use Hermitscale.Workflows.Nodes.Behaviour,
-    id: "validate_order",
+    id: "test.identity_probe",
     version: 1,
     kind: :step,
     inputs: [:main],

@@ -2,7 +2,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesTest do
   use ExUnit.Case, async: true
 
   alias Hermitscale.Workflows.Compiler
-  alias Hermitscale.Workflows.Nodes.Merge.V1, as: Merge
+  alias Hermitscale.Workflows.Nodes.Builtin.Merge.V1, as: Merge
   alias Runic.Workflow
 
   defp compile_and_run(graph, input) do
@@ -20,7 +20,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesTest do
         "id" => "wf_map",
         "name" => "map",
         "nodes" => [
-          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "double",
             "type" => "map",
@@ -46,7 +46,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesTest do
         "id" => "wf_reduce",
         "name" => "reduce",
         "nodes" => [
-          %{"id" => "source", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "values",
             "type" => "map",
@@ -81,9 +81,9 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesTest do
         "id" => "wf_merge",
         "name" => "merge",
         "nodes" => [
-          %{"id" => "validate", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "a", "type" => "validate_order", "version" => 1, "params" => %{}},
-          %{"id" => "b", "type" => "validate_order", "version" => 1, "params" => %{}},
+          %{"id" => "validate", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{"id" => "a", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{"id" => "b", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
           %{
             "id" => "merged",
             "type" => "merge",

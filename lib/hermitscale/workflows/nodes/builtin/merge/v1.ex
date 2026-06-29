@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workflows.Nodes.Merge.V1 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.Merge.V1 do
   @moduledoc """
   Joins two upstream branches into one, waiting for both before emitting.
 

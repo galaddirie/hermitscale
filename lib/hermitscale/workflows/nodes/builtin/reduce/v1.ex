@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workflows.Nodes.Reduce.V1 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.Reduce.V1 do
   @moduledoc """
   Folds the elements produced by an upstream `map` into a single accumulator.
 

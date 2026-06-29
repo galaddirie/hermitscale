@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workflows.Nodes.Map.V1 do
+defmodule Hermitscale.Workflows.Nodes.Builtin.Map.V1 do
   @moduledoc """
   Fans the input list out and evaluates an expression once per element.
 
