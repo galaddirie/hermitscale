@@ -64,24 +64,91 @@ example_order_rollup_definition = %{
   "vars" => %{"currency" => "USD"}
 }
 
-example_order_rollup_attrs = %{
-  id: example_order_rollup_definition["id"],
-  name: example_order_rollup_definition["name"],
-  schema_version: example_order_rollup_definition["schema_version"],
-  definition: example_order_rollup_definition,
-  status: :active
+numbers_debug_math_definition = %{
+  "schema_version" => 1,
+  "id" => "wf_example_numbers_debug_math",
+  "name" => "example_numbers_debug_math",
+  "nodes" => [
+    %{
+      "id" => "iterate_numbers",
+      "type" => "map",
+      "version" => 1,
+      "params" => %{},
+      "policy" => %{"timeout_ms" => 5_000}
+    },
+    %{
+      "id" => "print_each_number",
+      "type" => "debug",
+      "version" => 1,
+      "params" => %{
+        "label" => "input-number",
+        "value" => "{{ $json }}"
+      },
+      "policy" => %{"timeout_ms" => 5_000}
+    },
+    %{
+      "id" => "multiply_by_20",
+      "type" => "math",
+      "version" => 1,
+      "params" => %{
+        "operation" => "multiply",
+        "left" => "{{ $json | to_number }}",
+        "right" => "{{ $vars.multiplier | to_number }}"
+      },
+      "policy" => %{"timeout_ms" => 5_000}
+    },
+    %{
+      "id" => "collect_products",
+      "type" => "reduce",
+      "version" => 1,
+      "params" => %{
+        "initial" => [],
+        "value" => "{{ $acc | push: $json }}"
+      },
+      "policy" => %{"timeout_ms" => 5_000}
+    },
+    %{
+      "id" => "print_final_list",
+      "type" => "debug",
+      "version" => 1,
+      "params" => %{
+        "label" => "multiplied-numbers",
+        "value" => "{{ $json }}"
+      },
+      "policy" => %{"timeout_ms" => 5_000}
+    }
+  ],
+  "connections" => [
+    %{"from" => "iterate_numbers", "to" => "print_each_number"},
+    %{"from" => "print_each_number", "to" => "multiply_by_20"},
+    %{"from" => "multiply_by_20", "to" => "collect_products"},
+    %{"from" => "collect_products", "to" => "print_final_list"}
+  ],
+  "vars" => %{"multiplier" => 20}
 }
 
-seeded_graph =
-  case Enum.find(Workflows.list_graphs(), &(&1.id == example_order_rollup_attrs.id)) do
-    %Graph{} = graph -> Workflows.update_graph(graph, example_order_rollup_attrs)
-    nil -> Workflows.create_graph(example_order_rollup_attrs)
+existing_graphs = Map.new(Workflows.list_graphs(), &{&1.id, &1})
+
+Enum.each([example_order_rollup_definition, numbers_debug_math_definition], fn definition ->
+  attrs = %{
+    id: definition["id"],
+    name: definition["name"],
+    schema_version: definition["schema_version"],
+    definition: definition,
+    status: :active
+  }
+
+  seeded_graph =
+    case Map.get(existing_graphs, attrs.id) do
+      %Graph{} = graph -> Workflows.update_graph(graph, attrs)
+      nil -> Workflows.create_graph(attrs)
+    end
+
+  case seeded_graph do
+    {:ok, %Graph{id: id, name: name}} ->
+      IO.puts("Seeded workflow graph #{id} (#{name})")
+
+    {:error, changeset} ->
+      raise "failed to seed example workflow graph: #{inspect(changeset.errors)}"
   end
-
-case seeded_graph do
-  {:ok, %Graph{id: id, name: name}} ->
-    IO.puts("Seeded workflow graph #{id} (#{name})")
-
-  {:error, changeset} ->
-    raise "failed to seed example workflow graph: #{inspect(changeset.errors)}"
-end
+end)

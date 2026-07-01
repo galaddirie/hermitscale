@@ -128,13 +128,25 @@ defmodule Hermitscale.Workflows do
   end
 
   def mark_run_complete(run_id, %Workflow{} = workflow) do
-    output = Workflow.raw_productions(workflow)
+    run = run_id |> get_run!() |> Repo.preload(:graph)
+    output = terminal_outputs(workflow, run.graph.definition)
     now = DateTime.utc_now(:second)
 
-    run_id
-    |> get_run!()
+    run
     |> Run.changeset(%{status: :complete, output: json_payload(output), completed_at: now})
     |> Repo.update()
+  end
+
+  # A run's result is the output of its terminal nodes — the graph nodes nothing
+  # else consumes. Keyed by node id so multi-output graphs round-trip cleanly,
+  # and so intermediate facts and map fan-out plumbing stay out of the result.
+  defp terminal_outputs(workflow, definition) do
+    consumed = MapSet.new(definition["connections"] || [], & &1["from"])
+
+    definition["nodes"]
+    |> Enum.map(& &1["id"])
+    |> Enum.reject(&MapSet.member?(consumed, &1))
+    |> Map.new(fn id -> {id, Workflow.raw_productions(workflow, id)} end)
   end
 
   defp runner_opts(opts) do
@@ -189,6 +201,10 @@ defmodule Hermitscale.Workflows do
     end)
   end
 
+  # Round-trips through JSON so stored terms match what reads back from the DB
+  # (atom keys become strings, etc.). Non-serializable data — e.g. a node that
+  # returns a tuple or PID — crashes here by design; that signals a real bug,
+  # not something to coerce into a plausible-looking value.
   defp jsonable(value) do
     value
     |> Jason.encode!()

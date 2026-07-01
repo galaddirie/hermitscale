@@ -119,6 +119,54 @@ defmodule Hermitscale.Workflows.CompilerTest do
       assert 60 in results
     end
 
+    test "uses reduced map output as one parent of a downstream join" do
+      input = [%{"n" => 1}, %{"n" => 2}, %{"n" => 3}]
+
+      graph = %{
+        "schema_version" => 1,
+        "id" => "wf_reduce_join",
+        "name" => "reduce_join",
+        "nodes" => [
+          %{"id" => "source", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{"id" => "other", "type" => "test.identity_probe", "version" => 1, "params" => %{}},
+          %{
+            "id" => "mapper",
+            "type" => "map",
+            "version" => 1,
+            "params" => %{"value" => "{{ $json.n }}"}
+          },
+          %{
+            "id" => "summer",
+            "type" => "reduce",
+            "version" => 1,
+            "params" => %{"initial" => 0, "value" => "{{ $acc | plus: $json }}"}
+          },
+          %{
+            "id" => "merged",
+            "type" => "merge",
+            "version" => 1,
+            "params" => %{"mode" => "append"}
+          }
+        ],
+        "connections" => [
+          %{"from" => "source", "to" => "mapper"},
+          %{"from" => "source", "to" => "other"},
+          %{"from" => "mapper", "to" => "summer"},
+          %{"from" => "summer", "to" => "merged", "to_input" => 0},
+          %{"from" => "other", "to" => "merged", "to_input" => 1}
+        ]
+      }
+
+      assert {:ok, workflow} = Compiler.compile(graph)
+
+      results =
+        workflow
+        |> Workflow.react_until_satisfied(input)
+        |> Workflow.raw_productions()
+
+      assert [6, input] in results
+    end
+
     test "delivers $node references into a map via an added edge (zip path)" do
       input = [%{"n" => 1}, %{"n" => 2}]
 

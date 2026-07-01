@@ -81,5 +81,47 @@ defmodule Hermitscale.WorkflowsTest do
                )
              )
     end
+
+    test "persists only the terminal node's output, keyed by node id" do
+      attrs =
+        graph_attrs(
+          id: "wf_runner_output_test",
+          name: "runner_output_test",
+          definition: map_reduce_graph()
+        )
+
+      assert {:ok, graph} = Workflows.create_graph(attrs)
+      input = [%{"n" => 1}, %{"n" => 2}, %{"n" => 3}]
+
+      assert {:ok, %Run{} = run} = Workflows.start_run(graph, input, executor: :inline)
+
+      run = Workflows.get_run!(run.id)
+      assert run.status == :complete
+      # Terminal node "summer" reduces 10 + 20 + 30; intermediate facts and map
+      # fan-out plumbing are excluded from the persisted result.
+      assert run.output == %{"value" => %{"summer" => [60]}}
+    end
+
+    test "resumes from persisted events using the stored graph definition" do
+      definition = map_reduce_graph()
+
+      attrs =
+        graph_attrs(
+          id: "wf_runner_resume_region_test",
+          name: "runner_resume_region_test",
+          definition: definition
+        )
+
+      assert {:ok, graph} = Workflows.create_graph(attrs)
+      input = [%{"n" => 1}, %{"n" => 2}, %{"n" => 3}]
+
+      assert {:ok, %Run{} = run} = Workflows.start_run(graph, input, executor: :inline)
+      assert :ok = Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false)
+
+      assert {:ok, _pid} = Workflows.resume_run(run, executor: :inline)
+      assert {:ok, results} = Runic.Runner.get_results(Hermitscale.WorkflowRunner, run.id)
+
+      assert 60 in results
+    end
   end
 end

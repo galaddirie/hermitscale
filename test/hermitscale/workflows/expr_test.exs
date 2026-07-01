@@ -23,6 +23,12 @@ defmodule Hermitscale.Workflows.ExprTest do
       assert Expr.resolve!(Expr.compile!("{{ $json.count | to_number }}"), context) == 7
     end
 
+    test "push appends one value to a native list" do
+      context = %{"acc" => [20, 40], "json" => 60}
+
+      assert Expr.resolve!(Expr.compile!("{{ $acc | push: $json }}"), context) == [20, 40, 60]
+    end
+
     test "reads upstream node output from the envelope" do
       envelope = %{
         "json" => %{"id" => 42},

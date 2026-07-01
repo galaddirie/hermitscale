@@ -200,5 +200,256 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       assert {:error, issues} = Validator.validate(graph)
       assert Enum.any?(issues, &(&1.code == :node_ref_unsupported_in_reduce))
     end
+
+    test "accepts a linear map region closed by reduce" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("each", "test.identity_probe"),
+            region_node("summer", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            })
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "each"},
+            %{"from" => "each", "to" => "summer"}
+          ]
+        )
+
+      assert :ok = Validator.validate(graph)
+    end
+
+    test "rejects reduce nodes without an owning map region" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("summer", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            })
+          ],
+          [%{"from" => "source", "to" => "summer"}]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :reduce_without_map))
+    end
+
+    test "rejects reduce nodes after an already closed map region" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("first_reduce", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            }),
+            region_node("second_reduce", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            })
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "first_reduce"},
+            %{"from" => "first_reduce", "to" => "second_reduce"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :reduce_without_map))
+    end
+
+    test "rejects list-producing step to reduce" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("left", "test.identity_probe"),
+            region_node("right", "test.identity_probe"),
+            region_node("merged", "merge", %{"mode" => "append"}),
+            region_node("summer", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            })
+          ],
+          [
+            %{"from" => "source", "to" => "left"},
+            %{"from" => "source", "to" => "right"},
+            %{"from" => "left", "to" => "merged", "to_input" => 0},
+            %{"from" => "right", "to" => "merged", "to_input" => 1},
+            %{"from" => "merged", "to" => "summer"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :reduce_without_map))
+    end
+
+    test "rejects reduce nodes with multiple owning map regions" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("left_map", "map"),
+            region_node("right_map", "map"),
+            region_node("summer", "reduce", %{
+              "initial" => 0,
+              "value" => "{{ $acc | plus: $json }}"
+            })
+          ],
+          [
+            %{"from" => "source", "to" => "left_map"},
+            %{"from" => "source", "to" => "right_map"},
+            %{"from" => "left_map", "to" => "summer", "to_input" => 0},
+            %{"from" => "right_map", "to" => "summer", "to_input" => 1}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :reduce_ambiguous_map))
+      assert Enum.any?(issues, &(&1.code == :reduce_parent_count))
+    end
+
+    test "rejects map region branching before reduce" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("left", "test.identity_probe"),
+            region_node("right", "test.identity_probe")
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "left"},
+            %{"from" => "mapper", "to" => "right"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :map_region_branch))
+    end
+
+    test "rejects nested maps and joins inside map regions" do
+      nested_map_graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("outer", "map"),
+            region_node("inner", "map")
+          ],
+          [
+            %{"from" => "source", "to" => "outer"},
+            %{"from" => "outer", "to" => "inner"}
+          ]
+        )
+
+      join_graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("merged", "merge", %{"mode" => "append"})
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "merged"}
+          ]
+        )
+
+      assert {:error, nested_issues} = Validator.validate(nested_map_graph)
+      assert Enum.any?(nested_issues, &(&1.code == :unsupported_map_region_node))
+
+      assert {:error, join_issues} = Validator.validate(join_graph)
+      assert Enum.any?(join_issues, &(&1.code == :unsupported_map_region_node))
+    end
+
+    test "rejects node references to per-item map region nodes" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("each", "test.expression_probe", %{
+              "message" => "{{ $node[\"mapper\"].json }}"
+            }),
+            region_node("summer", "reduce", %{
+              "initial" => [],
+              "value" => "{{ $acc | push: $json.message }}"
+            }),
+            region_node("after", "test.expression_probe", %{
+              "message" => "{{ $node[\"each\"].json }}"
+            })
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "each"},
+            %{"from" => "each", "to" => "summer"},
+            %{"from" => "summer", "to" => "after"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :node_ref_unsupported_in_map_region))
+      assert Enum.any?(issues, &(&1.code == :map_region_node_ref))
+    end
+
+    test "returns connection issues for map regions with missing children" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map")
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "missing"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :missing_node))
+    end
+
+    test "returns cycle issues for cyclic map regions" do
+      graph =
+        region_graph(
+          [
+            region_node("source", "test.identity_probe"),
+            region_node("mapper", "map"),
+            region_node("a", "test.identity_probe"),
+            region_node("b", "test.identity_probe")
+          ],
+          [
+            %{"from" => "source", "to" => "mapper"},
+            %{"from" => "mapper", "to" => "a"},
+            %{"from" => "a", "to" => "b"},
+            %{"from" => "b", "to" => "a"}
+          ]
+        )
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.code == :cycle))
+    end
+  end
+
+  defp region_node(id, type, params \\ %{}),
+    do: %{"id" => id, "type" => type, "version" => 1, "params" => params}
+
+  defp region_graph(nodes, connections) do
+    %{
+      "schema_version" => 1,
+      "id" => "wf_map_region",
+      "name" => "map_region",
+      "nodes" => nodes,
+      "connections" => connections
+    }
   end
 end

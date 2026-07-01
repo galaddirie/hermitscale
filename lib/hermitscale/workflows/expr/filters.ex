@@ -16,6 +16,7 @@ defmodule Hermitscale.Workflows.Expr.Filters do
     "lt" => [2],
     "lte" => [2],
     "ne" => [2],
+    "push" => [2],
     "to_json" => [1],
     "to_number" => [1],
     "uuid" => [1]
@@ -107,6 +108,9 @@ defmodule Hermitscale.Workflows.Expr.Filters do
   def is_empty(value) when is_list(value), do: value == []
   def is_empty(value) when is_map(value), do: map_size(value) == 0
   def is_empty(_value), do: false
+
+  def push(list, value) when is_list(list), do: list ++ [value]
+  def push(_value, _item), do: raise(%Solid.ArgumentError{message: "push expects a list"})
 
   def uuid(_value), do: Ecto.UUID.generate()
 
