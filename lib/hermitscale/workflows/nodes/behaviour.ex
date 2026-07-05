@@ -133,17 +133,18 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
     end
   end
 
-  # A map compiles to a spread step + a Runic.map. The spread unwraps the bare
-  # collection (and any `$node` reference values) into `{element, refs}` tuples
-  # so Runic's FanOut can split them natively; the map runs `work/3` per element
-  # and returns a bare per-element output.
+  # A map is three graph nodes: a `prepare` step that normalizes the collection
+  # (and zips in any `$node` reference values) into `{element, refs}` tuples, a
+  # `FanOut` that splits them per element, and a `mapper` step running `work/3`
+  # per element. The compiler wires the body chain and reduce onto these with
+  # ordinary edges — no reaching into Runic internals.
   def __gen_build__(%{kind: :map, requires: requires}) do
     deps = deps_ast(requires)
 
     quote generated: true do
       @impl true
       def build(params, %{name: name, ref_ids: ref_ids}) do
-        spread =
+        prepare =
           Runic.step(
             fn input ->
               {collection, refs} =
@@ -162,12 +163,14 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
               |> List.wrap()
               |> Enum.map(fn element -> {element, refs} end)
             end,
-            # `$` cannot appear in a node id, so this never collides with one.
-            name: "#{name}$spread"
+            # `$` cannot appear in a node id, so these never collide with one.
+            name: "#{name}$prepare"
           )
 
+        fan_out = Runic.Workflow.FanOut.new(name: "#{name}$fan_out")
+
         mapper =
-          Runic.map(
+          Runic.step(
             fn {element, refs} ->
               runtime = context(:_expr, default: %{})
               deps = unquote(deps)
@@ -186,41 +189,40 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
             name: name
           )
 
-        {:pipeline, spread, mapper}
+        {:region, prepare, fan_out, mapper}
       end
     end
   end
 
-  # A reduce folds bare per-element values from an upstream map into a bare
-  # accumulator. The static `initial` param seeds it; the running accumulator is
-  # exposed to expressions as `$acc` and the current element as `$json`.
+  # A reduce is a `FanIn` that folds bare per-element values into a bare
+  # accumulator. The static `initial` seeds it; the running accumulator is `$acc`
+  # and the current element `$json`. The fan-in coordinator invokes the reducer
+  # as `reducer/2` (no `context/1`), so ambient namespaces are captured here.
+  # The compiler draws the structural fan-out binding.
   def __gen_build__(%{kind: :reduce, requires: requires}) do
     deps = deps_ast(requires)
 
     quote generated: true do
       @impl true
-      def build(params, %{name: name, map_name: map_name, ambient: ambient}) do
-        initial = Map.get(params, :initial)
+      def build(params, %{name: name, ambient: ambient}) do
+        reduce =
+          Runic.reduce(
+            Map.get(params, :initial),
+            fn element, acc ->
+              deps = Map.put(unquote(deps), :acc, acc)
 
-        # Runic's fan-in coordinator invokes the reducer as `reducer/2` (no
-        # `context/1` injection), so the ambient namespaces are captured here
-        # rather than resolved via `context/1`.
-        Runic.reduce(
-          initial,
-          fn element, acc ->
-            deps = Map.put(unquote(deps), :acc, acc)
+              expression_context =
+                %{"json" => element, "node" => %{}}
+                |> Hermitscale.Workflows.Expr.build_context(^ambient)
+                |> Map.put("acc", acc)
 
-            expression_context =
-              %{"json" => element, "node" => %{}}
-              |> Hermitscale.Workflows.Expr.build_context(^ambient)
-              |> Map.put("acc", acc)
+              resolved_params = Hermitscale.Workflows.Expr.resolve!(^params, expression_context)
+              work(resolved_params, element, deps)
+            end,
+            name: name
+          )
 
-            resolved_params = Hermitscale.Workflows.Expr.resolve!(^params, expression_context)
-            work(resolved_params, element, deps)
-          end,
-          name: name,
-          map: map_name
-        )
+        reduce.fan_in
       end
     end
   end

@@ -93,21 +93,36 @@ defmodule Hermitscale.Workflows.Compiler do
     end
   end
 
+  # Wires a map region as first-class Runic nodes: prepare -> fan_out -> mapper,
+  # then the per-item body chain, then (if present) the reduce's fan-in bound
+  # structurally to the fan-out. Body steps run per element via ordinary edges.
   defp compile_map_region(map_id, state, compile_context) do
     region = map_region(map_id, compile_context)
-    {spread, mapper, parents} = build_map_node(map_id, compile_context)
+    {prepare, fan_out, mapper, parents} = build_map_node(map_id, compile_context)
     parent_refs = output_refs(parents, state.outputs)
-    mapper = append_map_pipeline(mapper, region.body_ids, compile_context)
 
     workflow =
       state.workflow
-      |> add_node(spread, parent_refs)
-      |> Workflow.add(mapper, to: spread.name, log: false)
+      |> add_node(prepare, parent_refs)
+      |> Workflow.attach_fan_out(fan_out, to: prepare)
+      |> Workflow.add_step(fan_out, mapper)
+      |> Workflow.register_component(mapper)
       |> add_node_policy(map_id, compile_context)
-      |> add_node_policies(region.body_ids, compile_context)
+
+    {workflow, leaf} =
+      Enum.reduce(region.body_ids, {workflow, mapper}, fn body_id, {workflow, previous} ->
+        step = build_region_step(body_id, previous.name, compile_context)
+
+        workflow =
+          workflow
+          |> Workflow.add_step(previous, step)
+          |> add_node_policy(body_id, compile_context)
+
+        {workflow, step}
+      end)
 
     state =
-      %{state | outputs: Map.put(state.outputs, map_id, map_id), workflow: workflow}
+      %{state | outputs: Map.put(state.outputs, map_id, mapper.name), workflow: workflow}
       |> consume_nodes(region.body_ids)
 
     case region.reduce_id do
@@ -115,17 +130,17 @@ defmodule Hermitscale.Workflows.Compiler do
         state
 
       reduce_id ->
-        reduce = build_reduce_node(reduce_id, map_id, compile_context)
+        fan_in = build_reduce_node(reduce_id, compile_context)
 
         workflow =
           state.workflow
-          |> Workflow.add(reduce, to: map_id, log: false)
+          |> Workflow.attach_fan_in(fan_in, fan_out, from: leaf)
           |> add_node_policy(reduce_id, compile_context)
 
         %{
           state
           | consumed: MapSet.put(state.consumed, reduce_id),
-            outputs: Map.put(state.outputs, reduce_id, reduce_output(workflow, reduce_id)),
+            outputs: Map.put(state.outputs, reduce_id, fan_in.name),
             workflow: workflow
         }
     end
@@ -158,21 +173,15 @@ defmodule Hermitscale.Workflows.Compiler do
     refs = Expr.node_references(params) -- mains
     parents = mains ++ refs
 
-    {:pipeline, spread, mapper} =
+    {:region, prepare, fan_out, mapper} =
       build_node(id, params, %{name: id, ref_ids: refs}, compile_context)
 
-    {spread, mapper, parents}
+    {prepare, fan_out, mapper, parents}
   end
 
-  defp build_reduce_node(id, map_id, compile_context) do
+  defp build_reduce_node(id, compile_context) do
     params = node_params(id, compile_context)
-
-    build_node(
-      id,
-      params,
-      %{ambient: compile_context.ambient, map_name: map_id, name: id},
-      compile_context
-    )
+    build_node(id, params, %{ambient: compile_context.ambient, name: id}, compile_context)
   end
 
   defp build_region_step(id, previous_id, compile_context) do
@@ -190,99 +199,6 @@ defmodule Hermitscale.Workflows.Compiler do
     compile_context.modules
     |> Map.fetch!(id)
     |> apply(:build, [params, build_context])
-  end
-
-  # Splices the map region's body steps into the mapper's internal pipeline so
-  # they run once per fanned-out element, between the map and its reduce.
-  #
-  # WHY WE REACH INTO `mapper.pipeline` (a Runic internal):
-  #
-  # Runic only exposes a multi-step map body through the compile-time
-  # `Runic.map({step, [steps]})` macro, which pattern-matches step *AST* during
-  # macro expansion (see `Runic.map/2` and `pipeline_workflow_of_map_expression/3`
-  # in runic.ex). Our steps are built at runtime from cast params, so that macro
-  # form is unavailable to us — there is no public *runtime* builder for adding a
-  # step to a map's per-element pipeline.
-  #
-  # The obvious public-API alternatives do NOT work — both silently bypass the
-  # body step. We verified empirically with `map(×2) → step(+1) → reduce(sum)`
-  # over [1,2,3] (expected 15):
-  #
-  #   * step + reduce added to the main graph, reduce attached to the step:
-  #     the step is skipped and the reduce never fires.
-  #   * step + reduce both attached to the map in the main graph:
-  #     the reduce folds the raw map output (12), bypassing the step.
-  #
-  # The reason: a reduce's fan-in attaches to the map's pipeline `:leaf`
-  # (`Runic.Component.connect/3`, the `{map.name, :leaf}` lookup), and that leaf
-  # is derived purely from `map.pipeline`. Steps added to the *main* workflow
-  # graph after the map are never on the `fan_out → fan_in` flow path that Runic
-  # marks as "mapped" (per-element), so they are not executed per element.
-  #
-  # Therefore the only way to place a step between map and reduce is to extend
-  # `map.pipeline` itself: appending here makes the last body step the pipeline's
-  # leaf, which is exactly what the downstream reduce fans in from. In effect we
-  # reconstruct at runtime what the `Runic.map` macro builds at compile time.
-  #
-  # COUPLING / RISK: this depends on Runic internals — the `Map` struct's
-  # `:pipeline` field being a `Workflow`, and `connect/3`'s leaf semantics. Runic
-  # is an alpha dependency (`~> 0.1.0-alpha.8`), so both could change without
-  # notice; pin the version and re-verify the region tests on any Runic bump.
-  # `mapper.closure`/`mapper.hash` are left describing only the original
-  # single-fn map and are intentionally NOT updated — `connect/3` reads
-  # `map.pipeline`, not the closure, and hermitscale rehydrates by recompiling
-  # from the stored graph JSON rather than from a serialized Runic struct, so the
-  # stale closure is never consulted. The proper fix is an upstream runtime
-  # builder (e.g. `Runic.Workflow.Map.add_step/3`); until then this is the gap.
-  defp append_map_pipeline(mapper, body_ids, compile_context) do
-    pipeline =
-      Enum.reduce(body_ids, mapper.pipeline, fn id, pipeline ->
-        Workflow.add_step(
-          pipeline,
-          pipeline_leaf(pipeline),
-          build_region_step(id, previous_id(id, compile_context), compile_context)
-        )
-      end)
-
-    %{mapper | pipeline: pipeline}
-  end
-
-  defp pipeline_leaf(pipeline) do
-    pipeline
-    |> pipeline_leaves()
-    |> case do
-      [leaf] ->
-        leaf
-
-      leaves ->
-        raise ArgumentError, "map pipeline must have exactly one leaf, got #{length(leaves)}"
-    end
-  end
-
-  defp pipeline_leaves(pipeline) do
-    pipeline
-    |> pipeline_nodes()
-    |> Enum.reject(&(Workflow.next_steps(pipeline, &1) != []))
-  end
-
-  defp pipeline_nodes(pipeline), do: walk_pipeline(pipeline, Workflow.root(), MapSet.new())
-
-  defp walk_pipeline(pipeline, node, seen) do
-    if MapSet.member?(seen, node) do
-      []
-    else
-      seen = MapSet.put(seen, node)
-
-      pipeline
-      |> Workflow.next_steps(node)
-      |> Enum.flat_map(fn child -> [child | walk_pipeline(pipeline, child, seen)] end)
-    end
-  end
-
-  defp previous_id(id, compile_context) do
-    compile_context.main_parents
-    |> Map.fetch!(id)
-    |> List.first()
   end
 
   defp map_region(map_id, compile_context) do
@@ -319,12 +235,6 @@ defmodule Hermitscale.Workflows.Compiler do
 
   defp output_refs(parents, outputs) do
     Enum.map(parents, &Map.fetch!(outputs, &1))
-  end
-
-  defp reduce_output(workflow, reduce_id) do
-    workflow
-    |> Workflow.get_component!({reduce_id, :fan_in})
-    |> List.first()
   end
 
   defp consume_nodes(state, ids) do
@@ -368,10 +278,6 @@ defmodule Hermitscale.Workflows.Compiler do
 
   defp add_node(workflow, node, parents),
     do: Workflow.add(workflow, node, to: parents, log: false)
-
-  defp add_node_policies(workflow, ids, compile_context) do
-    Enum.reduce(ids, workflow, &add_node_policy(&2, &1, compile_context))
-  end
 
   defp add_node_policy(workflow, id, compile_context) do
     node_spec = Map.fetch!(compile_context.nodes, id)
