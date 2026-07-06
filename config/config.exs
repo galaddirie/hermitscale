@@ -14,10 +14,14 @@ config :hermitscale,
 config :hermitscale, Oban,
   engine: Oban.Engines.Basic,
   repo: Hermitscale.Repo,
-  queues: [default: 10],
+  queues: [default: 10, triggers: 10],
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}
   ]
+
+config :hermitscale, Hermitscale.Triggers,
+  start_runtime?: true,
+  webhook_await_timeout_ms: 30_000
 
 # Configure the endpoint
 config :hermitscale, HermitscaleWeb.Endpoint,

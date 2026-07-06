@@ -52,6 +52,7 @@ defmodule Hermitscale.Workflows.Validator do
 
       base_issues ++
         duplicate_node_issues(nodes) ++
+        trigger_issues(nodes, catalog, connections) ++
         node_issues(nodes, catalog, connections) ++
         expression_reference_issues(nodes, catalog, connections, nodes_by_id) ++
         connection_issues ++
@@ -223,6 +224,30 @@ defmodule Hermitscale.Workflows.Validator do
 
       _other ->
         []
+    end)
+  end
+
+  # Triggers are workflow entry points: they receive the firing payload from
+  # the dispatcher, never from another node.
+  defp trigger_issues(nodes, catalog, connections) do
+    inbound = MapSet.new(connections, & &1["to"])
+
+    Enum.with_index(nodes)
+    |> Enum.flat_map(fn {node, index} ->
+      with %{"id" => id, "type" => type, "version" => version} <- node,
+           {:ok, module} <- Catalog.fetch(catalog, type, version),
+           %{kind: :trigger} <- module.__catalog_node__(),
+           true <- MapSet.member?(inbound, id) do
+        [
+          issue(
+            "$.nodes[#{index}]",
+            :trigger_with_inputs,
+            "trigger node #{inspect(id)} cannot have incoming connections"
+          )
+        ]
+      else
+        _other -> []
+      end
     end)
   end
 

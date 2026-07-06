@@ -132,10 +132,25 @@ defmodule Hermitscale.Workflows do
     output = terminal_outputs(workflow, run.graph.definition)
     now = DateTime.utc_now(:second)
 
-    run
-    |> Run.changeset(%{status: :complete, output: json_payload(output), completed_at: now})
-    |> Repo.update()
+    result =
+      run
+      |> Run.changeset(%{status: :complete, output: json_payload(output), completed_at: now})
+      |> Repo.update()
+
+    with {:ok, run} <- result do
+      Phoenix.PubSub.broadcast(Hermitscale.PubSub, run_topic(run.id), {:run_complete, run.id})
+      {:ok, run}
+    end
   end
+
+  @doc """
+  Subscribes the caller to completion events for a run (`{:run_complete, id}`).
+  """
+  def subscribe_run(run_id) do
+    Phoenix.PubSub.subscribe(Hermitscale.PubSub, run_topic(run_id))
+  end
+
+  defp run_topic(run_id), do: "workflow_runs:#{run_id}"
 
   # A run's result is the output of its terminal nodes — the graph nodes nothing
   # else consumes. Keyed by node id so multi-output graphs round-trip cleanly,

@@ -37,6 +37,33 @@ defmodule Hermitscale.Workflows.Credentials do
   end
 
   @doc """
+  Resolves the credential binding for a single node at call time.
+
+  Unlike `resolve_run_context/3`, which resolves once when a run starts, this
+  is for long-lived trigger runtimes that must re-resolve on every poll or
+  reconnect so rotated tokens stay fresh. Returns `{:ok, nil}` when the node
+  declares no credential requirement or the graph binds none.
+  """
+  def resolve_node(graph, node_id) when is_map(graph) and is_binary(node_id) do
+    catalog = Catalog.index()
+
+    node =
+      graph
+      |> Validator.node_specs()
+      |> Enum.find(&(&1["id"] == node_id))
+
+    case node do
+      nil ->
+        {:error, {:missing_node, node_id}}
+
+      node ->
+        with {:ok, {_node_id, %{credentials: token}}} <- node_context(node, graph, catalog) do
+          {:ok, token}
+        end
+    end
+  end
+
+  @doc """
   Returns credential requirements grouped by provider for editor consent flows.
   """
   def requirements(graph) when is_map(graph) do
@@ -71,6 +98,10 @@ defmodule Hermitscale.Workflows.Credentials do
 
     graph
     |> Validator.node_specs()
+    # Trigger entry steps never consume credentials at run time (their tokens
+    # are resolved by the trigger runtime per poll/connect), so fetching one
+    # per run would be a wasted provider round-trip.
+    |> Enum.reject(&trigger_node?(&1, catalog))
     |> Enum.reduce_while({:ok, %{}}, fn node, {:ok, context} ->
       case node_context(node, graph, catalog) do
         {:ok, nil} -> {:cont, {:ok, context}}
@@ -78,6 +109,13 @@ defmodule Hermitscale.Workflows.Credentials do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp trigger_node?(node, catalog) do
+    case Catalog.fetch(catalog, node["type"], node["version"]) do
+      {:ok, module} -> match?(%{kind: :trigger}, module.__catalog_node__())
+      {:error, :not_found} -> false
+    end
   end
 
   defp node_context(node, graph, catalog) do

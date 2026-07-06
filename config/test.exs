@@ -15,6 +15,13 @@ config :hermitscale, Hermitscale.Repo,
 
 config :hermitscale, Oban, testing: :manual
 
+# The reconciler and scheduler are started per-test inside the SQL sandbox
+# instead of globally, and webhook wait-mode falls back fast.
+config :hermitscale, Hermitscale.Triggers,
+  start_runtime?: false,
+  webhook_await_timeout_ms: 250,
+  run_opts: [executor: :inline]
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :hermitscale, HermitscaleWeb.Endpoint,

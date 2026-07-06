@@ -20,6 +20,13 @@ defmodule HermitscaleWeb.Router do
     get "/", PageController, :home
   end
 
+  scope "/hooks", HermitscaleWeb do
+    pipe_through :api
+
+    post "/:token", WebhookController, :inbound
+    post "/:token/*rest", WebhookController, :inbound
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", HermitscaleWeb do
   #   pipe_through :api
