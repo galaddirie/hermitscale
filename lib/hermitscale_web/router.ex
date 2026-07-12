@@ -17,12 +17,6 @@ defmodule HermitscaleWeb.Router do
     plug :accepts, ["json"]
   end
 
-  scope "/", HermitscaleWeb do
-    pipe_through :browser
-
-    get "/", PageController, :home
-  end
-
   scope "/hooks", HermitscaleWeb do
     pipe_through :api
 
@@ -56,6 +50,8 @@ defmodule HermitscaleWeb.Router do
 
   scope "/", HermitscaleWeb do
     pipe_through [:browser, :require_authenticated_user]
+
+    get "/", PageController, :home
 
     live_session :require_authenticated_user,
       on_mount: [{HermitscaleWeb.UserAuth, :require_authenticated}] do

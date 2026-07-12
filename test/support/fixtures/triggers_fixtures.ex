@@ -3,6 +3,7 @@ defmodule Hermitscale.TriggersFixtures do
   Test fixtures for trigger-bearing workflow graphs.
   """
 
+  alias Hermitscale.Accounts.Scope
   alias Hermitscale.{Triggers, Workflows}
 
   def trigger_graph(trigger_node, attrs \\ %{}) do
@@ -47,9 +48,9 @@ defmodule Hermitscale.TriggersFixtures do
   @doc """
   Inserts a graph for the given definition map.
   """
-  def create_graph!(definition) do
+  def create_graph!(%Scope{} = scope, definition) do
     {:ok, graph} =
-      Workflows.create_graph(%{
+      Workflows.create_graph(scope, %{
         id: definition["id"],
         name: definition["name"],
         schema_version: definition["schema_version"],
@@ -64,9 +65,9 @@ defmodule Hermitscale.TriggersFixtures do
   Inserts and activates a graph built around the given trigger node; returns
   `{graph, trigger}` for the single trigger.
   """
-  def activate_trigger_graph!(trigger_node, attrs \\ %{}) do
-    graph = create_graph!(trigger_graph(trigger_node, attrs))
-    {:ok, %{graph: graph, triggers: [trigger]}} = Triggers.activate_graph(graph)
+  def activate_trigger_graph!(%Scope{} = scope, trigger_node, attrs \\ %{}) do
+    graph = create_graph!(scope, trigger_graph(trigger_node, attrs))
+    {:ok, %{graph: graph, triggers: [trigger]}} = Triggers.activate_graph(scope, graph)
     {graph, trigger}
   end
 end

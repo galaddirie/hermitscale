@@ -1,12 +1,17 @@
 defmodule Hermitscale.Triggers.RuntimeTest do
   use Hermitscale.DataCase, async: false
 
+  import Hermitscale.AccountsFixtures
   import Hermitscale.TriggersFixtures
 
   alias Hermitscale.Triggers
   alias Hermitscale.Triggers.{Firing, Reconciler, Trigger}
   alias Hermitscale.Triggers.Runtime.{Poller, StreamSource}
   alias Hermitscale.Workflows.Run
+
+  setup do
+    %{scope: user_scope_fixture()}
+  end
 
   defp wait_until(fun, timeout \\ 3_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
@@ -27,12 +32,24 @@ defmodule Hermitscale.Triggers.RuntimeTest do
     end
   end
 
-  describe "Poller" do
-    test "polls, dispatches runs, and persists the cursor" do
-      {_graph, trigger} =
-        activate_trigger_graph!(polling_trigger_node(%{"poll_interval_ms" => 25}))
+  defp stop_source_and_wait_for_runs!(pid) do
+    ref = Process.monitor(pid)
+    :ok = GenServer.stop(pid)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
 
-      start_supervised!({Poller, trigger_id: trigger.id})
+    wait_until(fn ->
+      Run
+      |> Ecto.Query.where([run], run.status == :running)
+      |> Repo.aggregate(:count) == 0
+    end)
+  end
+
+  describe "Poller" do
+    test "polls, dispatches runs, and persists the cursor", %{scope: scope} do
+      {_graph, trigger} =
+        activate_trigger_graph!(scope, polling_trigger_node(%{"poll_interval_ms" => 25}))
+
+      poller = start_supervised!({Poller, trigger_id: trigger.id})
 
       wait_until(fn -> Repo.aggregate(Run, :count) >= 2 end)
       wait_until(fn -> (Repo.get!(Trigger, trigger.id).cursor["count"] || 0) >= 2 end)
@@ -42,11 +59,14 @@ defmodule Hermitscale.Triggers.RuntimeTest do
 
       run = Repo.one!(Ecto.Query.from(r in Run, limit: 1, order_by: r.inserted_at))
       assert run.input["value"]["trigger"]["mode"] == "polling"
+
+      stop_source_and_wait_for_runs!(poller)
     end
 
-    test "resolves credentials freshly for each poll and passes them in ctx" do
+    test "resolves credentials freshly for each poll and passes them in ctx", %{scope: scope} do
       graph =
         create_graph!(
+          scope,
           trigger_graph(
             polling_trigger_node(%{
               "poll_interval_ms" => 25,
@@ -65,18 +85,23 @@ defmodule Hermitscale.Triggers.RuntimeTest do
           )
         )
 
-      {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(graph)
-      start_supervised!({Poller, trigger_id: trigger.id})
+      {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(scope, graph)
+      poller = start_supervised!({Poller, trigger_id: trigger.id})
 
       wait_until(fn -> Repo.aggregate(Run, :count) >= 1 end)
 
       run = Repo.one!(Ecto.Query.from(r in Run, limit: 1, order_by: r.inserted_at))
       assert run.input["value"]["data"]["access_token"] == "token:cred_42"
+
+      stop_source_and_wait_for_runs!(poller)
     end
 
-    test "a persistently failing trigger is flagged errored and the poller stops" do
+    test "a persistently failing trigger is flagged errored and the poller stops", %{
+      scope: scope
+    } do
       {_graph, trigger} =
         activate_trigger_graph!(
+          scope,
           polling_trigger_node(%{"poll_interval_ms" => 25, "behavior" => "fail"})
         )
 
@@ -90,8 +115,8 @@ defmodule Hermitscale.Triggers.RuntimeTest do
   end
 
   describe "StreamSource" do
-    test "connects and fires a run per emitted event" do
-      {_graph, trigger} = activate_trigger_graph!(stream_trigger_node())
+    test "connects and fires a run per emitted event", %{scope: scope} do
+      {_graph, trigger} = activate_trigger_graph!(scope, stream_trigger_node())
 
       pid = start_supervised!({StreamSource, trigger_id: trigger.id})
 
@@ -107,11 +132,13 @@ defmodule Hermitscale.Triggers.RuntimeTest do
         |> Enum.sort_by(& &1["frame"])
 
       assert inputs == [%{"frame" => 1}, %{"frame" => 2}]
+
+      stop_source_and_wait_for_runs!(pid)
     end
 
-    test "a connection that cannot be established flags the trigger errored" do
+    test "a connection that cannot be established flags the trigger errored", %{scope: scope} do
       {_graph, trigger} =
-        activate_trigger_graph!(stream_trigger_node(%{"behavior" => "refuse"}))
+        activate_trigger_graph!(scope, stream_trigger_node(%{"behavior" => "refuse"}))
 
       pid = start_supervised!({StreamSource, trigger_id: trigger.id, failure_threshold: 1})
       ref = Process.monitor(pid)
@@ -144,14 +171,17 @@ defmodule Hermitscale.Triggers.RuntimeTest do
     defp registered(trigger), do: Registry.lookup(:test_trigger_registry, trigger.id)
 
     test "starts sources for enabled triggers and stops them when disabled",
-         %{reconciler: reconciler} do
+         %{reconciler: reconciler, scope: scope} do
       {_graph, trigger} =
-        activate_trigger_graph!(polling_trigger_node(%{"poll_interval_ms" => 3_600_000}))
+        activate_trigger_graph!(
+          scope,
+          polling_trigger_node(%{"poll_interval_ms" => 3_600_000})
+        )
 
       Reconciler.sync(reconciler)
       assert [{_pid, _fingerprint}] = registered(trigger)
 
-      {:ok, _disabled} = Triggers.disable_trigger(trigger)
+      {:ok, _disabled} = Triggers.disable_trigger(scope, trigger)
 
       wait_until(fn ->
         Reconciler.sync(reconciler)
@@ -159,9 +189,15 @@ defmodule Hermitscale.Triggers.RuntimeTest do
       end)
     end
 
-    test "restarts a source whose trigger config changed", %{reconciler: reconciler} do
+    test "restarts a source whose trigger config changed", %{
+      reconciler: reconciler,
+      scope: scope
+    } do
       {_graph, trigger} =
-        activate_trigger_graph!(polling_trigger_node(%{"poll_interval_ms" => 3_600_000}))
+        activate_trigger_graph!(
+          scope,
+          polling_trigger_node(%{"poll_interval_ms" => 3_600_000})
+        )
 
       Reconciler.sync(reconciler)
       assert [{original_pid, _fingerprint}] = registered(trigger)

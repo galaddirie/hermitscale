@@ -6,10 +6,13 @@ defmodule Hermitscale.Workflows.Graph do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias Hermitscale.Accounts.{Scope, User}
+
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
   schema "workflow_graphs" do
+    field :user_id, :id
     field :schema_version, :integer, default: 1
     field :name, :string
     field :definition, :map
@@ -22,7 +25,8 @@ defmodule Hermitscale.Workflows.Graph do
     timestamps(type: :utc_datetime)
   end
 
-  def changeset(graph, attrs) do
+  @doc false
+  def authoring_changeset(graph, attrs, %Scope{user: %User{id: user_id}}) do
     graph
     |> cast(attrs, [
       :id,
@@ -33,9 +37,18 @@ defmodule Hermitscale.Workflows.Graph do
       :validation_issues,
       :validated_at
     ])
-    |> validate_required([:id, :schema_version, :name, :definition, :status])
+    |> put_change(:user_id, user_id)
+    |> validate_required([:id, :user_id, :schema_version, :name, :definition, :status])
     |> validate_format(:id, ~r/^[A-Za-z][A-Za-z0-9_:-]*$/)
     |> validate_number(:schema_version, greater_than: 0)
+    |> foreign_key_constraint(:user_id)
+  end
+
+  @doc false
+  def status_changeset(graph, attrs) do
+    graph
+    |> cast(attrs, [:status])
+    |> validate_required([:status])
   end
 
   def put_validation_issues(changeset, issues) do

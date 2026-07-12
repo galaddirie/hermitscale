@@ -67,17 +67,17 @@ defmodule HermitscaleWeb.WebhookController do
   end
 
   defp respond(conn, "when_finished", run) do
-    :ok = Workflows.subscribe_run(run.id)
+    :ok = Workflows.subscribe_run_for_system(run.id)
 
     # Re-read after subscribing: a fast run may have completed in between, in
     # which case no broadcast is coming.
-    run = Workflows.get_run!(run.id)
+    run = Workflows.get_run_for_system!(run.id)
 
     if run.status == :complete do
       completed(conn, run)
     else
       receive do
-        {:run_complete, run_id} -> completed(conn, Workflows.get_run!(run_id))
+        {:run_complete, run_id} -> completed(conn, Workflows.get_run_for_system!(run_id))
       after
         await_timeout_ms() -> accepted(conn, run)
       end

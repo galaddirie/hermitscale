@@ -30,4 +30,10 @@ defmodule Hermitscale.Accounts.Scope do
   end
 
   def for_user(nil), do: nil
+
+  @doc false
+  def assert_owner!(%__MODULE__{} = scope, %{user_id: user_id}) do
+    true = user_id == scope.user.id
+    :ok
+  end
 end

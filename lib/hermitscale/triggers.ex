@@ -10,6 +10,7 @@ defmodule Hermitscale.Triggers do
 
   import Ecto.Query
 
+  alias Hermitscale.Accounts.Scope
   alias Hermitscale.Repo
   alias Hermitscale.Triggers.{Dispatcher, Trigger}
   alias Hermitscale.Workflows.{Catalog, Credentials, Graph, Validator}
@@ -23,11 +24,33 @@ defmodule Hermitscale.Triggers do
 
   def subscribe, do: Phoenix.PubSub.subscribe(@pubsub, @topic)
 
+  def get_trigger!(%Scope{} = scope, id) do
+    Trigger
+    |> join(:inner, [trigger], graph in assoc(trigger, :graph))
+    |> where([_trigger, graph], graph.user_id == ^scope.user.id)
+    |> Repo.get!(id)
+  end
+
+  @doc false
   def get_trigger!(id), do: Repo.get!(Trigger, id)
 
-  def list_triggers(%Graph{id: graph_id}), do: list_triggers(graph_id)
+  def list_triggers(%Scope{} = scope, %Graph{id: graph_id} = graph) do
+    Scope.assert_owner!(scope, graph)
+    list_triggers(scope, graph_id)
+  end
 
-  def list_triggers(graph_id) when is_binary(graph_id) do
+  def list_triggers(%Scope{} = scope, graph_id) when is_binary(graph_id) do
+    Trigger
+    |> join(:inner, [trigger], graph in assoc(trigger, :graph))
+    |> where(
+      [trigger, graph],
+      trigger.workflow_graph_id == ^graph_id and graph.user_id == ^scope.user.id
+    )
+    |> order_by([trigger, _graph], asc: trigger.node_id)
+    |> Repo.all()
+  end
+
+  defp list_triggers_for_graph(graph_id) do
     Trigger
     |> where([trigger], trigger.workflow_graph_id == ^graph_id)
     |> order_by([trigger], asc: trigger.node_id)
@@ -56,13 +79,14 @@ defmodule Hermitscale.Triggers do
   cursors), removes rows for deleted trigger nodes, and marks the graph
   active. Requires at least one trigger node.
   """
-  def activate_graph(%Graph{} = graph) do
+  def activate_graph(%Scope{} = scope, %Graph{} = graph) do
+    Scope.assert_owner!(scope, graph)
     definition = graph.definition
 
     with :ok <- Validator.validate(definition),
          {:ok, trigger_nodes} <- trigger_nodes(definition),
          {:ok, attrs_list} <- derive_trigger_attrs(graph, trigger_nodes) do
-      existing = Map.new(list_triggers(graph.id), &{&1.node_id, &1})
+      existing = Map.new(list_triggers_for_graph(graph.id), &{&1.node_id, &1})
       keep_ids = Enum.map(attrs_list, & &1.node_id)
 
       result =
@@ -83,7 +107,7 @@ defmodule Hermitscale.Triggers do
 
           graph =
             graph
-            |> Graph.changeset(%{status: :active})
+            |> Graph.status_changeset(%{status: :active})
             |> Repo.update!()
 
           %{graph: graph, triggers: triggers}
@@ -100,7 +124,9 @@ defmodule Hermitscale.Triggers do
   Deactivates a graph: disables its triggers (rows are kept so webhook URLs
   and poll cursors survive reactivation) and returns the graph to draft.
   """
-  def deactivate_graph(%Graph{} = graph) do
+  def deactivate_graph(%Scope{} = scope, %Graph{} = graph) do
+    Scope.assert_owner!(scope, graph)
+
     result =
       Repo.transaction(fn ->
         Trigger
@@ -108,7 +134,7 @@ defmodule Hermitscale.Triggers do
         |> Repo.update_all(set: [status: :disabled])
 
         graph
-        |> Graph.changeset(%{status: :draft})
+        |> Graph.status_changeset(%{status: :draft})
         |> Repo.update!()
       end)
 
@@ -118,8 +144,17 @@ defmodule Hermitscale.Triggers do
     end
   end
 
-  def enable_trigger(%Trigger{} = trigger), do: set_status(trigger, :enabled, nil)
-  def disable_trigger(%Trigger{} = trigger), do: set_status(trigger, :disabled, nil)
+  def enable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
+    scope
+    |> get_trigger!(trigger.id)
+    |> set_status(:enabled, nil)
+  end
+
+  def disable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
+    scope
+    |> get_trigger!(trigger.id)
+    |> set_status(:disabled, nil)
+  end
 
   @doc """
   Flags a trigger as errored (e.g. a poller that failed past its retry
@@ -133,10 +168,11 @@ defmodule Hermitscale.Triggers do
 
   @doc """
   Fires a manual trigger with a user-supplied payload. Ad-hoc test runs of a
-  draft graph should call `Workflows.start_run/3` directly instead — this path
+  draft graph should call `Workflows.start_run/4` directly instead — this path
   is for activated manual triggers, so firings share the audit trail.
   """
-  def fire_manual(%Trigger{mode: :manual} = trigger, payload, opts \\ []) do
+  def fire_manual(%Scope{} = scope, %Trigger{} = trigger, payload, opts \\ []) do
+    %Trigger{mode: :manual} = trigger = get_trigger!(scope, trigger.id)
     Dispatcher.fire(trigger, payload, opts)
   end
 
@@ -228,7 +264,7 @@ defmodule Hermitscale.Triggers do
   end
 
   defp derive_trigger_attrs(graph, trigger_nodes) do
-    existing = Map.new(list_triggers(graph.id), &{&1.node_id, &1})
+    existing = Map.new(list_triggers_for_graph(graph.id), &{&1.node_id, &1})
 
     trigger_nodes
     |> Enum.reduce_while([], fn {node, module, spec}, acc ->

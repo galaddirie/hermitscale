@@ -11,7 +11,7 @@ defmodule Hermitscale.Triggers.Dispatcher do
        concurrently running runs for the graph (over-limit firings are
        recorded as `:rejected`).
     3. Envelope: a uniform provenance wrapper every run input carries.
-    4. Dispatch: `Workflows.start_run/3` on the trigger's graph.
+    4. Dispatch: `Workflows.start_run_from_trigger/3` on the trigger's graph.
   """
 
   import Ecto.Query
@@ -36,7 +36,7 @@ defmodule Hermitscale.Triggers.Dispatcher do
     * `:idempotency_key` — stable identity of the source event (webhook
       delivery id, poll event key, schedule occurrence). Defaults to a fresh
       UUID, i.e. no deduplication.
-    * `:run_opts` — options forwarded to `Workflows.start_run/3`.
+    * `:run_opts` — options forwarded to `Workflows.start_run_from_trigger/3`.
   """
   @spec fire(Trigger.t() | struct(), map(), keyword()) :: result()
   def fire(%Trigger{} = trigger, payload, opts \\ []) do
@@ -120,7 +120,7 @@ defmodule Hermitscale.Triggers.Dispatcher do
   defp dispatch(trigger, firing, payload, opts) do
     envelope = envelope(trigger, firing, payload)
 
-    case Workflows.start_run(trigger.graph, envelope, run_opts(opts)) do
+    case Workflows.start_run_from_trigger(trigger.graph, envelope, run_opts(opts)) do
       {:ok, run} ->
         conclude(firing, %{run_id: run.id})
         {:ok, run}

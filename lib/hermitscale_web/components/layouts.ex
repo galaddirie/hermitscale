@@ -35,40 +35,87 @@ defmodule HermitscaleWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex flex-column px-1 space-x-4 items-center">
-          <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
-          </li>
-          <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
-          </li>
-          <li>
+    <div class="min-h-dvh bg-slate-50 text-slate-950 dark:bg-slate-950 dark:text-slate-100">
+      <header class="sticky top-0 z-40 border-b border-slate-200/80 bg-white/85 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/80">
+        <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
+          <.link
+            href={~p"/"}
+            id="app-home-link"
+            class="group inline-flex items-center gap-3 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-950"
+          >
+            <span class="flex size-9 items-center justify-center rounded-xl bg-slate-950 shadow-sm transition group-hover:-translate-y-0.5 dark:bg-white">
+              <.icon name="hero-bolt" class="size-5 text-emerald-400 dark:text-emerald-600" />
+            </span>
+            <span>
+              <span class="block text-sm font-semibold tracking-tight text-slate-950 dark:text-white">Hermitscale</span>
+              <span class="block text-[10px] font-medium uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Automation OS</span>
+            </span>
+          </.link>
+
+          <nav id="app-navigation" class="flex items-center gap-1.5" aria-label="Primary navigation">
+            <%= if @current_scope && @current_scope.user do %>
+              <.link
+                href={~p"/"}
+                class="hidden rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white sm:inline-flex"
+              >
+                Workflows
+              </.link>
+              <.link
+                href={~p"/users/settings"}
+                class="hidden rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white sm:inline-flex"
+              >
+                Settings
+              </.link>
+              <span
+                id="current-user-email"
+                class="hidden max-w-44 truncate rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600 dark:bg-slate-900 dark:text-slate-300 lg:inline-flex"
+              >
+                {@current_scope.user.email}
+              </span>
+              <.link
+                href={~p"/users/log-out"}
+                method="delete"
+                id="log-out-link"
+                class="rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                Log out
+              </.link>
+            <% else %>
+              <.link
+                href={~p"/users/log-in"}
+                id="log-in-link"
+                class="rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                Log in
+              </.link>
+              <.link
+                href={~p"/users/register"}
+                id="register-link"
+                class="hidden rounded-lg bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200 dark:focus-visible:ring-offset-slate-950 sm:inline-flex"
+              >
+                Create account
+              </.link>
+            <% end %>
             <.theme_toggle />
-          </li>
-          <li>
-            <a href="https://phoenix.hexdocs.pm/overview.html" class="btn btn-primary">
-              Get Started <span aria-hidden="true">&rarr;</span>
-            </a>
-          </li>
-        </ul>
-      </div>
-    </header>
+          </nav>
+        </div>
+      </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
-        {render_slot(@inner_block)}
-      </div>
-    </main>
+      <main class="px-4 py-10 sm:px-6 sm:py-14 lg:px-8">
+        <div class="mx-auto max-w-7xl">
+          {render_slot(@inner_block)}
+        </div>
+      </main>
 
-    <.flash_group flash={@flash} />
+      <footer class="border-t border-slate-200/80 px-4 py-6 dark:border-slate-800 sm:px-6 lg:px-8">
+        <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
+          <span>Hermitscale workflow control plane</span>
+          <span class="hidden sm:inline">Securely scoped to the signed-in user</span>
+        </div>
+      </footer>
+
+      <.flash_group flash={@flash} />
+    </div>
     """
   end
 
@@ -124,35 +171,47 @@ defmodule HermitscaleWeb.Layouts do
   @doc """
   Provides dark vs light theme toggle based on themes defined in app.css.
 
-  See <head> in root.html.heex which applies the theme before page load.
+  The bundled app.js persists the choice and applies the matching data attributes.
   """
   def theme_toggle(assigns) do
     ~H"""
-    <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">
-      <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=light]_&]:left-1/3 [[data-theme=dark]_&]:left-2/3 [[data-theme-source=system]_&]:!left-0 transition-[left]" />
+    <div
+      id="theme-toggle"
+      class="relative ml-1 flex items-center rounded-full border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-700 dark:bg-slate-900"
+    >
+      <div class="pointer-events-none absolute left-0.5 top-0.5 size-7 rounded-full bg-white shadow-sm ring-1 ring-slate-950/5 transition-transform duration-200 [[data-theme=light]_&]:translate-x-7 [[data-theme=dark]_&]:translate-x-14 [[data-theme-source=system]_&]:!translate-x-0 dark:bg-slate-700 dark:ring-white/10" />
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        id="theme-system"
+        type="button"
+        class="relative z-10 flex size-7 cursor-pointer items-center justify-center rounded-full text-slate-500 transition hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-400 dark:hover:text-white"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="system"
+        aria-label="Use system theme"
       >
-        <.icon name="hero-computer-desktop-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-computer-desktop-micro" class="size-3.5" />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        id="theme-light"
+        type="button"
+        class="relative z-10 flex size-7 cursor-pointer items-center justify-center rounded-full text-slate-500 transition hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-400 dark:hover:text-white"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="light"
+        aria-label="Use light theme"
       >
-        <.icon name="hero-sun-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-sun-micro" class="size-3.5" />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        id="theme-dark"
+        type="button"
+        class="relative z-10 flex size-7 cursor-pointer items-center justify-center rounded-full text-slate-500 transition hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-400 dark:hover:text-white"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="dark"
+        aria-label="Use dark theme"
       >
-        <.icon name="hero-moon-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-moon-micro" class="size-3.5" />
       </button>
     </div>
     """

@@ -2,14 +2,19 @@ defmodule Hermitscale.Triggers.DispatcherTest do
   use Hermitscale.DataCase, async: false
 
   import Ecto.Query
+  import Hermitscale.AccountsFixtures
   import Hermitscale.TriggersFixtures
 
   alias Hermitscale.Triggers
   alias Hermitscale.Triggers.{Dispatcher, Firing}
   alias Hermitscale.Workflows.Run
 
-  test "fires a run and records a dispatched firing" do
-    {_graph, trigger} = activate_trigger_graph!(manual_trigger_node())
+  setup do
+    %{scope: user_scope_fixture()}
+  end
+
+  test "fires a run and records a dispatched firing", %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
     assert {:ok, %Run{} = run} = Dispatcher.fire(trigger, %{"n" => 1})
 
@@ -18,8 +23,8 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     assert firing.run_id == run.id
   end
 
-  test "dedupes on idempotency key" do
-    {_graph, trigger} = activate_trigger_graph!(manual_trigger_node())
+  test "dedupes on idempotency key", %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
     assert {:ok, %Run{}} = Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
     assert {:ok, :deduped} = Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
@@ -28,8 +33,8 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     assert Repo.aggregate(Run, :count) == 1
   end
 
-  test "a failed firing can be retried under the same key" do
-    {graph, trigger} = activate_trigger_graph!(manual_trigger_node())
+  test "a failed firing can be retried under the same key", %{scope: scope} do
+    {graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
     # Corrupt the stored definition under the changeset's radar so start_run
     # fails at compile time.
@@ -51,12 +56,15 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     assert Repo.aggregate(Firing, :count) == 1
   end
 
-  test "rejects firings over the max_concurrent_runs limit" do
+  test "rejects firings over the max_concurrent_runs limit", %{scope: scope} do
     {graph, trigger} =
-      activate_trigger_graph!(manual_trigger_node(%{"max_concurrent_runs" => 1}))
+      activate_trigger_graph!(scope, manual_trigger_node(%{"max_concurrent_runs" => 1}))
 
     {:ok, _running} =
-      Hermitscale.Workflows.create_run(graph, %{status: :running, id: Ecto.UUID.generate()})
+      Hermitscale.Workflows.create_run(scope, graph, %{
+        status: :running,
+        id: Ecto.UUID.generate()
+      })
 
     assert {:error, :rejected} = Dispatcher.fire(trigger, %{"n" => 1})
 
@@ -65,10 +73,10 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     assert Repo.aggregate(from(r in Run, where: r.status == :running), :count) == 1
   end
 
-  test "refuses to fire disabled and errored triggers" do
-    {_graph, trigger} = activate_trigger_graph!(manual_trigger_node())
+  test "refuses to fire disabled and errored triggers", %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
-    {:ok, disabled} = Triggers.disable_trigger(trigger)
+    {:ok, disabled} = Triggers.disable_trigger(scope, trigger)
     assert {:error, :disabled} = Dispatcher.fire(disabled, %{})
 
     {:ok, errored} = Triggers.mark_errored(disabled, :boom)

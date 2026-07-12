@@ -3,10 +3,15 @@ defmodule Hermitscale.Triggers.SchedulerTest do
   use Oban.Testing, repo: Hermitscale.Repo
 
   import Ecto.Query
+  import Hermitscale.AccountsFixtures
   import Hermitscale.TriggersFixtures
 
   alias Hermitscale.Triggers.{FireWorker, Firing, Scheduler, Trigger}
   alias Hermitscale.Workflows.Run
+
+  setup do
+    %{scope: user_scope_fixture()}
+  end
 
   defp start_scheduler! do
     start_supervised!({Scheduler, name: :test_scheduler, tick_ms: :timer.hours(1)})
@@ -20,8 +25,12 @@ defmodule Hermitscale.Triggers.SchedulerTest do
     |> Repo.update_all(set: [next_fire_at: past])
   end
 
-  test "a tick enqueues one unique job per due trigger and advances next_fire_at" do
-    {_graph, trigger} = activate_trigger_graph!(schedule_trigger_node(%{"cron" => "* * * * *"}))
+  test "a tick enqueues one unique job per due trigger and advances next_fire_at", %{
+    scope: scope
+  } do
+    {_graph, trigger} =
+      activate_trigger_graph!(scope, schedule_trigger_node(%{"cron" => "* * * * *"}))
+
     make_due!(trigger)
     scheduler = start_scheduler!()
 
@@ -35,16 +44,20 @@ defmodule Hermitscale.Triggers.SchedulerTest do
     assert Scheduler.tick(scheduler) == 0
   end
 
-  test "triggers scheduled in the future are not fired" do
-    {_graph, _trigger} = activate_trigger_graph!(schedule_trigger_node(%{"cron" => "* * * * *"}))
+  test "triggers scheduled in the future are not fired", %{scope: scope} do
+    {_graph, _trigger} =
+      activate_trigger_graph!(scope, schedule_trigger_node(%{"cron" => "* * * * *"}))
+
     scheduler = start_scheduler!()
 
     assert Scheduler.tick(scheduler) == 0
     refute_enqueued(worker: FireWorker)
   end
 
-  test "FireWorker dispatches exactly one run per occurrence, across retries" do
-    {_graph, trigger} = activate_trigger_graph!(schedule_trigger_node(%{"cron" => "* * * * *"}))
+  test "FireWorker dispatches exactly one run per occurrence, across retries", %{scope: scope} do
+    {_graph, trigger} =
+      activate_trigger_graph!(scope, schedule_trigger_node(%{"cron" => "* * * * *"}))
+
     scheduled_for = DateTime.to_iso8601(trigger.next_fire_at)
     args = %{"trigger_id" => trigger.id, "scheduled_for" => scheduled_for}
 
@@ -61,9 +74,11 @@ defmodule Hermitscale.Triggers.SchedulerTest do
     assert envelope["trigger"]["mode"] == "schedule"
   end
 
-  test "FireWorker is a no-op for deleted or disabled triggers" do
-    {_graph, trigger} = activate_trigger_graph!(schedule_trigger_node(%{"cron" => "* * * * *"}))
-    {:ok, _disabled} = Hermitscale.Triggers.disable_trigger(trigger)
+  test "FireWorker is a no-op for deleted or disabled triggers", %{scope: scope} do
+    {_graph, trigger} =
+      activate_trigger_graph!(scope, schedule_trigger_node(%{"cron" => "* * * * *"}))
+
+    {:ok, _disabled} = Hermitscale.Triggers.disable_trigger(scope, trigger)
 
     args = %{
       "trigger_id" => trigger.id,

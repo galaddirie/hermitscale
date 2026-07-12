@@ -5,22 +5,26 @@ defmodule Hermitscale.Workflows do
 
   import Ecto.Query
 
+  alias Hermitscale.Accounts.Scope
   alias Hermitscale.Repo
   alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Run, Validator}
   alias Runic.Workflow
 
   @runner Hermitscale.WorkflowRunner
 
-  def list_graphs do
+  def list_graphs(%Scope{} = scope) do
     Graph
+    |> where([graph], graph.user_id == ^scope.user.id)
     |> order_by([graph], asc: graph.name)
     |> Repo.all()
   end
 
-  def get_graph!(id), do: Repo.get!(Graph, id)
+  def get_graph!(%Scope{} = scope, id) do
+    Repo.get_by!(Graph, id: id, user_id: scope.user.id)
+  end
 
-  def create_graph(attrs) do
-    changeset = Graph.changeset(%Graph{}, attrs)
+  def create_graph(%Scope{} = scope, attrs) do
+    changeset = Graph.authoring_changeset(%Graph{}, attrs, scope)
     definition = get_definition(attrs)
 
     with :ok <- Validator.validate(definition),
@@ -32,8 +36,10 @@ defmodule Hermitscale.Workflows do
     end
   end
 
-  def update_graph(%Graph{} = graph, attrs) do
-    changeset = Graph.changeset(graph, attrs)
+  def update_graph(%Scope{} = scope, %Graph{} = graph, attrs) do
+    Scope.assert_owner!(scope, graph)
+
+    changeset = Graph.authoring_changeset(graph, attrs, scope)
     definition = get_definition(attrs) || graph.definition
 
     with :ok <- Validator.validate(definition),
@@ -45,15 +51,21 @@ defmodule Hermitscale.Workflows do
     end
   end
 
-  def change_graph(%Graph{} = graph, attrs \\ %{}) do
-    Graph.changeset(graph, attrs)
+  def change_graph(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
+    Scope.assert_owner!(scope, graph)
+    Graph.authoring_changeset(graph, attrs, scope)
   end
 
   def validate_graph(graph), do: Validator.validate(graph)
   def graph_issues(graph), do: Validator.issues(graph)
   def compile_graph(graph), do: Compiler.compile(graph)
 
-  def create_run(%Graph{} = graph, attrs \\ %{}) do
+  def create_run(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
+    Scope.assert_owner!(scope, graph)
+    insert_run(graph, attrs)
+  end
+
+  defp insert_run(%Graph{} = graph, attrs) do
     attrs =
       attrs
       |> stringify_keys()
@@ -65,9 +77,27 @@ defmodule Hermitscale.Workflows do
     |> Repo.insert()
   end
 
-  def get_run!(id), do: Repo.get!(Run, id)
+  def get_run!(%Scope{} = scope, id) do
+    Run
+    |> join(:inner, [run], graph in assoc(run, :graph))
+    |> where([_run, graph], graph.user_id == ^scope.user.id)
+    |> Repo.get!(id)
+  end
 
-  def start_run(%Graph{} = graph, input, opts \\ []) do
+  @doc false
+  def get_run_for_system!(id), do: Repo.get!(Run, id)
+
+  def start_run(%Scope{} = scope, %Graph{} = graph, input, opts \\ []) do
+    Scope.assert_owner!(scope, graph)
+    do_start_run(graph, input, opts)
+  end
+
+  @doc false
+  def start_run_from_trigger(%Graph{} = graph, input, opts \\ []) do
+    do_start_run(graph, input, opts)
+  end
+
+  defp do_start_run(%Graph{} = graph, input, opts) do
     now = DateTime.utc_now(:second)
 
     with {:ok, workflow} <- Compiler.compile(graph.definition),
@@ -79,7 +109,7 @@ defmodule Hermitscale.Workflows do
            ),
          workflow <- Workflow.put_run_context(workflow, run_context),
          {:ok, run} <-
-           create_run(graph, %{
+           insert_run(graph, %{
              input: json_payload(input),
              status: :running,
              started_at: now
@@ -96,7 +126,12 @@ defmodule Hermitscale.Workflows do
     end
   end
 
-  def resume_run(%Run{} = run, opts \\ []) do
+  def resume_run(%Scope{} = scope, %Run{} = run, opts \\ []) do
+    run = get_run!(scope, run.id)
+    do_resume_run(run, opts)
+  end
+
+  defp do_resume_run(%Run{} = run, opts) do
     run = Repo.preload(run, :graph)
 
     with %Graph{} = graph <- run.graph,
@@ -128,7 +163,7 @@ defmodule Hermitscale.Workflows do
   end
 
   def mark_run_complete(run_id, %Workflow{} = workflow) do
-    run = run_id |> get_run!() |> Repo.preload(:graph)
+    run = run_id |> get_run_for_system!() |> Repo.preload(:graph)
     output = terminal_outputs(workflow, run.graph.definition)
     now = DateTime.utc_now(:second)
 
@@ -146,7 +181,13 @@ defmodule Hermitscale.Workflows do
   @doc """
   Subscribes the caller to completion events for a run (`{:run_complete, id}`).
   """
-  def subscribe_run(run_id) do
+  def subscribe_run(%Scope{} = scope, run_id) do
+    _run = get_run!(scope, run_id)
+    subscribe_run_for_system(run_id)
+  end
+
+  @doc false
+  def subscribe_run_for_system(run_id) do
     Phoenix.PubSub.subscribe(Hermitscale.PubSub, run_topic(run_id))
   end
 
