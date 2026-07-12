@@ -20,34 +20,6 @@ defmodule Hermitscale.Integrations.Provider do
               | {:error, term()}
   @callback network_domains() :: [String.t()]
 
-  @typedoc """
-  Static provider descriptor consumed by `Hermitscale.Credentials`.
-
-  `methods` declares every auth method the provider supports — the GitHub
-  case: both `:oauth` and `:api_key`. For `:oauth`, `refresh: :rotating` flags
-  providers whose refresh responses invalidate the previous refresh token, so
-  the shared refresh path persists the new one before first use. For
-  `:api_key`, `auth` is how the key is presented: `:bearer` or
-  `{:header, name}`.
-  """
-  @type spec :: %{
-          required(:id) => String.t(),
-          required(:methods) => %{
-            optional(:oauth) => %{
-              required(:authorize_url) => String.t(),
-              required(:token_url) => String.t(),
-              optional(:default_scopes) => [String.t()],
-              optional(:refresh) => :standard | :rotating | :none
-            },
-            optional(:api_key) => %{required(:auth) => :bearer | {:header, String.t()}},
-            optional(:custom) => %{optional(:fields) => [String.t()]}
-          }
-        }
-
-  @callback spec() :: spec()
-
-  @optional_callbacks spec: 0
-
   defmacro __using__(_opts) do
     quote do
       @behaviour Hermitscale.Integrations.Provider
@@ -136,20 +108,6 @@ defmodule Hermitscale.Integrations.Provider do
     provider_id
     |> fetch!()
     |> apply(:network_domains, [])
-  end
-
-  @doc """
-  Returns a provider's static spec, or `{:error, :no_spec}` for legacy
-  providers that predate the credential system.
-  """
-  def spec(provider_id) when is_binary(provider_id) do
-    with {:ok, module} <- fetch(provider_id) do
-      if function_exported?(module, :spec, 0) do
-        {:ok, module.spec()}
-      else
-        {:error, :no_spec}
-      end
-    end
   end
 
   defp provider?(module) do

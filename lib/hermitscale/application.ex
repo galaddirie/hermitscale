@@ -13,8 +13,6 @@ defmodule Hermitscale.Application do
       {Oban, Application.fetch_env!(:hermitscale, Oban)},
       {DNSCluster, query: Application.get_env(:hermitscale, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Hermitscale.PubSub},
-      Hermitscale.Credentials.LocalVault,
-      Hermitscale.Credentials.TokenCache,
       {Runic.Runner,
        name: Hermitscale.WorkflowRunner,
        store: Hermitscale.Workflows.PostgresStore,

@@ -10,17 +10,6 @@ config :hermitscale, Hermitscale.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
-# Static Cloak key for encrypting locally stored credential secrets in dev.
-# Real deployments configure CLOAK_KEY via config/runtime.exs.
-config :hermitscale, Hermitscale.Credentials.LocalVault,
-  ciphers: [
-    default:
-      {Cloak.Ciphers.AES.GCM,
-       tag: "AES.GCM.V1",
-       key: Base.decode64!("KT5JmIPem/X+0SM9IdCE7V64d7sZDNj5EdQi/a9nLTo="),
-       iv_length: 12}
-  ]
-
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

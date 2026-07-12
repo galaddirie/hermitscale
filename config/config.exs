@@ -7,19 +7,6 @@
 # General application configuration
 import Config
 
-config :hermitscale, :scopes,
-  user: [
-    default: true,
-    module: Hermitscale.Accounts.Scope,
-    assign_key: :current_scope,
-    access_path: [:user, :id],
-    schema_key: :user_id,
-    schema_type: :id,
-    schema_table: :users,
-    test_data_fixture: Hermitscale.AccountsFixtures,
-    test_setup_helper: :register_and_log_in_user
-  ]
-
 config :hermitscale,
   ecto_repos: [Hermitscale.Repo],
   generators: [timestamp_type: :utc_datetime]
@@ -35,12 +22,6 @@ config :hermitscale, Oban,
 config :hermitscale, Hermitscale.Triggers,
   start_runtime?: true,
   webhook_await_timeout_ms: 30_000
-
-config :hermitscale, Hermitscale.Credentials,
-  default_backend: Hermitscale.Credentials.Backends.Local,
-  default_org_id: "default"
-
-config :hermitscale, Hermitscale.Auth, provider: Hermitscale.Auth.Providers.Local
 
 # Configure the endpoint
 config :hermitscale, HermitscaleWeb.Endpoint,
