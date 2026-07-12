@@ -4,7 +4,7 @@ defmodule Hermitscale.AccountsTest do
   alias Hermitscale.Accounts
 
   import Hermitscale.AccountsFixtures
-  alias Hermitscale.Accounts.{User, UserToken}
+  alias Hermitscale.Accounts.{User, UserToken, Organization, OrganizationMembership}
 
   describe "get_user_by_email/1" do
     test "does not return the user if the email does not exist" do
@@ -84,6 +84,74 @@ defmodule Hermitscale.AccountsTest do
       assert is_nil(user.hashed_password)
       assert is_nil(user.confirmed_at)
       assert is_nil(user.password)
+    end
+
+    test "creates a personal organization with owner membership" do
+      {:ok, user} = Accounts.register_user(valid_user_attributes(email: "orgs@example.com"))
+
+      assert [%Organization{} = org] = Accounts.list_user_organizations(user)
+      assert org.personal
+      assert org.name == "orgs"
+
+      assert %OrganizationMembership{role: :owner} = Accounts.get_user_membership(user, org.id)
+    end
+
+    test "does not create an organization when registration fails" do
+      {:error, _changeset} = Accounts.register_user(%{email: "not valid"})
+      assert Repo.aggregate(Organization, :count) == 0
+    end
+  end
+
+  describe "get_or_register_user_by_email/1" do
+    test "returns the existing user unchanged" do
+      %{id: id} = user = user_fixture()
+      assert {:ok, %User{id: ^id}} = Accounts.get_or_register_user_by_email(user.email)
+    end
+
+    test "registers a confirmed user with a personal organization" do
+      {:ok, user} = Accounts.get_or_register_user_by_email("external@example.com")
+
+      assert user.confirmed_at
+      assert [%Organization{personal: true}] = Accounts.list_user_organizations(user)
+    end
+
+    test "returns an error changeset for an invalid email" do
+      assert {:error, %Ecto.Changeset{}} = Accounts.get_or_register_user_by_email("not valid")
+    end
+  end
+
+  describe "resolve_organization/2" do
+    test "honors a valid membership org id" do
+      user = user_fixture()
+      org = organization_fixture()
+      membership = organization_membership_fixture(user, org)
+
+      assert {%Organization{id: resolved_id}, resolved_membership} =
+               Accounts.resolve_organization(user, org.id)
+
+      assert resolved_id == org.id
+      assert resolved_membership.id == membership.id
+    end
+
+    test "falls back to the oldest (personal) organization for nil" do
+      user = user_fixture()
+      [personal_org] = Accounts.list_user_organizations(user)
+
+      assert {%Organization{id: resolved_id}, %OrganizationMembership{role: :owner}} =
+               Accounts.resolve_organization(user, nil)
+
+      assert resolved_id == personal_org.id
+    end
+
+    test "falls back when the user is not a member of the given org" do
+      user = user_fixture()
+      foreign_org = organization_fixture()
+      [personal_org] = Accounts.list_user_organizations(user)
+
+      assert {%Organization{id: resolved_id}, _membership} =
+               Accounts.resolve_organization(user, foreign_org.id)
+
+      assert resolved_id == personal_org.id
     end
   end
 

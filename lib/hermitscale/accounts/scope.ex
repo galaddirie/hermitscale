@@ -16,9 +16,9 @@ defmodule Hermitscale.Accounts.Scope do
   growing application requirements.
   """
 
-  alias Hermitscale.Accounts.User
+  alias Hermitscale.Accounts.{User, Organization, OrganizationMembership}
 
-  defstruct user: nil
+  defstruct user: nil, organization: nil, membership: nil
 
   @doc """
   Creates a scope for the given user.
@@ -31,9 +31,23 @@ defmodule Hermitscale.Accounts.Scope do
 
   def for_user(nil), do: nil
 
-  @doc false
-  def assert_owner!(%__MODULE__{} = scope, %{user_id: user_id}) do
-    true = user_id == scope.user.id
-    :ok
+  @doc """
+  Puts the active organization (and the user's membership in it) on the
+  scope. See `HermitscaleWeb.UserAuth.assign_org_to_scope/2` for how the
+  active organization is resolved.
+  """
+  def put_organization(
+        %__MODULE__{} = scope,
+        %Organization{} = org,
+        %OrganizationMembership{} = membership
+      ) do
+    %{scope | organization: org, membership: membership}
+  end
+
+  @doc """
+  Bridges to the map-shaped scope `Hermitscale.Credentials` expects.
+  """
+  def credentials_scope(%__MODULE__{organization: %Organization{id: org_id}} = scope) do
+    %{org_id: org_id, user_id: scope.user && to_string(scope.user.id)}
   end
 end

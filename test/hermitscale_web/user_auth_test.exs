@@ -282,6 +282,107 @@ defmodule HermitscaleWeb.UserAuthTest do
     end
   end
 
+  describe "assign_org_to_scope/2" do
+    setup %{conn: conn} do
+      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
+    end
+
+    test "hydrates the personal org and persists it in the session", %{conn: conn, user: user} do
+      [personal_org] = Accounts.list_user_organizations(user)
+
+      conn =
+        conn
+        |> put_session(:user_token, Accounts.generate_user_session_token(user))
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.assign_org_to_scope([])
+
+      assert conn.assigns.current_scope.organization.id == personal_org.id
+      assert conn.assigns.current_scope.membership.role == :owner
+      assert get_session(conn, :org_id) == personal_org.id
+    end
+
+    test "honors a session org id the user is a member of", %{conn: conn, user: user} do
+      org = organization_fixture()
+      organization_membership_fixture(user, org)
+
+      conn =
+        conn
+        |> put_session(:user_token, Accounts.generate_user_session_token(user))
+        |> put_session(:org_id, org.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.assign_org_to_scope([])
+
+      assert conn.assigns.current_scope.organization.id == org.id
+      assert conn.assigns.current_scope.membership.role == :member
+    end
+
+    test "falls back to the personal org for a non-member org id", %{conn: conn, user: user} do
+      foreign_org = organization_fixture()
+      [personal_org] = Accounts.list_user_organizations(user)
+
+      conn =
+        conn
+        |> put_session(:user_token, Accounts.generate_user_session_token(user))
+        |> put_session(:org_id, foreign_org.id)
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.assign_org_to_scope([])
+
+      assert conn.assigns.current_scope.organization.id == personal_org.id
+      assert get_session(conn, :org_id) == personal_org.id
+    end
+
+    test "leaves anonymous scopes untouched", %{conn: conn} do
+      conn = UserAuth.assign_org_to_scope(conn, [])
+
+      assert conn.assigns.current_scope == nil
+      refute get_session(conn, :org_id)
+    end
+  end
+
+  describe "on_mount :assign_org_to_scope" do
+    setup %{conn: conn} do
+      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
+    end
+
+    test "hydrates the org for an authenticated session", %{conn: conn, user: user} do
+      [personal_org] = Accounts.list_user_organizations(user)
+      user_token = Accounts.generate_user_session_token(user)
+      session = conn |> put_session(:user_token, user_token) |> get_session()
+
+      {:cont, updated_socket} =
+        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+
+      assert updated_socket.assigns.current_scope.organization.id == personal_org.id
+      assert updated_socket.assigns.current_scope.membership.role == :owner
+    end
+
+    test "honors the session org id", %{conn: conn, user: user} do
+      org = organization_fixture()
+      organization_membership_fixture(user, org)
+      user_token = Accounts.generate_user_session_token(user)
+
+      session =
+        conn
+        |> put_session(:user_token, user_token)
+        |> put_session(:org_id, org.id)
+        |> get_session()
+
+      {:cont, updated_socket} =
+        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+
+      assert updated_socket.assigns.current_scope.organization.id == org.id
+    end
+
+    test "continues with a nil scope for anonymous sessions", %{conn: conn} do
+      session = conn |> get_session()
+
+      {:cont, updated_socket} =
+        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+
+      assert updated_socket.assigns.current_scope == nil
+    end
+  end
+
   describe "on_mount :require_sudo_mode" do
     test "allows users that have authenticated in the last 10 minutes", %{conn: conn, user: user} do
       user_token = Accounts.generate_user_session_token(user)

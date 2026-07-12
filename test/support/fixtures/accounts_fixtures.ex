@@ -47,7 +47,38 @@ defmodule Hermitscale.AccountsFixtures do
   end
 
   def user_scope_fixture(user) do
-    Scope.for_user(user)
+    {org, membership} = Accounts.resolve_organization(user, nil)
+
+    user
+    |> Scope.for_user()
+    |> Scope.put_organization(org, membership)
+  end
+
+  def organization_fixture(attrs \\ %{}) do
+    attrs =
+      Enum.into(attrs, %{
+        id: Ecto.UUID.generate(),
+        name: "org-#{System.unique_integer([:positive])}",
+        personal: false
+      })
+
+    {:ok, org} =
+      %Accounts.Organization{}
+      |> Accounts.Organization.changeset(attrs)
+      |> Hermitscale.Repo.insert()
+
+    org
+  end
+
+  def organization_membership_fixture(user, org, attrs \\ %{}) do
+    attrs = Enum.into(attrs, %{org_id: org.id, user_id: user.id, role: :member})
+
+    {:ok, membership} =
+      %Accounts.OrganizationMembership{}
+      |> Accounts.OrganizationMembership.changeset(attrs)
+      |> Hermitscale.Repo.insert()
+
+    membership
   end
 
   def set_password(user) do

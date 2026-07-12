@@ -6,7 +6,7 @@ defmodule Hermitscale.Accounts do
   import Ecto.Query, warn: false
   alias Hermitscale.Repo
 
-  alias Hermitscale.Accounts.{User, UserToken, UserNotifier}
+  alias Hermitscale.Accounts.{User, UserToken, UserNotifier, Organization, OrganizationMembership}
 
   ## Database getters
 
@@ -75,9 +75,102 @@ defmodule Hermitscale.Accounts do
 
   """
   def register_user(attrs) do
-    %User{}
-    |> User.email_changeset(attrs)
-    |> Repo.insert()
+    Repo.transact(fn ->
+      with {:ok, user} <- %User{} |> User.email_changeset(attrs) |> Repo.insert() do
+        {:ok, _org, _membership} = create_personal_organization(user)
+        {:ok, user}
+      end
+    end)
+  end
+
+  @doc """
+  Fetches or registers a user for an externally-verified identity.
+
+  The email has already been proven by an identity provider, so new users
+  are confirmed immediately (and get a personal organization via
+  `register_user/1`). This is the entry point identity-provider callbacks
+  use to provision users.
+  """
+  def get_or_register_user_by_email(email) when is_binary(email) do
+    case get_user_by_email(email) do
+      %User{} = user ->
+        {:ok, user}
+
+      nil ->
+        Repo.transact(fn ->
+          with {:ok, user} <- register_user(%{email: email}) do
+            user |> User.confirm_changeset() |> Repo.update()
+          end
+        end)
+    end
+  end
+
+  ## Organizations
+
+  @doc """
+  Lists the organizations the user belongs to, oldest membership first
+  (a user's first organization is their personal one).
+  """
+  def list_user_organizations(%User{} = user) do
+    Repo.all(
+      from o in Organization,
+        join: m in OrganizationMembership,
+        on: m.org_id == o.id,
+        where: m.user_id == ^user.id,
+        order_by: [asc: m.inserted_at, asc: m.id]
+    )
+  end
+
+  @doc """
+  Gets the user's membership in the given organization, with the
+  organization preloaded. Returns `nil` if the user is not a member.
+  """
+  def get_user_membership(%User{} = user, org_id) when is_binary(org_id) do
+    Repo.one(
+      from m in OrganizationMembership,
+        where: m.user_id == ^user.id and m.org_id == ^org_id,
+        preload: [:organization]
+    )
+  end
+
+  @doc """
+  Resolves the organization for a user's session.
+
+  A session-stored org id is honored only when the user is actually a
+  member; anything else falls back to the user's oldest membership (the
+  personal organization today). Returns `{organization, membership}`.
+  """
+  def resolve_organization(%User{} = user, org_id) do
+    membership =
+      (is_binary(org_id) && get_user_membership(user, org_id)) || oldest_membership(user)
+
+    {membership.organization, membership}
+  end
+
+  defp oldest_membership(%User{} = user) do
+    Repo.one!(
+      from m in OrganizationMembership,
+        where: m.user_id == ^user.id,
+        order_by: [asc: m.inserted_at, asc: m.id],
+        limit: 1,
+        preload: [:organization]
+    )
+  end
+
+  defp create_personal_organization(%User{} = user) do
+    org_attrs = %{id: Ecto.UUID.generate(), name: personal_org_name(user.email), personal: true}
+
+    with {:ok, org} <- %Organization{} |> Organization.changeset(org_attrs) |> Repo.insert(),
+         {:ok, membership} <-
+           %OrganizationMembership{}
+           |> OrganizationMembership.changeset(%{org_id: org.id, user_id: user.id, role: :owner})
+           |> Repo.insert() do
+      {:ok, org, membership}
+    end
+  end
+
+  defp personal_org_name(email) do
+    email |> String.split("@") |> hd()
   end
 
   ## Settings
