@@ -27,8 +27,35 @@ defmodule Hermitscale.Integrations.Google.OAuth do
   end
 
   @impl true
+  def spec do
+    %{
+      id: @provider,
+      methods: %{
+        oauth: %{
+          authorize_url: "https://accounts.google.com/o/oauth2/v2/auth",
+          token_url: @token_url,
+          default_scopes: [],
+          refresh: :standard
+        }
+      }
+    }
+  end
+
+  @impl true
   def fetch_token(ref, scopes) do
-    fetch_token(ref, scopes, Application.get_env(:hermitscale, :google_oauth_req_options, []))
+    # References known to the credential system resolve there (storage,
+    # refresh, audit). Anything else — legacy external-store refs, raw dev
+    # payloads — takes the pre-existing path below until call sites migrate.
+    case Hermitscale.Credentials.fetch_token(@provider, ref, scopes) do
+      {:ok, token} ->
+        {:ok, token}
+
+      {:error, :unknown_credential} ->
+        fetch_token(ref, scopes, Application.get_env(:hermitscale, :google_oauth_req_options, []))
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc false
