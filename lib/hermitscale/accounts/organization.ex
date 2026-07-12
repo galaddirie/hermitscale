@@ -4,10 +4,9 @@ defmodule Hermitscale.Accounts.Organization do
   registration; shared organizations (invites, roles) come later — the
   membership `role` column is the seam.
 
-  Ids are string UUIDs to match the scope columns that predate this schema
-  (`credentials.org_id`), so those columns can hold real org ids without a
-  type migration. `external_ref` links organizations JIT-provisioned from an
-  identity provider (e.g. a WorkOS organization id).
+  Ids are string UUIDs so scope columns in other contexts can store org ids
+  as plain strings. `external_ref` links organizations JIT-provisioned from
+  an identity provider (e.g. a WorkOS organization id).
   """
 
   use Ecto.Schema

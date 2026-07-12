@@ -11,6 +11,7 @@ defmodule HermitscaleWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
+    plug :assign_org_to_scope
   end
 
   pipeline :api do
@@ -54,7 +55,10 @@ defmodule HermitscaleWeb.Router do
     get "/", PageController, :home
 
     live_session :require_authenticated_user,
-      on_mount: [{HermitscaleWeb.UserAuth, :require_authenticated}] do
+      on_mount: [
+        {HermitscaleWeb.UserAuth, :require_authenticated},
+        {HermitscaleWeb.UserAuth, :assign_org_to_scope}
+      ] do
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end

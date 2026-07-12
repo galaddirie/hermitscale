@@ -44,10 +44,9 @@ defmodule Hermitscale.Accounts.Scope do
     %{scope | organization: org, membership: membership}
   end
 
-  @doc """
-  Bridges to the map-shaped scope `Hermitscale.Credentials` expects.
-  """
-  def credentials_scope(%__MODULE__{organization: %Organization{id: org_id}} = scope) do
-    %{org_id: org_id, user_id: scope.user && to_string(scope.user.id)}
+  @doc false
+  def assert_owner!(%__MODULE__{} = scope, %{user_id: user_id}) do
+    true = user_id == scope.user.id
+    :ok
   end
 end
