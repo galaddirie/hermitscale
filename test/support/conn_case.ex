@@ -46,12 +46,13 @@ defmodule HermitscaleWeb.ConnCase do
   """
   def register_and_log_in_user(%{conn: conn} = context) do
     user = Hermitscale.AccountsFixtures.user_fixture()
-    scope = Hermitscale.Accounts.Scope.for_user(user)
+    scope = Hermitscale.AccountsFixtures.user_scope_fixture(user)
 
     opts =
       context
       |> Map.take([:token_authenticated_at])
       |> Enum.into([])
+      |> Keyword.put(:org_id, scope.organization.id)
 
     %{conn: log_in_user(conn, user, opts), user: user, scope: scope}
   end
@@ -69,6 +70,7 @@ defmodule HermitscaleWeb.ConnCase do
     conn
     |> Phoenix.ConnTest.init_test_session(%{})
     |> Plug.Conn.put_session(:user_token, token)
+    |> maybe_put_org_id(opts[:org_id])
   end
 
   defp maybe_set_token_authenticated_at(_token, nil), do: nil
@@ -76,4 +78,7 @@ defmodule HermitscaleWeb.ConnCase do
   defp maybe_set_token_authenticated_at(token, authenticated_at) do
     Hermitscale.AccountsFixtures.override_token_authenticated_at(token, authenticated_at)
   end
+
+  defp maybe_put_org_id(conn, nil), do: conn
+  defp maybe_put_org_id(conn, org_id), do: Plug.Conn.put_session(conn, :org_id, org_id)
 end

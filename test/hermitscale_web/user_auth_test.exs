@@ -282,11 +282,7 @@ defmodule HermitscaleWeb.UserAuthTest do
     end
   end
 
-  describe "assign_org_to_scope/2" do
-    setup %{conn: conn} do
-      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
-    end
-
+  describe "fetch_current_scope_for_user/2 organization hydration" do
     test "hydrates the personal org and persists it in the session", %{conn: conn, user: user} do
       [personal_org] = Accounts.list_user_organizations(user)
 
@@ -294,7 +290,6 @@ defmodule HermitscaleWeb.UserAuthTest do
         conn
         |> put_session(:user_token, Accounts.generate_user_session_token(user))
         |> UserAuth.fetch_current_scope_for_user([])
-        |> UserAuth.assign_org_to_scope([])
 
       assert conn.assigns.current_scope.organization.id == personal_org.id
       assert conn.assigns.current_scope.membership.role == :owner
@@ -310,7 +305,6 @@ defmodule HermitscaleWeb.UserAuthTest do
         |> put_session(:user_token, Accounts.generate_user_session_token(user))
         |> put_session(:org_id, org.id)
         |> UserAuth.fetch_current_scope_for_user([])
-        |> UserAuth.assign_org_to_scope([])
 
       assert conn.assigns.current_scope.organization.id == org.id
       assert conn.assigns.current_scope.membership.role == :member
@@ -325,21 +319,20 @@ defmodule HermitscaleWeb.UserAuthTest do
         |> put_session(:user_token, Accounts.generate_user_session_token(user))
         |> put_session(:org_id, foreign_org.id)
         |> UserAuth.fetch_current_scope_for_user([])
-        |> UserAuth.assign_org_to_scope([])
 
       assert conn.assigns.current_scope.organization.id == personal_org.id
       assert get_session(conn, :org_id) == personal_org.id
     end
 
     test "leaves anonymous scopes untouched", %{conn: conn} do
-      conn = UserAuth.assign_org_to_scope(conn, [])
+      conn = UserAuth.fetch_current_scope_for_user(conn, [])
 
       assert conn.assigns.current_scope == nil
       refute get_session(conn, :org_id)
     end
   end
 
-  describe "on_mount :assign_org_to_scope" do
+  describe "on_mount :mount_current_scope organization hydration" do
     setup %{conn: conn} do
       %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
     end
@@ -350,7 +343,7 @@ defmodule HermitscaleWeb.UserAuthTest do
       session = conn |> put_session(:user_token, user_token) |> get_session()
 
       {:cont, updated_socket} =
-        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
 
       assert updated_socket.assigns.current_scope.organization.id == personal_org.id
       assert updated_socket.assigns.current_scope.membership.role == :owner
@@ -368,7 +361,7 @@ defmodule HermitscaleWeb.UserAuthTest do
         |> get_session()
 
       {:cont, updated_socket} =
-        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
 
       assert updated_socket.assigns.current_scope.organization.id == org.id
     end
@@ -377,7 +370,7 @@ defmodule HermitscaleWeb.UserAuthTest do
       session = conn |> get_session()
 
       {:cont, updated_socket} =
-        UserAuth.on_mount(:assign_org_to_scope, %{}, session, %LiveView.Socket{})
+        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
 
       assert updated_socket.assigns.current_scope == nil
     end

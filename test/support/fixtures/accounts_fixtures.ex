@@ -54,6 +54,19 @@ defmodule Hermitscale.AccountsFixtures do
     |> Scope.put_organization(org, membership)
   end
 
+  def organization_scope_fixture, do: user_scope_fixture()
+  def organization_scope_fixture(user), do: user_scope_fixture(user)
+
+  def organization_scope_fixture(user, org) do
+    membership =
+      Accounts.get_user_membership(user, org.id) ||
+        organization_membership_fixture(user, org)
+
+    user
+    |> Scope.for_user()
+    |> Scope.put_organization(org, membership)
+  end
+
   def organization_fixture(attrs \\ %{}) do
     attrs =
       Enum.into(attrs, %{

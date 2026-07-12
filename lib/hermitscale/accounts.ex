@@ -138,23 +138,33 @@ defmodule Hermitscale.Accounts do
 
   A session-stored org id is honored only when the user is actually a
   member; anything else falls back to the user's oldest membership (the
-  personal organization today). Returns `{organization, membership}`.
+  personal organization today). A user left with no memberships at all —
+  possible when their last organization is deleted — gets a fresh personal
+  organization instead of crashing every request that builds a scope.
+  Returns `{organization, membership}`.
   """
   def resolve_organization(%User{} = user, org_id) do
     membership =
-      (is_binary(org_id) && get_user_membership(user, org_id)) || oldest_membership(user)
+      (is_binary(org_id) && get_user_membership(user, org_id)) ||
+        oldest_membership(user) ||
+        repair_personal_organization(user)
 
     {membership.organization, membership}
   end
 
   defp oldest_membership(%User{} = user) do
-    Repo.one!(
+    Repo.one(
       from m in OrganizationMembership,
         where: m.user_id == ^user.id,
         order_by: [asc: m.inserted_at, asc: m.id],
         limit: 1,
         preload: [:organization]
     )
+  end
+
+  defp repair_personal_organization(%User{} = user) do
+    {:ok, org, membership} = create_personal_organization(user)
+    %{membership | organization: org}
   end
 
   defp create_personal_organization(%User{} = user) do

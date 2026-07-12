@@ -9,7 +9,7 @@
           Your automations, at a glance
         </h1>
         <p class="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-400 sm:text-base">
-          Every workflow, run, and trigger is isolated to your signed-in account.
+          Every workflow, run, and trigger is isolated to your active organization.
         </p>
       </div>
 
@@ -51,7 +51,7 @@
         <div>
           <h2 class="text-lg font-semibold text-slate-950 dark:text-white">Workflows</h2>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Only resources owned by your current scope appear here.
+            Only resources owned by {@current_scope.organization.name} appear here.
           </p>
         </div>
       </div>
@@ -68,7 +68,7 @@
           No workflows yet
         </h3>
         <p class="mx-auto mt-1 max-w-sm text-sm leading-6 text-slate-500 dark:text-slate-400">
-          Your scoped workflow library is empty. New workflows will appear here automatically.
+          This organization's workflow library is empty. New workflows will appear here automatically.
         </p>
       </div>
 

@@ -60,40 +60,28 @@ defmodule HermitscaleWeb.UserAuth do
   end
 
   @doc """
-  Authenticates the user by looking into the session and remember me token.
+  Authenticates the user by looking into the session and remember me token,
+  and resolves their active organization onto the scope.
+
+  An authenticated scope always carries an organization: the session-stored
+  org id is honored when the user is a member (so an org switcher is just
+  `put_session(:org_id, id)` + redirect), falling back to the user's oldest
+  membership — the personal organization.
 
   Will reissue the session token if it is older than the configured age.
   """
   def fetch_current_scope_for_user(conn, _opts) do
     with {token, conn} <- ensure_user_token(conn),
          {user, token_inserted_at} <- Accounts.get_user_by_session_token(token) do
+      {org, membership} = Accounts.resolve_organization(user, get_session(conn, :org_id))
+      scope = user |> Scope.for_user() |> Scope.put_organization(org, membership)
+
       conn
-      |> assign(:current_scope, Scope.for_user(user))
+      |> assign(:current_scope, scope)
+      |> put_session(:org_id, org.id)
       |> maybe_reissue_user_session_token(user, token_inserted_at)
     else
       nil -> assign(conn, :current_scope, Scope.for_user(nil))
-    end
-  end
-
-  @doc """
-  Resolves the authenticated user's active organization onto the scope.
-
-  Honors the session-stored org id when the user is a member (so an org
-  switcher is just `put_session(:org_id, id)` + redirect) and falls back to
-  the user's oldest membership — the personal organization. Must run after
-  `fetch_current_scope_for_user/2`.
-  """
-  def assign_org_to_scope(conn, _opts) do
-    case conn.assigns.current_scope do
-      %Scope{user: %Accounts.User{} = user} = scope ->
-        {org, membership} = Accounts.resolve_organization(user, get_session(conn, :org_id))
-
-        conn
-        |> assign(:current_scope, Scope.put_organization(scope, org, membership))
-        |> put_session(:org_id, org.id)
-
-      _ ->
-        conn
     end
   end
 
@@ -206,13 +194,13 @@ defmodule HermitscaleWeb.UserAuth do
 
   ## `on_mount` arguments
 
-    * `:mount_current_scope` - Assigns current_scope
-      to socket assigns based on user_token, or nil if
+    * `:mount_current_scope` - Assigns current_scope (user plus active
+      organization) to socket assigns based on user_token, or nil if
       there's no user_token or no matching user.
 
     * `:require_authenticated` - Authenticates the user from the session,
-      and assigns the current_scope to socket assigns based
-      on user_token.
+      and assigns the current_scope (user plus active organization) to
+      socket assigns based on user_token.
       Redirects to login page if there's no logged user.
 
   ## Examples
@@ -252,27 +240,6 @@ defmodule HermitscaleWeb.UserAuth do
     end
   end
 
-  def on_mount(:assign_org_to_scope, _params, session, socket) do
-    socket = mount_current_scope(socket, session)
-
-    socket =
-      case socket.assigns.current_scope do
-        %Scope{user: %Accounts.User{} = user} = scope ->
-          {org, membership} = Accounts.resolve_organization(user, session["org_id"])
-
-          Phoenix.Component.assign(
-            socket,
-            :current_scope,
-            Scope.put_organization(scope, org, membership)
-          )
-
-        _ ->
-          socket
-      end
-
-    {:cont, socket}
-  end
-
   def on_mount(:require_sudo_mode, _params, session, socket) do
     socket = mount_current_scope(socket, session)
 
@@ -295,7 +262,10 @@ defmodule HermitscaleWeb.UserAuth do
           Accounts.get_user_by_session_token(user_token)
         end || {nil, nil}
 
-      Scope.for_user(user)
+      if user do
+        {org, membership} = Accounts.resolve_organization(user, session["org_id"])
+        user |> Scope.for_user() |> Scope.put_organization(org, membership)
+      end
     end)
   end
 

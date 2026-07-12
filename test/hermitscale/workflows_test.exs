@@ -13,18 +13,24 @@ defmodule Hermitscale.WorkflowsTest do
   end
 
   describe "graphs" do
-    test "creates a graph owned by the current scope", %{scope: scope} do
-      attrs = Map.put(graph_attrs(), :user_id, user_scope_fixture().user.id)
+    test "creates a graph owned by the active organization", %{scope: scope} do
+      other_scope = user_scope_fixture()
+
+      attrs =
+        graph_attrs()
+        |> Map.put(:org_id, other_scope.organization.id)
+        |> Map.put(:created_by_user_id, other_scope.user.id)
 
       assert {:ok, %Graph{} = graph} = Workflows.create_graph(scope, attrs)
       assert graph.id == "wf_order_fulfillment"
-      assert graph.user_id == scope.user.id
+      assert graph.org_id == scope.organization.id
+      assert graph.created_by_user_id == scope.user.id
       assert graph.validation_issues == []
       assert graph.validated_at
     end
 
-    test "lists only graphs owned by the current scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "lists only graphs owned by the active organization", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
 
       assert {:ok, graph} =
                Workflows.create_graph(scope, graph_attrs(id: "wf_owned", name: "Owned"))
@@ -38,8 +44,8 @@ defmodule Hermitscale.WorkflowsTest do
       assert Workflows.list_graphs(scope) == [graph]
     end
 
-    test "gets graphs only through their owning scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "gets graphs only through their owning organization", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
       assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
 
       assert Workflows.get_graph!(scope, graph.id) == graph
@@ -49,13 +55,49 @@ defmodule Hermitscale.WorkflowsTest do
       end
     end
 
-    test "rejects updates from another scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "rejects updates from another organization", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
       assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
 
       assert_raise MatchError, fn ->
         Workflows.update_graph(other_scope, graph, %{name: "stolen"})
       end
+    end
+
+    test "allows organization members to share and update graphs", %{scope: scope} do
+      org = organization_fixture()
+      creator_scope = organization_scope_fixture(scope.user, org)
+      collaborator_scope = organization_scope_fixture(user_fixture(), org)
+
+      assert {:ok, graph} = Workflows.create_graph(creator_scope, graph_attrs())
+
+      assert Workflows.list_graphs(collaborator_scope) == [graph]
+      assert Workflows.get_graph!(collaborator_scope, graph.id) == graph
+
+      assert {:ok, updated_graph} =
+               Workflows.update_graph(collaborator_scope, graph, %{
+                 name: "Shared workflow",
+                 org_id: scope.organization.id,
+                 created_by_user_id: collaborator_scope.user.id
+               })
+
+      assert updated_graph.name == "Shared workflow"
+      assert updated_graph.org_id == org.id
+      assert updated_graph.created_by_user_id == creator_scope.user.id
+    end
+
+    test "keeps a shared graph when its creator is deleted", %{scope: scope} do
+      org = organization_fixture()
+      creator = user_fixture()
+      creator_scope = organization_scope_fixture(creator, org)
+      collaborator_scope = organization_scope_fixture(scope.user, org)
+
+      assert {:ok, graph} = Workflows.create_graph(creator_scope, graph_attrs())
+      Repo.delete!(creator)
+
+      graph = Workflows.get_graph!(collaborator_scope, graph.id)
+      assert graph.org_id == org.id
+      assert is_nil(graph.created_by_user_id)
     end
 
     test "returns a changeset with validation issues for invalid graph JSON", %{scope: scope} do
@@ -101,12 +143,24 @@ defmodule Hermitscale.WorkflowsTest do
       assert run.completed_at
     end
 
-    test "rejects a graph owned by another scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "rejects a graph owned by another organization", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
       assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
 
       assert_raise MatchError, fn ->
         Workflows.start_run(other_scope, graph, %{}, executor: :inline)
+      end
+    end
+
+    test "does not expose runs after switching organizations", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+
+      assert {:ok, %Run{} = run} =
+               Workflows.start_run(scope, graph, %{}, executor: :inline)
+
+      assert_raise Ecto.NoResultsError, fn ->
+        Workflows.get_run!(other_scope, run.id)
       end
     end
 

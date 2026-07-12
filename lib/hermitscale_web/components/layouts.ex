@@ -67,6 +67,15 @@ defmodule HermitscaleWeb.Layouts do
                 Settings
               </.link>
               <span
+                :if={@current_scope.organization}
+                id="current-organization-name"
+                class="hidden max-w-44 items-center gap-1.5 truncate rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 dark:border-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-300 md:inline-flex"
+                title={@current_scope.organization.name}
+              >
+                <.icon name="hero-building-office-2-micro" class="size-3.5 shrink-0" />
+                <span class="truncate">{@current_scope.organization.name}</span>
+              </span>
+              <span
                 id="current-user-email"
                 class="hidden max-w-44 truncate rounded-lg bg-slate-100 px-3 py-2 text-xs font-medium text-slate-600 dark:bg-slate-900 dark:text-slate-300 lg:inline-flex"
               >
@@ -110,7 +119,7 @@ defmodule HermitscaleWeb.Layouts do
       <footer class="border-t border-slate-200/80 px-4 py-6 dark:border-slate-800 sm:px-6 lg:px-8">
         <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 text-xs text-slate-500 dark:text-slate-400">
           <span>Hermitscale workflow control plane</span>
-          <span class="hidden sm:inline">Securely scoped to the signed-in user</span>
+          <span class="hidden sm:inline">Securely scoped to the active organization</span>
         </div>
       </footer>
 

@@ -37,8 +37,8 @@ defmodule Hermitscale.TriggersTest do
       assert {:error, :no_triggers} = Triggers.activate_graph(scope, graph)
     end
 
-    test "rejects a graph owned by another scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "rejects a graph owned by another organization", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
       graph = create_graph!(other_scope, trigger_graph(manual_trigger_node()))
 
       assert_raise MatchError, fn ->
@@ -216,12 +216,17 @@ defmodule Hermitscale.TriggersTest do
   end
 
   describe "scoped queries" do
-    test "gets and lists triggers only for the owning scope", %{scope: scope} do
-      other_scope = user_scope_fixture()
+    test "gets and lists triggers for members of the owning organization", %{scope: scope} do
+      collaborator_scope = organization_scope_fixture(user_fixture(), scope.organization)
       {graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
-      assert Triggers.get_trigger!(scope, trigger.id) == trigger
-      assert Triggers.list_triggers(scope, graph) == [trigger]
+      assert Triggers.get_trigger!(collaborator_scope, trigger.id) == trigger
+      assert Triggers.list_triggers(collaborator_scope, graph) == [trigger]
+    end
+
+    test "does not expose triggers after switching organizations", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
+      {graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
       assert_raise Ecto.NoResultsError, fn ->
         Triggers.get_trigger!(other_scope, trigger.id)

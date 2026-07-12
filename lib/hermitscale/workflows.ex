@@ -13,18 +13,20 @@ defmodule Hermitscale.Workflows do
   @runner Hermitscale.WorkflowRunner
 
   def list_graphs(%Scope{} = scope) do
+    org_id = Scope.organization_id!(scope)
+
     Graph
-    |> where([graph], graph.user_id == ^scope.user.id)
+    |> where([graph], graph.org_id == ^org_id)
     |> order_by([graph], asc: graph.name)
     |> Repo.all()
   end
 
   def get_graph!(%Scope{} = scope, id) do
-    Repo.get_by!(Graph, id: id, user_id: scope.user.id)
+    Repo.get_by!(Graph, id: id, org_id: Scope.organization_id!(scope))
   end
 
   def create_graph(%Scope{} = scope, attrs) do
-    changeset = Graph.authoring_changeset(%Graph{}, attrs, scope)
+    changeset = Graph.create_changeset(%Graph{}, attrs, scope)
     definition = get_definition(attrs)
 
     with :ok <- Validator.validate(definition),
@@ -37,9 +39,9 @@ defmodule Hermitscale.Workflows do
   end
 
   def update_graph(%Scope{} = scope, %Graph{} = graph, attrs) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
 
-    changeset = Graph.authoring_changeset(graph, attrs, scope)
+    changeset = Graph.update_changeset(graph, attrs)
     definition = get_definition(attrs) || graph.definition
 
     with :ok <- Validator.validate(definition),
@@ -52,8 +54,8 @@ defmodule Hermitscale.Workflows do
   end
 
   def change_graph(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
-    Scope.assert_owner!(scope, graph)
-    Graph.authoring_changeset(graph, attrs, scope)
+    Scope.assert_same_org!(scope, graph)
+    Graph.update_changeset(graph, attrs)
   end
 
   def validate_graph(graph), do: Validator.validate(graph)
@@ -61,7 +63,7 @@ defmodule Hermitscale.Workflows do
   def compile_graph(graph), do: Compiler.compile(graph)
 
   def create_run(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
     insert_run(graph, attrs)
   end
 
@@ -78,9 +80,11 @@ defmodule Hermitscale.Workflows do
   end
 
   def get_run!(%Scope{} = scope, id) do
+    org_id = Scope.organization_id!(scope)
+
     Run
     |> join(:inner, [run], graph in assoc(run, :graph))
-    |> where([_run, graph], graph.user_id == ^scope.user.id)
+    |> where([_run, graph], graph.org_id == ^org_id)
     |> Repo.get!(id)
   end
 
@@ -88,7 +92,7 @@ defmodule Hermitscale.Workflows do
   def get_run_for_system!(id), do: Repo.get!(Run, id)
 
   def start_run(%Scope{} = scope, %Graph{} = graph, input, opts \\ []) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
     do_start_run(graph, input, opts)
   end
 

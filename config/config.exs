@@ -8,14 +8,14 @@
 import Config
 
 config :hermitscale, :scopes,
-  user: [
+  organization: [
     default: true,
     module: Hermitscale.Accounts.Scope,
     assign_key: :current_scope,
-    access_path: [:user, :id],
-    schema_key: :user_id,
-    schema_type: :id,
-    schema_table: :users,
+    access_path: [:organization, :id],
+    schema_key: :org_id,
+    schema_type: :string,
+    schema_table: :organizations,
     test_data_fixture: Hermitscale.AccountsFixtures,
     test_setup_helper: :register_and_log_in_user
   ]

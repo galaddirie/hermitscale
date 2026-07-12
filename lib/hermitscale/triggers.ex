@@ -25,9 +25,11 @@ defmodule Hermitscale.Triggers do
   def subscribe, do: Phoenix.PubSub.subscribe(@pubsub, @topic)
 
   def get_trigger!(%Scope{} = scope, id) do
+    org_id = Scope.organization_id!(scope)
+
     Trigger
     |> join(:inner, [trigger], graph in assoc(trigger, :graph))
-    |> where([_trigger, graph], graph.user_id == ^scope.user.id)
+    |> where([_trigger, graph], graph.org_id == ^org_id)
     |> Repo.get!(id)
   end
 
@@ -35,16 +37,18 @@ defmodule Hermitscale.Triggers do
   def get_trigger!(id), do: Repo.get!(Trigger, id)
 
   def list_triggers(%Scope{} = scope, %Graph{id: graph_id} = graph) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
     list_triggers(scope, graph_id)
   end
 
   def list_triggers(%Scope{} = scope, graph_id) when is_binary(graph_id) do
+    org_id = Scope.organization_id!(scope)
+
     Trigger
     |> join(:inner, [trigger], graph in assoc(trigger, :graph))
     |> where(
       [trigger, graph],
-      trigger.workflow_graph_id == ^graph_id and graph.user_id == ^scope.user.id
+      trigger.workflow_graph_id == ^graph_id and graph.org_id == ^org_id
     )
     |> order_by([trigger, _graph], asc: trigger.node_id)
     |> Repo.all()
@@ -80,7 +84,7 @@ defmodule Hermitscale.Triggers do
   active. Requires at least one trigger node.
   """
   def activate_graph(%Scope{} = scope, %Graph{} = graph) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
     definition = graph.definition
 
     with :ok <- Validator.validate(definition),
@@ -125,7 +129,7 @@ defmodule Hermitscale.Triggers do
   and poll cursors survive reactivation) and returns the graph to draft.
   """
   def deactivate_graph(%Scope{} = scope, %Graph{} = graph) do
-    Scope.assert_owner!(scope, graph)
+    Scope.assert_same_org!(scope, graph)
 
     result =
       Repo.transaction(fn ->

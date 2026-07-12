@@ -4,7 +4,43 @@ defmodule Hermitscale.AccountsTest do
   alias Hermitscale.Accounts
 
   import Hermitscale.AccountsFixtures
-  alias Hermitscale.Accounts.{User, UserToken, Organization, OrganizationMembership}
+
+  alias Hermitscale.Accounts.{
+    Organization,
+    OrganizationMembership,
+    Scope,
+    User,
+    UserToken
+  }
+
+  describe "organization scopes" do
+    test "authorizes resources by active organization rather than user" do
+      scope = organization_scope_fixture()
+      collaborator_scope = organization_scope_fixture(user_fixture(), scope.organization)
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
+      resource = %{org_id: scope.organization.id}
+
+      assert Scope.organization_id!(scope) == scope.organization.id
+      assert :ok = Scope.assert_same_org!(scope, resource)
+      assert :ok = Scope.assert_same_org!(collaborator_scope, resource)
+
+      assert_raise MatchError, fn ->
+        Scope.assert_same_org!(other_scope, resource)
+      end
+    end
+
+    test "rejects an organization membership belonging to another user" do
+      user = user_fixture()
+      organization = organization_fixture()
+      membership = organization_membership_fixture(user_fixture(), organization)
+
+      assert_raise FunctionClauseError, fn ->
+        user
+        |> Scope.for_user()
+        |> Scope.put_organization(organization, membership)
+      end
+    end
+  end
 
   describe "get_user_by_email/1" do
     test "does not return the user if the email does not exist" do
@@ -152,6 +188,20 @@ defmodule Hermitscale.AccountsTest do
                Accounts.resolve_organization(user, foreign_org.id)
 
       assert resolved_id == personal_org.id
+    end
+
+    test "recreates a personal organization for a user with no memberships" do
+      user = user_fixture()
+      [orphaning_org] = Accounts.list_user_organizations(user)
+      Repo.delete!(orphaning_org)
+      assert Accounts.list_user_organizations(user) == []
+
+      assert {%Organization{personal: true} = org, %OrganizationMembership{role: :owner}} =
+               Accounts.resolve_organization(user, nil)
+
+      assert org.id != orphaning_org.id
+      assert [%Organization{id: repaired_id}] = Accounts.list_user_organizations(user)
+      assert repaired_id == org.id
     end
   end
 
