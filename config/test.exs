@@ -18,6 +18,24 @@ config :hermitscale, Hermitscale.Repo,
 
 config :hermitscale, Oban, testing: :manual
 
+config :hermitscale, Hermitscale.WorkOS.Client,
+  api_key: "sk_test_hermitscale",
+  client_id: "client_test_hermitscale",
+  redirect_uri: "http://www.example.com/auth/workos/callback"
+
+config :hermitscale, Hermitscale.WorkOS.JWT, client_id: "client_test_hermitscale"
+
+config :hermitscale, Hermitscale.WorkOS.TokenCipher,
+  active_key_id: "test",
+  keys: %{"test" => :crypto.hash(:sha256, "hermitscale-test-workos-key")}
+
+config :hermitscale, Hermitscale.WorkOS.EventInbox,
+  endpoint_token: "workos-test-endpoint",
+  secrets: ["whsec_test_hermitscale"],
+  tolerance_seconds: 300
+
+config :hermitscale, Hermitscale.WorkOS.Session, jwt_verifier: Hermitscale.WorkOSTest.JWTVerifier
+
 # The reconciler and scheduler are started per-test inside the SQL sandbox
 # instead of globally, and webhook wait-mode falls back fast.
 config :hermitscale, Hermitscale.Triggers,

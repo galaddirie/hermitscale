@@ -63,22 +63,18 @@ defmodule HermitscaleWeb.ConnCase do
   It returns an updated `conn`.
   """
   def log_in_user(conn, user, opts \\ []) do
-    token = Hermitscale.Accounts.generate_user_session_token(user)
-
-    maybe_set_token_authenticated_at(token, opts[:token_authenticated_at])
+    session =
+      Hermitscale.AccountsFixtures.workos_session_fixture(user,
+        org_id: opts[:org_id],
+        authenticated_at: opts[:token_authenticated_at] || DateTime.utc_now(:second)
+      )
 
     conn
     |> Phoenix.ConnTest.init_test_session(%{})
-    |> Plug.Conn.put_session(:user_token, token)
-    |> maybe_put_org_id(opts[:org_id])
+    |> Plug.Conn.put_session(:auth_session_token, session.handle)
+    |> Plug.Conn.put_session(
+      :live_socket_id,
+      Hermitscale.WorkOS.Session.socket_topic(session.session)
+    )
   end
-
-  defp maybe_set_token_authenticated_at(_token, nil), do: nil
-
-  defp maybe_set_token_authenticated_at(token, authenticated_at) do
-    Hermitscale.AccountsFixtures.override_token_authenticated_at(token, authenticated_at)
-  end
-
-  defp maybe_put_org_id(conn, nil), do: conn
-  defp maybe_put_org_id(conn, org_id), do: Plug.Conn.put_session(conn, :org_id, org_id)
 end

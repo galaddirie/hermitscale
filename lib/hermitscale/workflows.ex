@@ -109,7 +109,8 @@ defmodule Hermitscale.Workflows do
            Credentials.resolve_run_context(
              graph.definition,
              workflow,
-             Keyword.get(opts, :run_context, %{})
+             Keyword.get(opts, :run_context, %{}),
+             graph.org_id
            ),
          workflow <- Workflow.put_run_context(workflow, run_context),
          {:ok, run} <-
@@ -144,7 +145,8 @@ defmodule Hermitscale.Workflows do
            Credentials.resolve_run_context(
              graph.definition,
              base_workflow,
-             Keyword.get(opts, :run_context, %{})
+             Keyword.get(opts, :run_context, %{}),
+             graph.org_id
            ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
          {:ok, event_stream} <- store_module.stream(run.id, store_state) do

@@ -75,6 +75,23 @@ defmodule HermitscaleWeb.Telemetry do
           "The time the connection spent waiting before being checked out for the query"
       ),
 
+      # WorkOS authentication, event sync, and Pipes metrics
+      counter("hermitscale.workos.request.stop.count", tags: [:operation, :result]),
+      summary("hermitscale.workos.request.stop.duration",
+        tags: [:operation, :result],
+        unit: {:native, :millisecond}
+      ),
+      counter("hermitscale.workos.session.authenticate.stop.count", tags: [:result]),
+      summary("hermitscale.workos.session.authenticate.stop.duration",
+        tags: [:result],
+        unit: {:native, :millisecond}
+      ),
+      counter("hermitscale.workos.event.received.count", tags: [:event_type]),
+      counter("hermitscale.workos.event.processed.count", tags: [:event_type, :status]),
+      counter("hermitscale.workos.event.redacted.count"),
+      counter("hermitscale.workos.reconciliation.count", tags: [:status]),
+      summary("hermitscale.workos.reconciliation.duration", tags: [:status]),
+
       # VM Metrics
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),

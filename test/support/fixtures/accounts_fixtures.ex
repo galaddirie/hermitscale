@@ -8,6 +8,8 @@ defmodule Hermitscale.AccountsFixtures do
 
   alias Hermitscale.Accounts
   alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Integrations.ConnectedAccount
+  alias Hermitscale.WorkOS.Session
 
   def unique_user_email, do: "user#{System.unique_integer()}@example.com"
   def valid_user_password, do: "hello world!"
@@ -38,7 +40,48 @@ defmodule Hermitscale.AccountsFixtures do
     {:ok, {user, _expired_tokens}} =
       Accounts.login_user_by_magic_link(token)
 
+    {:ok, user} =
+      user
+      |> Accounts.User.workos_changeset(%{
+        workos_user_id:
+          Map.get(attrs, :workos_user_id, "user_#{System.unique_integer([:positive])}"),
+        email: user.email,
+        email_verified: true,
+        workos_updated_at: DateTime.utc_now(:microsecond),
+        confirmed_at: user.confirmed_at
+      })
+      |> Hermitscale.Repo.update()
+
     user
+  end
+
+  def workos_session_fixture(user, opts \\ []) do
+    user = ensure_workos_user(user)
+    organization = session_organization(user, opts[:org_id])
+    organization = ensure_workos_organization(organization)
+    now = Keyword.get(opts, :authenticated_at, DateTime.utc_now(:second))
+
+    session_id =
+      Keyword.get(opts, :workos_session_id, "session_#{System.unique_integer([:positive])}")
+
+    claims =
+      %{
+        "sub" => user.workos_user_id,
+        "sid" => session_id,
+        "iat" => DateTime.to_unix(now),
+        "auth_time" => DateTime.to_unix(now),
+        "exp" => DateTime.utc_now(:second) |> DateTime.add(3_600, :second) |> DateTime.to_unix()
+      }
+      |> maybe_put_org_claim(organization)
+
+    verified = %{
+      access_token: Jason.encode!(claims),
+      refresh_token: "refresh_#{System.unique_integer([:positive])}",
+      claims: claims
+    }
+
+    {:ok, session} = Session.create_verified(user, verified)
+    session
   end
 
   def user_scope_fixture do
@@ -92,6 +135,90 @@ defmodule Hermitscale.AccountsFixtures do
       |> Hermitscale.Repo.insert()
 
     membership
+  end
+
+  def connected_account_fixture(user, organization, attrs \\ %{}) do
+    attrs =
+      Enum.into(attrs, %{
+        owner_user_id: user.id,
+        org_id: organization.id,
+        provider_id: "google.oauth",
+        provider_slug: "google",
+        backend: :workos_pipes,
+        workos_connected_account_id: "connected_account_#{System.unique_integer([:positive])}",
+        workos_organization_id: organization.workos_organization_id,
+        state: :connected,
+        sharing_mode: if(organization.personal, do: :private, else: :organization),
+        granted_scopes: [
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets"
+        ],
+        workos_updated_at: DateTime.utc_now(:microsecond)
+      })
+
+    {:ok, account} =
+      %ConnectedAccount{}
+      |> ConnectedAccount.create_changeset(attrs)
+      |> Hermitscale.Repo.insert()
+
+    account
+  end
+
+  defp ensure_workos_user(%Accounts.User{workos_user_id: workos_user_id} = user)
+       when is_binary(workos_user_id),
+       do: user
+
+  defp ensure_workos_user(user) do
+    {:ok, user} =
+      user
+      |> Accounts.User.workos_changeset(%{
+        workos_user_id: "user_#{System.unique_integer([:positive])}",
+        email: user.email,
+        email_verified: true,
+        workos_updated_at: DateTime.utc_now(:microsecond),
+        confirmed_at: user.confirmed_at || DateTime.utc_now(:second)
+      })
+      |> Hermitscale.Repo.update()
+
+    user
+  end
+
+  defp session_organization(user, nil) do
+    {organization, _membership} = Accounts.resolve_organization(user, nil)
+    organization
+  end
+
+  defp session_organization(_user, org_id),
+    do: Hermitscale.Repo.get!(Accounts.Organization, org_id)
+
+  defp ensure_workos_organization(%Accounts.Organization{personal: true} = organization),
+    do: organization
+
+  defp ensure_workos_organization(
+         %Accounts.Organization{workos_organization_id: workos_id} = organization
+       )
+       when is_binary(workos_id),
+       do: organization
+
+  defp ensure_workos_organization(organization) do
+    {:ok, organization} =
+      organization
+      |> Accounts.Organization.changeset(%{
+        workos_organization_id: "org_#{System.unique_integer([:positive])}",
+        provisioning_state: :ready,
+        workos_updated_at: DateTime.utc_now(:microsecond)
+      })
+      |> Hermitscale.Repo.update()
+
+    organization
+  end
+
+  defp maybe_put_org_claim(claims, %Accounts.Organization{personal: true}), do: claims
+
+  defp maybe_put_org_claim(claims, %Accounts.Organization{
+         workos_organization_id: workos_organization_id
+       }) do
+    Map.put(claims, "org_id", workos_organization_id)
   end
 
   def set_password(user) do

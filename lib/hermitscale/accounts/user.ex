@@ -8,8 +8,61 @@ defmodule Hermitscale.Accounts.User do
     field :hashed_password, :string, redact: true
     field :confirmed_at, :utc_datetime
     field :authenticated_at, :utc_datetime, virtual: true
+    field :workos_user_id, :string
+    field :email_verified, :boolean, default: false
+    field :first_name, :string
+    field :last_name, :string
+    field :profile_picture_url, :string
+    field :workos_updated_at, :utc_datetime_usec
+    field :deletion_pending_at, :utc_datetime
+    field :deleted_at, :utc_datetime
 
     timestamps(type: :utc_datetime)
+  end
+
+  @doc """
+  Projects a verified WorkOS User onto the stable local user record.
+  """
+  def workos_changeset(user, attrs) do
+    user
+    |> cast(attrs, [
+      :workos_user_id,
+      :email,
+      :email_verified,
+      :first_name,
+      :last_name,
+      :profile_picture_url,
+      :workos_updated_at,
+      :confirmed_at
+    ])
+    |> validate_required([:workos_user_id, :email, :email_verified])
+    |> validate_email(require_change: false)
+    |> validate_length(:workos_user_id, max: 255)
+    |> validate_length(:first_name, max: 255)
+    |> validate_length(:last_name, max: 255)
+    |> validate_length(:profile_picture_url, max: 2_048)
+    |> unsafe_validate_unique(:workos_user_id, Hermitscale.Repo)
+    |> unique_constraint(:workos_user_id)
+  end
+
+  @doc """
+  Marks a WorkOS-managed user for deletion without removing stable foreign keys.
+  """
+  def deletion_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:deletion_pending_at, :deleted_at, :email])
+    |> validate_length(:email, max: 160)
+  end
+
+  @doc """
+  Redacts local credential and profile material after WorkOS deletion.
+  """
+  def tombstone_changeset(user, attrs) do
+    user
+    |> change(attrs)
+    |> validate_required([:email, :deletion_pending_at, :deleted_at])
+    |> validate_length(:email, max: 160)
+    |> unique_constraint(:email)
   end
 
   @doc """
@@ -42,7 +95,15 @@ defmodule Hermitscale.Accounts.User do
       changeset
       |> unsafe_validate_unique(:email, Hermitscale.Repo)
       |> unique_constraint(:email)
-      |> validate_email_changed()
+      |> maybe_validate_email_changed(opts)
+    else
+      changeset
+    end
+  end
+
+  defp maybe_validate_email_changed(changeset, opts) do
+    if Keyword.get(opts, :require_change, true) do
+      validate_email_changed(changeset)
     else
       changeset
     end

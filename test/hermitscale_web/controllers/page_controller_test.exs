@@ -34,7 +34,7 @@ defmodule HermitscaleWeb.PageControllerTest do
 
       document =
         conn
-        |> put_session(:org_id, org.id)
+        |> log_in_user(user, org_id: org.id)
         |> get(~p"/")
         |> html_response(200)
         |> LazyHTML.from_document()

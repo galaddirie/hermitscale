@@ -5,7 +5,8 @@ defmodule HermitscaleWeb.CacheBodyReader do
   signed. Other routes read the body normally, without the copy.
   """
 
-  def read_body(%Plug.Conn{path_info: ["hooks" | _rest]} = conn, opts) do
+  def read_body(%Plug.Conn{path_info: [prefix | _rest]} = conn, opts)
+      when prefix in ["hooks", "webhooks"] do
     with {:ok, body, conn} <- Plug.Conn.read_body(conn, opts) do
       chunks = [body | conn.assigns[:raw_body_chunks] || []]
       {:ok, body, Plug.Conn.assign(conn, :raw_body_chunks, chunks)}

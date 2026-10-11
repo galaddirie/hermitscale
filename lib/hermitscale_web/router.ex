@@ -17,11 +17,21 @@ defmodule HermitscaleWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :workos_webhook do
+    plug :accepts, ["json"]
+  end
+
   scope "/hooks", HermitscaleWeb do
     pipe_through :api
 
     post "/:token", WebhookController, :inbound
     post "/:token/*rest", WebhookController, :inbound
+  end
+
+  scope "/webhooks", HermitscaleWeb do
+    pipe_through :workos_webhook
+
+    post "/workos/:endpoint_token", WorkOSWebhookController, :create
   end
 
   # Other scopes may use custom stacks.
@@ -56,10 +66,24 @@ defmodule HermitscaleWeb.Router do
     live_session :require_authenticated_user,
       on_mount: [{HermitscaleWeb.UserAuth, :require_authenticated}] do
       live "/users/settings", UserLive.Settings, :edit
-      live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
+      live "/users/settings/connected-accounts", ConnectedAccountsLive, :index
     end
 
-    post "/users/update-password", UserSessionController, :update_password
+    delete "/users/log-out", AuthController, :delete
+    delete "/users/account", AccountDeletionController, :delete
+    post "/organizations/:id/switch", OrganizationSessionController, :update
+
+    post "/users/settings/connected-accounts/:provider/connect",
+         ConnectedAccountController,
+         :create
+
+    patch "/users/settings/connected-accounts/:provider/sharing",
+          ConnectedAccountController,
+          :update
+
+    delete "/users/settings/connected-accounts/:provider",
+           ConnectedAccountController,
+           :delete
   end
 
   scope "/", HermitscaleWeb do
@@ -67,12 +91,10 @@ defmodule HermitscaleWeb.Router do
 
     live_session :current_user,
       on_mount: [{HermitscaleWeb.UserAuth, :mount_current_scope}] do
-      live "/users/register", UserLive.Registration, :new
       live "/users/log-in", UserLive.Login, :new
-      live "/users/log-in/:token", UserLive.Confirmation, :new
     end
 
-    post "/users/log-in", UserSessionController, :create
-    delete "/users/log-out", UserSessionController, :delete
+    get "/auth/sign-in", AuthController, :sign_in
+    get "/auth/workos/callback", AuthController, :callback
   end
 end

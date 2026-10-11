@@ -8,6 +8,8 @@ defmodule HermitscaleWeb.Endpoint do
     store: :cookie,
     key: "_hermitscale_key",
     signing_salt: "NACfxM87",
+    encryption_salt: "suv/FTiA",
+    secure: Application.compile_env(:hermitscale, :secure_cookies, false),
     same_site: "Lax"
   ]
 

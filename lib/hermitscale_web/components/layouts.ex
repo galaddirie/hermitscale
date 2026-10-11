@@ -66,6 +66,13 @@ defmodule HermitscaleWeb.Layouts do
               >
                 Settings
               </.link>
+              <.link
+                href={~p"/users/settings/connected-accounts"}
+                id="connected-accounts-link"
+                class="hidden rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white md:inline-flex"
+              >
+                Connections
+              </.link>
               <span
                 :if={@current_scope.organization}
                 id="current-organization-name"
@@ -96,13 +103,6 @@ defmodule HermitscaleWeb.Layouts do
                 class="rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 dark:text-slate-200 dark:hover:bg-slate-800 dark:hover:text-white"
               >
                 Log in
-              </.link>
-              <.link
-                href={~p"/users/register"}
-                id="register-link"
-                class="hidden rounded-lg bg-slate-950 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200 dark:focus-visible:ring-offset-slate-950 sm:inline-flex"
-              >
-                Create account
               </.link>
             <% end %>
             <.theme_toggle />

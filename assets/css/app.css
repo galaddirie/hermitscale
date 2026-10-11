@@ -28,33 +28,51 @@
   name: "dark";
   default: false;
   prefersdark: true;
-  color-scheme: "dark";
-  --color-base-100: oklch(30.33% 0.016 252.42);
-  --color-base-200: oklch(25.26% 0.014 253.1);
-  --color-base-300: oklch(20.15% 0.012 254.09);
-  --color-base-content: oklch(97.807% 0.029 256.847);
-  --color-primary: oklch(58% 0.233 277.117);
-  --color-primary-content: oklch(96% 0.018 272.314);
-  --color-secondary: oklch(58% 0.233 277.117);
-  --color-secondary-content: oklch(96% 0.018 272.314);
-  --color-accent: oklch(60% 0.25 292.717);
-  --color-accent-content: oklch(96% 0.016 293.756);
-  --color-neutral: oklch(37% 0.044 257.287);
-  --color-neutral-content: oklch(98% 0.003 247.858);
+  color-scheme: 'dark';
+
+  /* Surfaces — same hue family as light, tuned for dark */
+  --color-base-100: oklch(17% 0.006 286.033);
+  --color-base-200: oklch(13% 0.006 286.033);
+  --color-base-300: oklch(10% 0.006 286.033);
+  --color-base-content: oklch(92% 0.004 286.32);
+
+  /* Brand hues match light; lightness/chroma tuned for dark */
+  --color-primary: oklch(0.6724 0.1308 38.7559);
+  --color-primary-content: oklch(1 0 0);
+
+  --color-secondary: oklch(0.9818 0.0054 95.0986);
+  --color-secondary-content: oklch(0.3085 0.0035 106.6039);
+
+  --color-accent: oklch(60% 0.076 70.697);
+  --color-accent-content: oklch(47% 0.157 37.304);
+
+  --color-neutral: oklch(27% 0.006 286.033);
+  --color-neutral-content: oklch(92% 0.004 286.32);
+
+  /* Low-emphasis foreground */
+  --color-muted: color-mix(in oklch, var(--color-base-content) 60%, var(--color-base-100) 40%);
+
+  /* Optional: low-emphasis surfaces/borders */
+  --color-surface-muted: color-mix(in oklch, var(--color-base-100) 92%, var(--color-neutral) 8%);
+  --color-border-muted: color-mix(in oklch, var(--color-base-200) 85%, var(--color-neutral) 15%);
+
+  /* Alert colors - optimized for dark mode with high contrast accessibility */
   --color-info: oklch(58% 0.158 241.966);
   --color-info-content: oklch(97% 0.013 236.62);
   --color-success: oklch(60% 0.118 184.704);
   --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
+  --color-warning: oklch(64% 0.222 41.116);
+  --color-warning-content: oklch(98% 0.016 73.684);
   --color-error: oklch(58% 0.253 17.585);
   --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
+
+  /* Match light theme’s shape + density tokens */
+  --radius-selector: 1rem;
+  --radius-field: 1rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
   --depth: 1;
   --noise: 0;
 }
@@ -63,33 +81,40 @@
   name: "light";
   default: true;
   prefersdark: false;
-  color-scheme: "light";
-  --color-base-100: oklch(98% 0 0);
-  --color-base-200: oklch(96% 0.001 286.375);
-  --color-base-300: oklch(92% 0.004 286.32);
-  --color-base-content: oklch(21% 0.006 285.885);
-  --color-primary: oklch(70% 0.213 47.604);
-  --color-primary-content: oklch(98% 0.016 73.684);
-  --color-secondary: oklch(55% 0.027 264.364);
-  --color-secondary-content: oklch(98% 0.002 247.839);
-  --color-accent: oklch(0% 0 0);
-  --color-accent-content: oklch(100% 0 0);
-  --color-neutral: oklch(44% 0.017 285.786);
-  --color-neutral-content: oklch(98% 0 0);
-  --color-info: oklch(62% 0.214 259.815);
-  --color-info-content: oklch(97% 0.014 254.604);
-  --color-success: oklch(70% 0.14 182.503);
+  color-scheme: 'light';
+  --color-base-100: oklch(97.788% 0.004 56.375);
+  --color-base-200: oklch(93.982% 0.007 61.449);
+  --color-base-300: oklch(91.586% 0.006 53.44);
+  --color-base-content: oklch(23.574% 0.066 313.189);
+  --color-primary: oklch(0.6171 0.1375 39.0427);
+  --color-primary-content: oklch(1 0 0);
+  --color-secondary: oklch(0.9245 0.0138 92.9892);
+  --color-secondary-content: oklch(0.4334 0.0177 98.6048);
+  --color-accent: oklch(90% 0.076 70.697);
+  --color-accent-content: oklch(47% 0.157 37.304);
+  --color-neutral: oklch(27% 0.006 286.033);
+  --color-neutral-content: oklch(92% 0.004 286.32);
+
+  /* Low-emphasis foreground */
+  --color-muted: color-mix(in oklch, var(--color-base-content) 60%, var(--color-base-100) 40%);
+
+  /* Optional: low-emphasis surfaces/borders */
+  --color-surface-muted: color-mix(in oklch, var(--color-base-100) 92%, var(--color-neutral) 8%);
+  --color-border-muted: color-mix(in oklch, var(--color-base-200) 85%, var(--color-neutral) 15%);
+  --color-info: oklch(58% 0.158 241.966);
+  --color-info-content: oklch(97% 0.013 236.62);
+  --color-success: oklch(60% 0.118 184.704);
   --color-success-content: oklch(98% 0.014 180.72);
-  --color-warning: oklch(66% 0.179 58.318);
-  --color-warning-content: oklch(98% 0.022 95.277);
+  --color-warning: oklch(64% 0.222 41.116);
+  --color-warning-content: oklch(98% 0.016 73.684);
   --color-error: oklch(58% 0.253 17.585);
   --color-error-content: oklch(96% 0.015 12.422);
-  --radius-selector: 0.25rem;
-  --radius-field: 0.25rem;
-  --radius-box: 0.5rem;
-  --size-selector: 0.21875rem;
-  --size-field: 0.21875rem;
-  --border: 1.5px;
+  --radius-selector: 1rem;
+  --radius-field: 1rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 2px;
   --depth: 1;
   --noise: 0;
 }
@@ -103,6 +128,56 @@
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 /* Make LiveView wrapper divs transparent for layout */
-[data-phx-session], [data-phx-teleported-src] { display: contents }
+[data-phx-session],
+[data-phx-teleported-src] {
+  display: contents;
+}
 
-/* This file is for your main application CSS */
+/* Custom alert styles that respect our theme colors */
+@utility alert {
+  @apply rounded-box p-4 text-sm leading-relaxed;
+}
+
+/* Semantics over opacity hacks */
+.text-muted {
+  color: var(--color-muted);
+}
+
+/* Optional surface/border utilities */
+.bg-surface-muted {
+  background-color: var(--color-surface-muted);
+}
+
+.border-muted {
+  border-color: var(--color-border-muted);
+}
+
+/* D3 Chart Theme Integration */
+svg {
+  font-family: inherit;
+}
+
+/* Ensure chart containers blend with theme */
+[data-phx-hook='D3Chart'] svg {
+  background: transparent;
+}
+
+/* Theme-aware chart styling */
+dark svg text {
+  fill: var(--color-base-content, #374151);
+}
+
+dark svg .domain,
+dark svg .tick line {
+  stroke: var(--color-base-200, #e5e7eb);
+}
+
+@utility adaptive-icon {
+  background-color: var(--icon-light);
+}
+
+@variant dark {
+  .adaptive-icon {
+    background-color: var(--icon-dark);
+  }
+}

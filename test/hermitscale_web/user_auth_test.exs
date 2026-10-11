@@ -1,484 +1,198 @@
 defmodule HermitscaleWeb.UserAuthTest do
   use HermitscaleWeb.ConnCase, async: true
 
-  alias Phoenix.LiveView
-  alias Hermitscale.Accounts
-  alias Hermitscale.Accounts.Scope
+  alias Hermitscale.WorkOS.Session
   alias HermitscaleWeb.UserAuth
 
   import Hermitscale.AccountsFixtures
 
-  @remember_me_cookie "_hermitscale_web_user_remember_me"
-  @remember_me_cookie_max_age 60 * 60 * 24 * 14
-
   setup %{conn: conn} do
+    user = user_fixture()
+    local_session = workos_session_fixture(user)
+
     conn =
       conn
       |> Map.replace!(:secret_key_base, HermitscaleWeb.Endpoint.config(:secret_key_base))
       |> init_test_session(%{})
 
-    %{user: %{user_fixture() | authenticated_at: DateTime.utc_now(:second)}, conn: conn}
+    %{conn: conn, user: user, local_session: local_session}
   end
 
-  describe "log_in_user/3" do
-    test "stores the user token in the session", %{conn: conn, user: user} do
-      conn = UserAuth.log_in_user(conn, user)
-      assert token = get_session(conn, :user_token)
-      assert get_session(conn, :live_socket_id) == "users_sessions:#{Base.url_encode64(token)}"
-      assert redirected_to(conn) == ~p"/"
-      assert Accounts.get_user_by_session_token(token)
-    end
-
-    test "clears everything previously stored in the session", %{conn: conn, user: user} do
-      conn = conn |> put_session(:to_be_removed, "value") |> UserAuth.log_in_user(user)
-      refute get_session(conn, :to_be_removed)
-    end
-
-    test "keeps session when re-authenticating", %{conn: conn, user: user} do
-      conn =
-        conn
-        |> assign(:current_scope, Scope.for_user(user))
-        |> put_session(:to_be_removed, "value")
-        |> UserAuth.log_in_user(user)
-
-      assert get_session(conn, :to_be_removed)
-    end
-
-    test "clears session when user does not match when re-authenticating", %{
+  describe "put_workos_session/4" do
+    test "renews the cookie session and stores only the opaque handle", %{
       conn: conn,
-      user: user
+      local_session: local_session
     } do
-      other_user = user_fixture()
-
       conn =
         conn
-        |> assign(:current_scope, Scope.for_user(other_user))
-        |> put_session(:to_be_removed, "value")
-        |> UserAuth.log_in_user(user)
+        |> put_session(:remove_me, "value")
+        |> UserAuth.put_workos_session(
+          local_session.handle,
+          local_session.session,
+          "/users/settings"
+        )
 
-      refute get_session(conn, :to_be_removed)
-    end
-
-    test "redirects to the configured path", %{conn: conn, user: user} do
-      conn = conn |> put_session(:user_return_to, "/hello") |> UserAuth.log_in_user(user)
-      assert redirected_to(conn) == "/hello"
-    end
-
-    test "writes a cookie if remember_me is configured", %{conn: conn, user: user} do
-      conn = conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
-      assert get_session(conn, :user_token) == conn.cookies[@remember_me_cookie]
-      assert get_session(conn, :user_remember_me) == true
-
-      assert %{value: signed_token, max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
-      assert signed_token != get_session(conn, :user_token)
-      assert max_age == @remember_me_cookie_max_age
-    end
-
-    test "redirects to settings when user is already logged in", %{conn: conn, user: user} do
-      conn =
-        conn
-        |> assign(:current_scope, Scope.for_user(user))
-        |> UserAuth.log_in_user(user)
-
-      assert redirected_to(conn) == ~p"/users/settings"
-    end
-
-    test "writes a cookie if remember_me was set in previous session", %{conn: conn, user: user} do
-      conn = conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
-      assert get_session(conn, :user_token) == conn.cookies[@remember_me_cookie]
-      assert get_session(conn, :user_remember_me) == true
-
-      conn =
-        conn
-        |> recycle()
-        |> Map.replace!(:secret_key_base, HermitscaleWeb.Endpoint.config(:secret_key_base))
-        |> fetch_cookies()
-        |> init_test_session(%{user_remember_me: true})
-
-      # the conn is already logged in and has the remember_me cookie set,
-      # now we log in again and even without explicitly setting remember_me,
-      # the cookie should be set again
-      conn = conn |> UserAuth.log_in_user(user, %{})
-      assert %{value: signed_token, max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
-      assert signed_token != get_session(conn, :user_token)
-      assert max_age == @remember_me_cookie_max_age
-      assert get_session(conn, :user_remember_me) == true
-    end
-  end
-
-  describe "logout_user/1" do
-    test "erases session and cookies", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-
-      conn =
-        conn
-        |> put_session(:user_token, user_token)
-        |> put_req_cookie(@remember_me_cookie, user_token)
-        |> fetch_cookies()
-        |> UserAuth.log_out_user()
-
+      assert get_session(conn, :auth_session_token) == local_session.handle
+      assert get_session(conn, :live_socket_id) == Session.socket_topic(local_session.session)
       refute get_session(conn, :user_token)
-      refute conn.cookies[@remember_me_cookie]
-      assert %{max_age: 0} = conn.resp_cookies[@remember_me_cookie]
-      assert redirected_to(conn) == ~p"/"
-      refute Accounts.get_user_by_session_token(user_token)
-    end
-
-    test "broadcasts to the given live_socket_id", %{conn: conn} do
-      live_socket_id = "users_sessions:abcdef-token"
-      HermitscaleWeb.Endpoint.subscribe(live_socket_id)
-
-      conn
-      |> put_session(:live_socket_id, live_socket_id)
-      |> UserAuth.log_out_user()
-
-      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^live_socket_id}
-    end
-
-    test "works even if user is already logged out", %{conn: conn} do
-      conn = conn |> fetch_cookies() |> UserAuth.log_out_user()
-      refute get_session(conn, :user_token)
-      assert %{max_age: 0} = conn.resp_cookies[@remember_me_cookie]
-      assert redirected_to(conn) == ~p"/"
+      refute get_session(conn, :remove_me)
+      assert redirected_to(conn) == "/users/settings"
     end
   end
 
   describe "fetch_current_scope_for_user/2" do
-    test "authenticates user from session", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-
-      conn =
-        conn |> put_session(:user_token, user_token) |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.user.id == user.id
-      assert conn.assigns.current_scope.user.authenticated_at == user.authenticated_at
-      assert get_session(conn, :user_token) == user_token
-    end
-
-    test "authenticates user from cookies", %{conn: conn, user: user} do
-      logged_in_conn =
-        conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
-
-      user_token = logged_in_conn.cookies[@remember_me_cookie]
-      %{value: signed_token} = logged_in_conn.resp_cookies[@remember_me_cookie]
-
+    test "authenticates and hydrates the local organization", %{
+      conn: conn,
+      user: user,
+      local_session: local_session
+    } do
       conn =
         conn
-        |> put_req_cookie(@remember_me_cookie, signed_token)
+        |> put_session(:auth_session_token, local_session.handle)
         |> UserAuth.fetch_current_scope_for_user([])
 
       assert conn.assigns.current_scope.user.id == user.id
-      assert conn.assigns.current_scope.user.authenticated_at == user.authenticated_at
-      assert get_session(conn, :user_token) == user_token
-      assert get_session(conn, :user_remember_me)
-
-      assert get_session(conn, :live_socket_id) ==
-               "users_sessions:#{Base.url_encode64(user_token)}"
+      assert conn.assigns.current_scope.organization.personal
+      assert conn.assigns.auth_session.id == local_session.session.id
     end
 
-    test "does not authenticate if data is missing", %{conn: conn, user: user} do
-      _ = Accounts.generate_user_session_token(user)
-      conn = UserAuth.fetch_current_scope_for_user(conn, [])
-      refute get_session(conn, :user_token)
-      refute conn.assigns.current_scope
-    end
-
-    test "reissues a new token after a few days and refreshes cookie", %{conn: conn, user: user} do
-      logged_in_conn =
-        conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
-
-      token = logged_in_conn.cookies[@remember_me_cookie]
-      %{value: signed_token} = logged_in_conn.resp_cookies[@remember_me_cookie]
-
-      offset_user_token(token, -10, :day)
-      {user, _} = Accounts.get_user_by_session_token(token)
-
+    test "clears an invalid opaque handle", %{conn: conn} do
       conn =
         conn
-        |> put_session(:user_token, token)
-        |> put_session(:user_remember_me, true)
-        |> put_req_cookie(@remember_me_cookie, signed_token)
+        |> put_session(:auth_session_token, "invalid")
         |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.user.id == user.id
-      assert conn.assigns.current_scope.user.authenticated_at == user.authenticated_at
-      assert new_token = get_session(conn, :user_token)
-      assert new_token != token
-      assert %{value: new_signed_token, max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
-      assert new_signed_token != signed_token
-      assert max_age == @remember_me_cookie_max_age
-    end
-  end
-
-  describe "on_mount :mount_current_scope" do
-    setup %{conn: conn} do
-      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
-    end
-
-    test "assigns current_scope based on a valid user_token", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope.user.id == user.id
-    end
-
-    test "assigns nil to current_scope assign if there isn't a valid user_token", %{conn: conn} do
-      user_token = "invalid_token"
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope == nil
-    end
-
-    test "assigns nil to current_scope assign if there isn't a user_token", %{conn: conn} do
-      session = conn |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope == nil
-    end
-  end
-
-  describe "on_mount :require_authenticated" do
-    test "authenticates current_scope based on a valid user_token", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:require_authenticated, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope.user.id == user.id
-    end
-
-    test "redirects to login page if there isn't a valid user_token", %{conn: conn} do
-      user_token = "invalid_token"
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: HermitscaleWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      {:halt, updated_socket} = UserAuth.on_mount(:require_authenticated, %{}, session, socket)
-      assert updated_socket.assigns.current_scope == nil
-    end
-
-    test "redirects to login page if there isn't a user_token", %{conn: conn} do
-      session = conn |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: HermitscaleWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      {:halt, updated_socket} = UserAuth.on_mount(:require_authenticated, %{}, session, socket)
-      assert updated_socket.assigns.current_scope == nil
-    end
-  end
-
-  describe "fetch_current_scope_for_user/2 organization hydration" do
-    test "hydrates the personal org and persists it in the session", %{conn: conn, user: user} do
-      [personal_org] = Accounts.list_user_organizations(user)
-
-      conn =
-        conn
-        |> put_session(:user_token, Accounts.generate_user_session_token(user))
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.organization.id == personal_org.id
-      assert conn.assigns.current_scope.membership.role == :owner
-      assert get_session(conn, :org_id) == personal_org.id
-    end
-
-    test "honors a session org id the user is a member of", %{conn: conn, user: user} do
-      org = organization_fixture()
-      organization_membership_fixture(user, org)
-
-      conn =
-        conn
-        |> put_session(:user_token, Accounts.generate_user_session_token(user))
-        |> put_session(:org_id, org.id)
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.organization.id == org.id
-      assert conn.assigns.current_scope.membership.role == :member
-    end
-
-    test "falls back to the personal org for a non-member org id", %{conn: conn, user: user} do
-      foreign_org = organization_fixture()
-      [personal_org] = Accounts.list_user_organizations(user)
-
-      conn =
-        conn
-        |> put_session(:user_token, Accounts.generate_user_session_token(user))
-        |> put_session(:org_id, foreign_org.id)
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.organization.id == personal_org.id
-      assert get_session(conn, :org_id) == personal_org.id
-    end
-
-    test "leaves anonymous scopes untouched", %{conn: conn} do
-      conn = UserAuth.fetch_current_scope_for_user(conn, [])
 
       assert conn.assigns.current_scope == nil
+      refute get_session(conn, :auth_session_token)
+    end
+
+    test "rejects a locally revoked WorkOS session", %{
+      conn: conn,
+      local_session: local_session
+    } do
+      {:ok, _revoked} = Session.revoke(local_session.handle)
+
+      conn =
+        conn
+        |> put_session(:auth_session_token, local_session.handle)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope == nil
+      refute get_session(conn, :auth_session_token)
+    end
+
+    test "uses the organization fixed on the server-side session", %{conn: conn, user: user} do
+      organization = organization_fixture()
+      organization_membership_fixture(user, organization)
+      local_session = workos_session_fixture(user, org_id: organization.id)
+
+      conn =
+        conn
+        |> put_session(:auth_session_token, local_session.handle)
+        |> UserAuth.fetch_current_scope_for_user([])
+
+      assert conn.assigns.current_scope.organization.id == organization.id
       refute get_session(conn, :org_id)
     end
   end
 
-  describe "on_mount :mount_current_scope organization hydration" do
-    setup %{conn: conn} do
-      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
+  describe "LiveView on_mount" do
+    test "assigns the verified scope and auth session", %{
+      conn: conn,
+      user: user,
+      local_session: local_session
+    } do
+      session =
+        conn
+        |> put_session(:auth_session_token, local_session.handle)
+        |> get_session()
+
+      assert {:cont, socket} =
+               UserAuth.on_mount(
+                 :require_authenticated,
+                 %{},
+                 session,
+                 %Phoenix.LiveView.Socket{}
+               )
+
+      assert socket.assigns.current_scope.user.id == user.id
+      assert socket.assigns.auth_session.id == local_session.session.id
     end
 
-    test "hydrates the org for an authenticated session", %{conn: conn, user: user} do
-      [personal_org] = Accounts.list_user_organizations(user)
-      user_token = Accounts.generate_user_session_token(user)
-      session = conn |> put_session(:user_token, user_token) |> get_session()
+    test "redirects an anonymous protected mount", %{conn: conn} do
+      socket = %Phoenix.LiveView.Socket{
+        endpoint: HermitscaleWeb.Endpoint,
+        assigns: %{__changed__: %{}, flash: %{}}
+      }
 
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
+      assert {:halt, halted_socket} =
+               UserAuth.on_mount(:require_authenticated, %{}, get_session(conn), socket)
 
-      assert updated_socket.assigns.current_scope.organization.id == personal_org.id
-      assert updated_socket.assigns.current_scope.membership.role == :owner
+      assert halted_socket.assigns.current_scope == nil
     end
 
-    test "honors the session org id", %{conn: conn, user: user} do
-      org = organization_fixture()
-      organization_membership_fixture(user, org)
-      user_token = Accounts.generate_user_session_token(user)
+    test "requires WorkOS auth_time freshness for sudo mounts", %{conn: conn, user: user} do
+      stale_session =
+        workos_session_fixture(user,
+          authenticated_at: DateTime.add(DateTime.utc_now(:second), -11, :minute)
+        )
 
       session =
         conn
-        |> put_session(:user_token, user_token)
-        |> put_session(:org_id, org.id)
+        |> put_session(:auth_session_token, stale_session.handle)
         |> get_session()
 
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope.organization.id == org.id
-    end
-
-    test "continues with a nil scope for anonymous sessions", %{conn: conn} do
-      session = conn |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope == nil
-    end
-  end
-
-  describe "on_mount :require_sudo_mode" do
-    test "allows users that have authenticated in the last 10 minutes", %{conn: conn, user: user} do
-      user_token = Accounts.generate_user_session_token(user)
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      socket = %LiveView.Socket{
+      socket = %Phoenix.LiveView.Socket{
         endpoint: HermitscaleWeb.Endpoint,
         assigns: %{__changed__: %{}, flash: %{}}
       }
 
-      assert {:cont, _updated_socket} =
-               UserAuth.on_mount(:require_sudo_mode, %{}, session, socket)
-    end
-
-    test "redirects when authentication is too old", %{conn: conn, user: user} do
-      eleven_minutes_ago = DateTime.utc_now(:second) |> DateTime.add(-11, :minute)
-      user = %{user | authenticated_at: eleven_minutes_ago}
-      user_token = Accounts.generate_user_session_token(user)
-      {user, token_inserted_at} = Accounts.get_user_by_session_token(user_token)
-      assert DateTime.compare(token_inserted_at, user.authenticated_at) == :gt
-      session = conn |> put_session(:user_token, user_token) |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: HermitscaleWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      assert {:halt, _updated_socket} =
+      assert {:halt, _socket} =
                UserAuth.on_mount(:require_sudo_mode, %{}, session, socket)
     end
   end
 
   describe "require_authenticated_user/2" do
-    setup %{conn: conn} do
-      %{conn: UserAuth.fetch_current_scope_for_user(conn, [])}
-    end
+    test "redirects and stores a GET return path", %{conn: conn} do
+      conn =
+        %{conn | path_info: ["users", "settings"], query_string: ""}
+        |> assign(:current_scope, nil)
+        |> fetch_flash()
+        |> UserAuth.require_authenticated_user([])
 
-    test "redirects if user is not authenticated", %{conn: conn} do
-      conn = conn |> fetch_flash() |> UserAuth.require_authenticated_user([])
       assert conn.halted
-
       assert redirected_to(conn) == ~p"/users/log-in"
-
-      assert Phoenix.Flash.get(conn.assigns.flash, :error) ==
-               "You must log in to access this page."
+      assert get_session(conn, :user_return_to) == "/users/settings"
     end
 
-    test "stores the path to redirect to on GET", %{conn: conn} do
-      halted_conn =
-        %{conn | path_info: ["foo"], query_string: ""}
-        |> fetch_flash()
-        |> UserAuth.require_authenticated_user([])
+    test "continues for a verified scope", %{conn: conn, user: user} do
+      scope = user_scope_fixture(user)
 
-      assert halted_conn.halted
-      assert get_session(halted_conn, :user_return_to) == "/foo"
-
-      halted_conn =
-        %{conn | path_info: ["foo"], query_string: "bar=baz"}
-        |> fetch_flash()
-        |> UserAuth.require_authenticated_user([])
-
-      assert halted_conn.halted
-      assert get_session(halted_conn, :user_return_to) == "/foo?bar=baz"
-
-      halted_conn =
-        %{conn | path_info: ["foo"], query_string: "bar", method: "POST"}
-        |> fetch_flash()
-        |> UserAuth.require_authenticated_user([])
-
-      assert halted_conn.halted
-      refute get_session(halted_conn, :user_return_to)
-    end
-
-    test "does not redirect if user is authenticated", %{conn: conn, user: user} do
       conn =
         conn
-        |> assign(:current_scope, Scope.for_user(user))
+        |> assign(:current_scope, scope)
         |> UserAuth.require_authenticated_user([])
 
       refute conn.halted
-      refute conn.status
     end
   end
 
-  describe "disconnect_sessions/1" do
-    test "broadcasts disconnect messages for each token" do
-      tokens = [%{token: "token1"}, %{token: "token2"}]
+  describe "clear_workos_session/1" do
+    test "disconnects the LiveView topic and clears all session data", %{
+      conn: conn,
+      local_session: local_session
+    } do
+      topic = Session.socket_topic(local_session.session)
+      HermitscaleWeb.Endpoint.subscribe(topic)
 
-      for %{token: token} <- tokens do
-        HermitscaleWeb.Endpoint.subscribe("users_sessions:#{Base.url_encode64(token)}")
-      end
+      conn =
+        conn
+        |> put_session(:auth_session_token, local_session.handle)
+        |> put_session(:live_socket_id, topic)
+        |> UserAuth.clear_workos_session()
 
-      UserAuth.disconnect_sessions(tokens)
-
-      assert_receive %Phoenix.Socket.Broadcast{
-        event: "disconnect",
-        topic: "users_sessions:dG9rZW4x"
-      }
-
-      assert_receive %Phoenix.Socket.Broadcast{
-        event: "disconnect",
-        topic: "users_sessions:dG9rZW4y"
-      }
+      refute get_session(conn, :auth_session_token)
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic}
     end
   end
 end

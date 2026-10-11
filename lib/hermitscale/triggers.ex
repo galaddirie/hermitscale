@@ -230,7 +230,12 @@ defmodule Hermitscale.Triggers do
   """
   def credentials_for(%Trigger{} = trigger) do
     trigger = Repo.preload(trigger, :graph)
-    Credentials.resolve_node(trigger.graph.definition, trigger.node_id)
+
+    Credentials.resolve_node(
+      trigger.graph.definition,
+      trigger.node_id,
+      trigger.graph.org_id
+    )
   end
 
   @doc """
@@ -341,7 +346,7 @@ defmodule Hermitscale.Triggers do
   defp mode_attrs(_mode, _graph, _module, _params, _config, _existing, _base), do: {:ok, %{}}
 
   defp node_credentials(graph, node_id) do
-    case Credentials.resolve_node(graph.definition, node_id) do
+    case Credentials.resolve_node(graph.definition, node_id, graph.org_id) do
       {:ok, token} -> {:ok, token}
       {:error, reason} -> {:error, {:credentials, node_id, reason}}
     end

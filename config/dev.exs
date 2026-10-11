@@ -70,6 +70,25 @@ config :hermitscale, HermitscaleWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :hermitscale, dev_routes: true
 
+config :hermitscale, Hermitscale.WorkOS.Client,
+  api_key: System.get_env("WORKOS_API_KEY", "sk_test_development"),
+  client_id: System.get_env("WORKOS_CLIENT_ID", "client_development"),
+  redirect_uri:
+    System.get_env("WORKOS_REDIRECT_URI", "http://localhost:4000/auth/workos/callback")
+
+config :hermitscale, Hermitscale.WorkOS.JWT,
+  client_id: System.get_env("WORKOS_CLIENT_ID", "client_development"),
+  issuer: System.get_env("WORKOS_JWT_ISSUER")
+
+config :hermitscale, Hermitscale.WorkOS.TokenCipher,
+  active_key_id: "development",
+  keys: %{"development" => :crypto.hash(:sha256, "hermitscale-development-workos-key")}
+
+config :hermitscale, Hermitscale.WorkOS.EventInbox,
+  endpoint_token: System.get_env("WORKOS_WEBHOOK_ENDPOINT_TOKEN", "development"),
+  secrets: [System.get_env("WORKOS_WEBHOOK_SECRET", "whsec_development")],
+  tolerance_seconds: 300
+
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 
