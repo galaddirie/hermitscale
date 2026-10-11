@@ -160,6 +160,61 @@ defmodule Hermitscale.WorkflowsFixtures do
     )
   end
 
+  def constant_map_reduce_graph do
+    graph = map_reduce_graph()
+
+    nodes =
+      Enum.map(graph["nodes"], fn
+        %{"id" => "mapper"} = node ->
+          %{node | "type" => "map", "params" => %{"value" => 3}}
+
+        %{"id" => "summer"} = node ->
+          %{
+            node
+            | "type" => "reduce",
+              "params" => %{"initial" => 0, "value" => "{{ $acc | plus: $json }}"}
+          }
+
+        node ->
+          node
+      end)
+
+    %{graph | "nodes" => nodes}
+  end
+
+  def rewirable_map_reduce_graph do
+    %{
+      "schema_version" => 1,
+      "id" => "wf_rewirable_map",
+      "name" => "rewirable_map",
+      "nodes" => [
+        %{
+          "id" => "a",
+          "type" => "math",
+          "version" => 1,
+          "params" => %{"operation" => "multiply", "left" => 10, "right" => 1}
+        },
+        %{
+          "id" => "b",
+          "type" => "math",
+          "version" => 1,
+          "params" => %{"operation" => "multiply", "left" => 20, "right" => 1}
+        },
+        %{"id" => "mapper", "type" => "map", "version" => 1, "params" => %{}},
+        %{
+          "id" => "sum",
+          "type" => "reduce",
+          "version" => 1,
+          "params" => %{"initial" => 0, "value" => "{{ $acc | plus: $json }}"}
+        }
+      ],
+      "connections" => [
+        %{"from" => "a", "to" => "mapper"},
+        %{"from" => "mapper", "to" => "sum"}
+      ]
+    }
+  end
+
   def node_ref_map_graph(attrs \\ %{}) do
     attrs = Map.new(attrs)
 

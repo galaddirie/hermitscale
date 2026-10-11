@@ -7,7 +7,7 @@ defmodule Hermitscale.Workflows do
 
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.Repo
-  alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Run, Validator}
+  alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Replay, Run, Validator}
   alias Runic.Workflow
 
   @runner Hermitscale.WorkflowRunner
@@ -105,6 +105,7 @@ defmodule Hermitscale.Workflows do
     now = DateTime.utc_now(:second)
 
     with {:ok, workflow} <- Compiler.compile(graph.definition),
+         definition_event <- Replay.definition_event(workflow),
          {:ok, run_context} <-
            Credentials.resolve_run_context(
              graph.definition,
@@ -119,6 +120,8 @@ defmodule Hermitscale.Workflows do
              status: :running,
              started_at: now
            }),
+         {store_module, store_state} <- Runic.Runner.get_store(@runner),
+         {:ok, _cursor} <- store_module.append(run.id, [definition_event], store_state),
          {:ok, _pid} <-
            Runic.Runner.start_workflow(
              @runner,
@@ -149,12 +152,9 @@ defmodule Hermitscale.Workflows do
              graph.org_id
            ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
-         {:ok, event_stream} <- store_module.stream(run.id, store_state) do
-      workflow =
-        event_stream
-        |> Enum.to_list()
-        |> Workflow.from_events(base_workflow)
-        |> Workflow.put_run_context(run_context)
+         {:ok, event_stream} <- store_module.stream(run.id, store_state),
+         {:ok, workflow} <- Replay.restore(event_stream, base_workflow) do
+      workflow = Workflow.put_run_context(workflow, run_context)
 
       Runic.Runner.start_workflow(
         @runner,

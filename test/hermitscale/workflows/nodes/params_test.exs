@@ -51,4 +51,37 @@ defmodule Hermitscale.Workflows.Nodes.ParamsTest do
       end
     end
   end
+
+  describe "Runic parameter bindings" do
+    test "compiled expressions have deterministic, canonical bindings and keep typed results" do
+      schema = NimbleOptions.new!(count: [type: :any, required: true]).schema
+      params = Params.cast!(%{"count" => "{{ $json.count | to_number }}"}, schema, [:count])
+      binding = Params.bind(Map.put(params, :flag, false))
+
+      assert binding == Params.bind(Map.new([{:flag, false} | Map.to_list(params)]))
+      assert %Runic.Identity{} = Runic.Identity.derive(:component_definition, binding)
+
+      assert Params.resolve!(binding, %{"json" => %{"count" => "7"}}) == %{
+               count: 7,
+               flag: false
+             }
+
+      changed = Params.cast!(%{"count" => "{{ $json.count | times: 2 }}"}, schema, [:count])
+
+      refute Runic.Identity.derive(:component_definition, binding) ==
+               Runic.Identity.derive(:component_definition, Params.bind(changed))
+    end
+
+    test "nested runtime-only values cannot bypass Runic identity validation" do
+      for value <- [self(), make_ref(), fn -> :local end] do
+        assert_raise ArgumentError, ~r/runtime-only values/, fn ->
+          Params.bind(%{nested: [{:payload, %{value: value}}]})
+        end
+      end
+    end
+
+    test "malformed internal bindings fail instead of resolving to a fallback" do
+      assert_raise ArgumentError, fn -> Params.resolve!(<<0>>, %{}) end
+    end
+  end
 end

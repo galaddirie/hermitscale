@@ -1,0 +1,7 @@
+Running ExUnit with seed: 213279, max_cases: 22
+
+.......................................................................................................................................................................................................................................................12:57:52.134 [warning] stream source failed trigger_id=aa48675a-e4b9-4ee4-911a-0ad57915bc10 failures=1 reason=:connection_refused
+.12:57:52.148 [warning] trigger poll failed trigger_id=4fab7abf-3d34-4817-8c66-2be40d7f28b9 failures=1 reason=:probe_failure
+....................................................
+Finished in 5.1 seconds (0.6s async, 4.4s sync)
+300 tests, 0 failures

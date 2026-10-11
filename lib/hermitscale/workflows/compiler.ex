@@ -93,36 +93,32 @@ defmodule Hermitscale.Workflows.Compiler do
     end
   end
 
-  # Wires a map region as first-class Runic nodes: prepare -> fan_out -> mapper,
-  # then the per-item body chain, then (if present) the reduce's fan-in bound
-  # structurally to the fan-out. Body steps run per element via ordinary edges.
+  # Compose the map region through native Map, Step and Reduce components.
   defp compile_map_region(map_id, state, compile_context) do
     region = map_region(map_id, compile_context)
-    {prepare, fan_out, mapper, parents} = build_map_node(map_id, compile_context)
+    {prepare, map, parents} = build_map_node(map_id, compile_context)
     parent_refs = output_refs(parents, state.outputs)
 
     workflow =
       state.workflow
       |> add_node(prepare, parent_refs)
-      |> Workflow.attach_fan_out(fan_out, to: prepare)
-      |> Workflow.add_step(fan_out, mapper)
-      |> Workflow.register_component(mapper)
+      |> Workflow.add(map, to: prepare.name, log: false)
       |> add_node_policy(map_id, compile_context)
 
-    {workflow, leaf} =
-      Enum.reduce(region.body_ids, {workflow, mapper}, fn body_id, {workflow, previous} ->
-        step = build_region_step(body_id, previous.name, compile_context)
+    {workflow, leaf_id} =
+      Enum.reduce(region.body_ids, {workflow, map_id}, fn body_id, {workflow, previous_id} ->
+        step = build_region_step(body_id, previous_id, compile_context)
 
         workflow =
           workflow
-          |> Workflow.add_step(previous, step)
+          |> Workflow.add(step, to: previous_id, log: false)
           |> add_node_policy(body_id, compile_context)
 
-        {workflow, step}
+        {workflow, body_id}
       end)
 
     state =
-      %{state | outputs: Map.put(state.outputs, map_id, mapper.name), workflow: workflow}
+      %{state | outputs: Map.put(state.outputs, map_id, map_id), workflow: workflow}
       |> consume_nodes(region.body_ids)
 
     case region.reduce_id do
@@ -130,17 +126,17 @@ defmodule Hermitscale.Workflows.Compiler do
         state
 
       reduce_id ->
-        fan_in = build_reduce_node(reduce_id, compile_context)
+        reduce = build_reduce_node(reduce_id, map.name, compile_context)
 
         workflow =
           state.workflow
-          |> Workflow.attach_fan_in(fan_in, fan_out, from: leaf)
+          |> Workflow.add(reduce, to: leaf_id, log: false)
           |> add_node_policy(reduce_id, compile_context)
 
         %{
           state
           | consumed: MapSet.put(state.consumed, reduce_id),
-            outputs: Map.put(state.outputs, reduce_id, fan_in.name),
+            outputs: Map.put(state.outputs, reduce_id, reduce.name),
             workflow: workflow
         }
     end
@@ -173,15 +169,21 @@ defmodule Hermitscale.Workflows.Compiler do
     refs = Expr.node_references(params) -- mains
     parents = mains ++ refs
 
-    {:region, prepare, fan_out, mapper} =
+    {:region, prepare, map} =
       build_node(id, params, %{name: id, ref_ids: refs}, compile_context)
 
-    {prepare, fan_out, mapper, parents}
+    {prepare, map, parents}
   end
 
-  defp build_reduce_node(id, compile_context) do
+  defp build_reduce_node(id, map_name, compile_context) do
     params = node_params(id, compile_context)
-    build_node(id, params, %{ambient: compile_context.ambient, name: id}, compile_context)
+
+    build_node(
+      id,
+      params,
+      %{ambient: compile_context.ambient, name: id, map: map_name},
+      compile_context
+    )
   end
 
   defp build_region_step(id, previous_id, compile_context) do
@@ -273,8 +275,18 @@ defmodule Hermitscale.Workflows.Compiler do
 
   defp add_node(workflow, node, []), do: Workflow.add(workflow, node, log: false)
 
-  defp add_node(workflow, node, [parent]),
-    do: Workflow.add(workflow, node, to: parent, log: false)
+  defp add_node(workflow, node, [parent]) do
+    case Workflow.get_component!(workflow, parent) do
+      %Workflow.Reduce{} ->
+        Workflow.add(workflow, node,
+          connections: [[from: {parent, :result}, to: :in]],
+          log: false
+        )
+
+      _other ->
+        Workflow.add(workflow, node, to: parent, log: false)
+    end
+  end
 
   defp add_node(workflow, node, parents),
     do: Workflow.add(workflow, node, to: parents, log: false)

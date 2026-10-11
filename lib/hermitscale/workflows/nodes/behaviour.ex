@@ -108,6 +108,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
     quote generated: true do
       @impl true
       def build(params, %{name: name, parents: parents, main_count: main_count}) do
+        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
         joined? = length(parents) >= 2
 
         Runic.step(
@@ -124,7 +125,9 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
                 runtime
               )
 
-            resolved_params = Hermitscale.Workflows.Expr.resolve!(^params, expression_context)
+            resolved_params =
+              Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
+
             work(resolved_params, main, deps)
           end,
           name: name
@@ -133,17 +136,17 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
     end
   end
 
-  # A map is three graph nodes: a `prepare` step that normalizes the collection
-  # (and zips in any `$node` reference values) into `{element, refs}` tuples, a
-  # `FanOut` that splits them per element, and a `mapper` step running `work/3`
-  # per element. The compiler wires the body chain and reduce onto these with
-  # ordinary edges — no reaching into Runic internals.
+  # Prepare normalizes the collection and zips in `$node` references. Native
+  # Map owns fan-out and the mapper; the compiler composes the body and Reduce
+  # through the public component API.
   def __gen_build__(%{kind: :map, requires: requires}) do
     deps = deps_ast(requires)
 
     quote generated: true do
       @impl true
       def build(params, %{name: name, ref_ids: ref_ids}) do
+        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
+
         prepare =
           Runic.step(
             fn input ->
@@ -167,8 +170,6 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
             name: "#{name}$prepare"
           )
 
-        fan_out = Runic.Workflow.FanOut.new(name: "#{name}$fan_out")
-
         mapper =
           Runic.step(
             fn {element, refs} ->
@@ -183,28 +184,31 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
                   runtime
                 )
 
-              resolved_params = Hermitscale.Workflows.Expr.resolve!(^params, expression_context)
+              resolved_params =
+                Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
+
               work(resolved_params, element, deps)
             end,
             name: name
           )
 
-        {:region, prepare, fan_out, mapper}
+        map = Runic.map([mapper], name: "#{name}$collection")
+        {:region, prepare, map}
       end
     end
   end
 
-  # A reduce is a `FanIn` that folds bare per-element values into a bare
-  # accumulator. The static `initial` seeds it; the running accumulator is `$acc`
-  # and the current element `$json`. The fan-in coordinator invokes the reducer
-  # as `reducer/2` (no `context/1`), so ambient namespaces are captured here.
-  # The compiler draws the structural fan-out binding.
+  # Native Reduce folds per-element values. Its mapped coordinator invokes
+  # reducer/2, so ambient expression namespaces remain captured at compile time.
+  # The named Map binding identifies the owning collection through body Steps.
   def __gen_build__(%{kind: :reduce, requires: requires}) do
     deps = deps_ast(requires)
 
     quote generated: true do
       @impl true
-      def build(params, %{name: name, ambient: ambient}) do
+      def build(params, %{name: name, ambient: ambient, map: map_name}) do
+        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
+
         reduce =
           Runic.reduce(
             Map.get(params, :initial),
@@ -216,13 +220,16 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
                 |> Hermitscale.Workflows.Expr.build_context(^ambient)
                 |> Map.put("acc", acc)
 
-              resolved_params = Hermitscale.Workflows.Expr.resolve!(^params, expression_context)
+              resolved_params =
+                Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
+
               work(resolved_params, element, deps)
             end,
-            name: name
+            name: name,
+            map: map_name
           )
 
-        reduce.fan_in
+        reduce
       end
     end
   end

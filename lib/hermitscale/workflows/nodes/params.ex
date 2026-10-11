@@ -6,6 +6,29 @@ defmodule Hermitscale.Workflows.Nodes.Params do
   alias Hermitscale.Workflows.Expr
 
   @doc """
+  Encodes compiler-created params for capture in a Runic closure.
+
+  Compiled Solid templates are not canonical Runic identity values. Capturing
+  their deterministic bytes keeps the compiled plan out of identity projection.
+  These bindings are internal, version-coupled data, not an external input format.
+  """
+  @spec bind(map()) :: binary()
+  def bind(params) when is_map(params) do
+    assert_static!(params)
+    :erlang.term_to_binary(params, [:deterministic])
+  end
+
+  @doc """
+  Resolves an internal parameter binding against the current expression context.
+  """
+  @spec resolve!(binary(), map()) :: map()
+  def resolve!(binding, context) when is_binary(binding) and is_map(context) do
+    binding
+    |> :erlang.binary_to_term([:safe])
+    |> Expr.resolve!(context)
+  end
+
+  @doc """
   Casts string-keyed graph params into a validated, atom-keyed map.
 
   Only schema-declared keys are considered. The output atoms all come from the
@@ -57,6 +80,27 @@ defmodule Hermitscale.Workflows.Nodes.Params do
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end
   end
+
+  defp assert_static!(value)
+       when is_pid(value) or is_reference(value) or is_port(value) or is_function(value) do
+    raise ArgumentError, "workflow parameter bindings cannot contain runtime-only values"
+  end
+
+  defp assert_static!(value) when is_map(value) do
+    value
+    |> Map.to_list()
+    |> Enum.each(fn {key, leaf} ->
+      assert_static!(key)
+      assert_static!(leaf)
+    end)
+  end
+
+  defp assert_static!(value) when is_list(value), do: Enum.each(value, &assert_static!/1)
+
+  defp assert_static!(value) when is_tuple(value),
+    do: value |> Tuple.to_list() |> assert_static!()
+
+  defp assert_static!(_value), do: :ok
 
   defp present_expr_fields(raw, schema, expr_fields) do
     schema

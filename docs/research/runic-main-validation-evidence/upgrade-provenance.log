@@ -1,0 +1,4 @@
+Runic version: ~c"0.1.0-alpha.11"
+Loaded Workflow beam: ~c"/Users/galdirie/code/hermitscale/_build/test/lib/runic/ebin/Elixir.Runic.Workflow.beam"
+Patched attachment API: false
+PR43 execute API: false

@@ -5,7 +5,7 @@ defmodule Hermitscale.MixProject do
     [
       app: :hermitscale,
       version: "0.1.0",
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -69,7 +69,7 @@ defmodule Hermitscale.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:runic, path: "vendor/runic"},
+      {:runic, github: "zblanco/runic", branch: "main"},
       {:solid, "~> 1.3.2"}
     ]
   end
