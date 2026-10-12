@@ -14,7 +14,7 @@ defmodule Hermitscale.Triggers do
   alias Hermitscale.Authorization
   alias Hermitscale.Integrations.ExecutionContext
   alias Hermitscale.Repo
-  alias Hermitscale.Triggers.{Dispatcher, Trigger}
+  alias Hermitscale.Triggers.{Dispatcher, Trigger, Webhooks}
   alias Hermitscale.Workflows.{Catalog, Credentials, Graph, Validator}
   alias Hermitscale.Workflows.Nodes.Params
   alias Oban.Cron.Expression
@@ -122,6 +122,15 @@ defmodule Hermitscale.Triggers do
               |> Repo.insert_or_update!()
             end)
 
+          case Webhooks.sync_graph(
+                 %{graph | definition: definition},
+                 triggers,
+                 Map.values(existing)
+               ) do
+            :ok -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
+
           Trigger
           |> where([trigger], trigger.workflow_graph_id == ^graph.id)
           |> where([trigger], trigger.node_id not in ^keep_ids)
@@ -157,11 +166,18 @@ defmodule Hermitscale.Triggers do
   end
 
   defp do_deactivate_graph(graph) do
+    triggers = list_triggers_for_graph(graph.id)
+
     result =
       Repo.transaction(fn ->
         Trigger
         |> where([trigger], trigger.workflow_graph_id == ^graph.id)
         |> Repo.update_all(set: [status: :disabled])
+
+        case Webhooks.sync_graph(graph, [], triggers) do
+          :ok -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
 
         graph
         |> Graph.status_changeset(%{status: :draft})
@@ -320,9 +336,17 @@ defmodule Hermitscale.Triggers do
     with :ok <- Authorization.authorize(scope, "workflows:activate"),
          :ok <- Authorization.authorize(scope, "workflows:run") do
       result =
-        trigger
-        |> Ecto.Changeset.change(execution_actor_user_id: scope.user.id, error: nil)
-        |> Repo.update()
+        Repo.transaction(fn ->
+          assigned =
+            trigger
+            |> Ecto.Changeset.change(execution_actor_user_id: scope.user.id, error: nil)
+            |> Repo.update!()
+
+          case Webhooks.status_changed(assigned) do
+            :ok -> assigned
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        end)
 
       with {:ok, assigned} <- result do
         broadcast_changed(assigned.workflow_graph_id)
@@ -359,7 +383,7 @@ defmodule Hermitscale.Triggers do
 
         case module.__catalog_node__() do
           %{kind: :trigger} = spec -> [{node, module, spec}]
-          %{kind: kind} when kind in [:step, :join, :map, :reduce, :rule] -> []
+          %{kind: kind} when kind in [:step, :join, :map, :reduce, :aggregate, :rule] -> []
         end
       end)
 
@@ -415,8 +439,14 @@ defmodule Hermitscale.Triggers do
   defp trigger_id(nil), do: Ecto.UUID.generate()
   defp trigger_id(%Trigger{id: id}), do: id
 
-  defp mode_attrs(:webhook, _graph, _module, _params, _config, existing, _base) do
-    {:ok, %{webhook_token: webhook_token(existing)}}
+  defp mode_attrs(:webhook, _graph, module, _params, _config, existing, _base) do
+    validation =
+      case function_exported?(module, :provider_webhook, 0) do
+        true -> Webhooks.validate_configuration()
+        false -> :ok
+      end
+
+    with :ok <- validation, do: {:ok, %{webhook_token: webhook_token(existing)}}
   end
 
   defp mode_attrs(:schedule, _graph, _module, params, _config, _existing, _base) do
@@ -492,9 +522,15 @@ defmodule Hermitscale.Triggers do
 
   defp set_status(%Trigger{} = trigger, status, error) do
     result =
-      trigger
-      |> Trigger.changeset(%{status: status, error: error})
-      |> Repo.update()
+      Repo.transaction(fn ->
+        with {:ok, changed} <-
+               trigger |> Trigger.changeset(%{status: status, error: error}) |> Repo.update(),
+             :ok <- Webhooks.status_changed(changed) do
+          changed
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
 
     with {:ok, trigger} <- result do
       broadcast_changed(trigger.workflow_graph_id)

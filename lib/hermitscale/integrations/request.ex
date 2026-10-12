@@ -20,6 +20,15 @@ defmodule Hermitscale.Integrations.Request do
 
   def request(_method, _url, _credential, _opts), do: {:error, :missing_credentials}
 
+  @doc "Returns a successful JSON body, keeping provider error content out of workflow failures."
+  def json(method, url, credential, opts \\ []) do
+    case request(method, url, credential, opts) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 -> {:ok, body}
+      {:ok, %Req.Response{status: status}} -> {:error, {:provider_request_failed, status}}
+      {:error, _reason} = error -> error
+    end
+  end
+
   def validate_destination(url, hosts) when is_binary(url) do
     case URI.parse(url) do
       %URI{scheme: "https", host: host, userinfo: nil, port: 443} when is_binary(host) ->
@@ -37,12 +46,12 @@ defmodule Hermitscale.Integrations.Request do
 
   defp build_request(method, url, opts) do
     opts
-    |> Keyword.take([:json, :body, :params, :plug, :receive_timeout, :retry_delay])
+    |> Keyword.take([:json, :body, :params, :headers, :plug, :receive_timeout, :retry_delay])
     |> Keyword.merge(
       method: method,
       url: url,
       redirect: false,
-      retry: :safe_transient,
+      retry: Keyword.get(opts, :retry, :safe_transient),
       max_retries: 2,
       retry_log_level: false
     )

@@ -226,7 +226,7 @@ defmodule Hermitscale.Triggers.DeliveryTest do
       log =
         capture_log(fn ->
           send(pid, :crash)
-          assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+          assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
         end)
 
       assert log =~ "RuntimeError"

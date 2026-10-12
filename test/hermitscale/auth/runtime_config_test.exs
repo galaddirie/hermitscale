@@ -51,6 +51,14 @@ defmodule Hermitscale.Auth.RuntimeConfigTest do
     end
   end
 
+  test "development Pipes credentials load independently of the auth provider" do
+    Application.put_env(:hermitscale, Auth, provider: Provider)
+    System.put_env("WORKOS_API_KEY", "test-pipes-key")
+    config = Config.Reader.read!(Path.expand("../../../config/runtime.exs", __DIR__), env: :dev)
+    assert config[:hermitscale][Hermitscale.WorkOS.Client][:api_key] == "test-pipes-key"
+    refute config[:hermitscale][Hermitscale.WorkOS.JWT]
+  end
+
   defp runtime_config do
     Config.Reader.read!(Path.expand("../../../config/runtime.exs", __DIR__), env: :prod)
   end

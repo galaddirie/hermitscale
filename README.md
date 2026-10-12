@@ -38,7 +38,7 @@ local identity or session tables. `Hermitscale.Accounts.Scope` carries verified,
 opaque user and organization IDs in memory; workflow queries require the scope
 as their first argument.
 
-The web layer is the stock Phoenix 1.8.8 scaffold, with its generated starter
+The frontend is the stock Phoenix 1.8.8 scaffold, with its generated starter
 page, layouts, components, browser/API pipelines, and development tools. Browser
 authentication, workspace switching, and workflow screens are deferred until the
 backend is ready. There are no application sign-in, callback, or logout routes.
@@ -66,6 +66,13 @@ WorkOS Pipes remains the separate credential service and still needs
 `WORKOS_API_KEY` when used. Configure application roles and Pipes providers
 manually; the credential contract and permission matrix are documented in
 [the node authoring guide](docs/node-authoring-kit.md#8-credentials).
+
+Google Sheets, Linear, GitHub, and OpenAI Responses have backend clients and
+versioned workflow nodes. Linear and GitHub include the n8n action families and
+signed webhook triggers, with durable delivery dispatch and remote registration
+cleanup. The backend `/hooks/:token` endpoint runs before body parsing without
+browser routes. See [backend integrations](docs/integrations.md) for the action
+catalog, shared-account setup, scopes, and graph examples.
 
 Each credentialed workflow node selects an organization-owned account through a
 canonical `connection` object. Permitted members use the same saved account;

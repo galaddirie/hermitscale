@@ -95,6 +95,13 @@ defmodule Hermitscale.Integrations.Provider do
     end
   end
 
+  @doc "Checks consent using deployed provider scope implications, including normalized OAuth grants."
+  def scopes_satisfied?(descriptor, granted, required) do
+    implications = Map.get(descriptor, :scope_implications, %{})
+    effective = Enum.flat_map(granted, fn scope -> [scope | Map.get(implications, scope, [])] end)
+    Enum.all?(required, &(&1 in effective))
+  end
+
   @doc """
   Returns the declared network domains for a provider.
   """

@@ -111,7 +111,7 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
     account["provider"] == provider and account["state"] == "connected" and
       account["auth_method"] in descriptor.auth_methods and
       (account["auth_method"] == "api_key" or
-         Enum.all?(scopes, &(&1 in (account["scopes"] || []))))
+         Provider.scopes_satisfied?(descriptor, account["scopes"] || [], scopes))
   end
 
   @doc "Vends immediately before an effect, observing membership, rotation and consent changes."
@@ -141,10 +141,17 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
          required
        ) do
     cond do
-      method not in descriptor.auth_methods -> {:error, :unsupported_auth_method}
-      method == "api_key" -> :ok
-      missing != [] or not Enum.all?(required, &(&1 in scopes)) -> {:error, :insufficient_scopes}
-      true -> :ok
+      method not in descriptor.auth_methods ->
+        {:error, :unsupported_auth_method}
+
+      method == "api_key" ->
+        :ok
+
+      missing != [] or not Provider.scopes_satisfied?(descriptor, scopes, required) ->
+        {:error, :insufficient_scopes}
+
+      true ->
+        :ok
     end
   end
 

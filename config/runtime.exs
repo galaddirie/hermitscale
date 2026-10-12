@@ -36,11 +36,24 @@ auth_provider =
 
 config :hermitscale, Hermitscale.Auth, provider: auth_provider
 
+config :hermitscale, Hermitscale.Triggers.Webhooks,
+  base_url: System.get_env("INTEGRATION_WEBHOOK_BASE_URL", "")
+
+if webhook_signing_secret = System.get_env("INTEGRATION_WEBHOOK_SIGNING_SECRET") do
+  config :hermitscale, Hermitscale.Triggers.Webhooks, signing_secret: webhook_signing_secret
+end
+
+if config_env() == :dev do
+  # Pipes credentials are independent of the selected authentication provider.
+  config :hermitscale, Hermitscale.WorkOS.Client,
+    api_key: System.get_env("WORKOS_API_KEY", "sk_test_development"),
+    base_url: System.get_env("WORKOS_API_BASE_URL", "https://api.workos.com")
+end
+
 if config_env() == :dev and auth_provider == Hermitscale.Auth.WorkOS do
   workos_client_id = System.get_env("WORKOS_CLIENT_ID", "client_development")
 
   config :hermitscale, Hermitscale.WorkOS.Client,
-    api_key: System.get_env("WORKOS_API_KEY", "sk_test_development"),
     client_id: workos_client_id,
     redirect_uri:
       System.get_env("WORKOS_REDIRECT_URI", "http://localhost:4000/auth/workos/callback")

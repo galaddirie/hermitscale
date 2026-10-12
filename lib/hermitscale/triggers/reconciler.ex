@@ -71,6 +71,7 @@ defmodule Hermitscale.Triggers.Reconciler do
   end
 
   defp do_sync(state) do
+    :ok = Hermitscale.Triggers.Webhooks.enqueue_pending()
     desired = Map.new(Triggers.list_source_triggers(), &{&1.id, &1})
 
     running =

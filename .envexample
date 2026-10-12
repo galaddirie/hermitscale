@@ -3,3 +3,9 @@ WORKOS_API_KEY=
 
 
 SPRITES_API_KEY=
+
+# Public HTTPS origin serving the backend /hooks/:token endpoint.
+INTEGRATION_WEBHOOK_BASE_URL=
+# Optional: set a stable secret of at least 32 bytes on every node.
+# When unset, webhook signing uses the endpoint SECRET_KEY_BASE.
+# INTEGRATION_WEBHOOK_SIGNING_SECRET=
