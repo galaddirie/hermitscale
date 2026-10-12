@@ -118,7 +118,7 @@ Generated `build/2` receives:
 - `params` — expression-resolved params, including native values for pure
   expressions such as `{{ $json.count | to_number }}`.
 - `item` — the current `$json` payload.
-- `deps` — declared dependencies such as `%{credentials: token}`.
+- `deps` — declared dependencies such as `%{credentials: reference}`.
 
 `validate_params/1` is the home for rules the declarative schema can't express
 ("`operand` is required when `operation` is binary"). The validator calls it; if
@@ -150,7 +150,7 @@ defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2 do
 
   @impl true
   def work(%{method: method, url: url}, input, %{credentials: credentials}) do
-    case Hermitscale.HTTP.request(method, url, body: input, auth: credentials) do
+    case Hermitscale.HTTP.request(method, url, body: input, credentials: credentials) do
       {:ok, response} -> response.body
       {:error, reason} -> raise "HTTP request failed: #{inspect(reason)}"
     end
@@ -364,7 +364,7 @@ through Runic's `context/1,2` inside its closure, and declares what it needs in
 ```elixir
 requires: [credentials: []]
 # ...
-token = context(:credentials)
+reference = context(:credentials)
 api_base = context(:api_base, default: "https://api.example.com")
 ```
 
@@ -388,113 +388,140 @@ their own section next.
 
 ## 8. Credentials
 
-Credentials are the principal runtime dependency and the easiest thing to get
-wrong, so they get a dedicated contract. The governing rule: **the graph stores
-references, never secrets.** A node says "I need a Google credential with these
-scopes"; the token is resolved at run start and injected per node via §7's
-context mechanism. Nodes contain no auth plumbing.
+Credentials use one organization-owned WorkOS Pipes contract. A workflow belongs
+to one organization, and all permitted members use its saved account selections.
+The author chooses accounts; runners do not connect or bind personal credentials.
+Automatically created personal workspaces are ordinary organizations, including
+membership, invitation and permission behavior.
 
-### 8.1 The model: references, not secrets
+### 8.1 Canonical graph selection
 
-A workflow graph is user-editable JSON that we persist, version, and project to
-an editor — it must never contain a secret. What it stores is a **credential
-reference**: an opaque pointer to a secret held elsewhere.
+The only persisted connection format is a node-level object:
 
 ```json
 {
-  "provider": "google.oauth",
-  "credential_id": "cred_01H...",
-  "owner": "user_01H..."
+  "id": "read_orders",
+  "type": "google.sheets.read_rows",
+  "version": 1,
+  "params": {"spreadsheet_id": "sheet_id"},
+  "connection": {
+    "provider": "google",
+    "account_id": "data_installation_example"
+  }
 }
 ```
 
-The secret (OAuth access + refresh tokens, or an API key) lives in the secrets
-store, keyed by `credential_id`. The reference is safe to persist in the graph,
-log, and render in the editor; the secret is not, and never leaves the
-resolution path in §8.4.
+`provider` must match the operation's catalog requirement and a deployed
+integration descriptor. `account_id` selects that provider's organization-owned
+WorkOS account. The graph never supplies user IDs, ownership, execution authority,
+authentication headers or secrets. Graph-level defaults and node overrides are
+rejected. Provider identifiers describe the service, independent of auth method.
 
-### 8.2 Declaring a credential need
-
-A node declares the requirement in `requires:` (§7); the value names the provider
-and the scopes the operation needs:
+### 8.2 Catalog requirements and author selection
 
 ```elixir
-requires: [credentials: []]                                          # any credential (generic HTTP)
-requires: [credentials: [provider: "google.oauth", scopes: [...]]]   # a specific provider + scopes
+requires: [credentials: []] # generic HTTP, optional organization connection
+requires: [credentials: [provider: "google", scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"]]]
 ```
 
-- `provider` constrains which credentials the editor offers and which `Provider`
-  resolves the token. Omit it (a generic HTTP node) and the editor offers any
-  bearer/basic credential.
-- `scopes` are per *operation* — `read_rows` asks for `…/spreadsheets.readonly`,
-  `append_row` for `…/spreadsheets`. They drive the OAuth consent screen (§8.5).
+`Credentials.requirements/1` collects operation scopes for consent and account
+selection. `Workflows.connection_status/2` exposes selections and readiness to a
+future editor. During authoring or activation, a single compatible account is
+selected and persisted. Several compatible accounts require an explicit choice.
+Existing selections stay stable when another account becomes available. An
+editor action to use one account for several steps should fill each node's
+canonical `connection` object; it does not introduce a provider default format.
 
-For integration nodes the `use` macro injects `provider`, so the node states only
-`scopes:` (§12.2).
+### 8.3 Trusted integration descriptors
 
-### 8.3 The `Provider` contract
-
-One behaviour owns the reference → token seam. It lives in the integrations tree
-with its own code-first `persistent_term` index (mirroring `Catalog` — one
-registry, no module/map duplication), and is **separate from the node catalog**:
+`Provider` discovers deployed integration modules. Each descriptor owns the
+WorkOS slug, supported authentication methods, request authentication and approved
+API hosts. Providers do not fetch or cache tokens.
 
 ```elixir
-defmodule Hermitscale.Integrations.Provider do
-  @callback provider_id() :: String.t()
-
-  @doc "Resolves a stored credential reference into an access token for the given scopes."
-  @callback fetch_token(ref :: map(), scopes :: [String.t()]) ::
-              {:ok, %{access_token: String.t(), expires_at: DateTime.t() | nil}}
-              | {:error, term()}
-
-  @doc "Egress allowlist for this provider's API hosts."
-  @callback network_domains() :: [String.t()]
+def descriptor do
+  %{
+    slug: "example",
+    auth_methods: ["api_key"],
+    authentication: %{"api_key" => {:header, "x-api-key"}},
+    destinations: ["api.example.com"]
+  }
 end
 ```
 
-- **OAuth providers** (`Google.OAuth`) hide the refresh dance behind
-  `fetch_token/2`: check expiry, refresh if stale, return a live access token.
-- **API-key providers** ignore `scopes` and return the stored key as the token.
-- `network_domains/0` is the egress allowlist for the provider's hosts (§8.6).
+Use `:bearer` for Bearer authentication. OAuth and API keys share the same
+WorkOS `/data-integrations/:slug/credentials` boundary. WorkOS handles refresh and
+stores secrets. The application has no vault, credential cache or refresh worker.
 
-Nodes never call a `Provider` — only the run-start resolver (§8.4) does.
+### 8.4 Resolution, execution identity and provenance
 
-### 8.4 Resolution and injection
+`Credentials.resolve_run_context/4` and `resolve_node/3` validate selected accounts
+and produce per-node `CredentialRef` values. These contain the account ID, required
+scopes and trusted `ExecutionContext`, containing organization ID and actor user
+ID. They contain no token or API key. Caller-supplied expression context cannot
+replace credentials or execution authority.
 
-The control plane resolves credentials once, at run start, and hands Runic a
-ready run context:
+Manual execution uses the verified caller. Unattended triggers use the member
+recorded at activation or explicit reassignment. Disable/enable preserves that
+actor. Background admission and credential vending recheck current WorkOS
+membership and permissions. An ineligible actor needs reassignment; consent
+invalidation needs organization connection repair. No surviving member is chosen
+automatically.
 
-1. Walk the graph's credentialed nodes. For each, take its bound reference and
-   declared scopes and call `Provider.fetch_token(ref, scopes)`.
-2. Build `run_context = %{node_id => %{credentials: token}}` — keyed by node id,
-   so each node gets exactly its own token (§7's per-node scoping).
-3. `Runic.Workflow.validate_run_context/2` pre-flights that every required key is
-   present **before** execution begins — a missing or unresolvable credential
-   fails the run up front, not mid-flight.
-4. At run time, `context(:credentials)` inside each node's closure returns that
-   node's token.
+Runs persist their initiator, execution actor, optional trigger ID and node account
+selections. Resume authorizes its requester while preserving the saved actor and
+selections, and retains the definition fingerprint check. Run ownership used for
+worker leases is separate from human identity.
 
-A token resolved at run start is held for the run's duration; re-resolution for
-durable runs that outlive token expiry is a known gap (§14).
+### 8.5 Provider requests and permissions
 
-### 8.5 Binding and scopes (editor)
+Sheets clients and credentialed generic HTTP call `Integrations.Request`.
+It checks the final expression-resolved destination against the descriptor's
+HTTPS host allowlist before vending or attaching authentication. Redirects are
+disabled. Each safe request retry vends again, observing rotation and revocation.
+Provider credentials and errors stay out of outputs, expression bindings, events,
+job arguments and logs.
 
-Binding granularity is **shared per provider per workflow, with a per-node
-override**: a user picks their Google account once and every Google node uses it,
-unless a specific node is overridden to a different account. The editor computes
-the **union of scopes** across all of a provider's nodes to request a single
-consent covering the whole workflow.
+WorkOS session permission slugs authorize application actions independently of
+organization equality. Admin has workflow, connection and member management;
+Editor can edit, run and activate workflows; Runner can execute saved workflows.
+All active members can view connection status. Establishing, reconnecting,
+rotating and disconnecting accounts requires `connections:manage`.
 
-### 8.6 Security invariants
+Configure environment roles and permission assignments manually in WorkOS:
 
-- **Secrets never enter the graph, events, or logs.** `Run`/`RunEvent` persist
-  inputs and outputs; credential tokens must be excluded from anything written
-  there.
-- **References are opaque.** A `credential_id` discloses nothing; authorization
-  to resolve it is checked at run start against the run's owner.
-- **Egress is constrained.** `Provider.network_domains/0` is the allowlist a
-  credentialed node's HTTP client should be pinned to, so a compromised URL
-  template can't exfiltrate a token to an arbitrary host.
+| Role slug | Application permissions |
+| --- | --- |
+| `admin` | `workflows:run`, `workflows:edit`, `workflows:activate`, `connections:manage`, `members:manage` |
+| `editor` | `workflows:run`, `workflows:edit`, `workflows:activate` |
+| `runner` | `workflows:run` |
+
+Assign one role per organization membership. If using WorkOS widgets, also grant
+Admin `widgets:pipes:manage` and `widgets:users-table:manage`. Invitations default
+to Runner. Membership changes use the same rules in personal and team workspaces;
+WorkOS remains authoritative for identities, memberships and roles.
+
+### 8.6 Development setup
+
+Configure organization-owned Pipes providers manually in WorkOS, with slugs
+matching deployed descriptors. For Google, use `google`, OAuth authentication,
+and both `https://www.googleapis.com/auth/spreadsheets` and
+`https://www.googleapis.com/auth/spreadsheets.readonly` scopes. Supply the Google
+OAuth application credentials in WorkOS and configure Google's authorized redirect
+URI with the callback URL WorkOS provides. Workflow data never contains this
+application configuration.
+
+Establish fresh organization-owned connections manually in WorkOS. Workspace
+switching and connection-management screens are deferred; backend contexts expose
+the corresponding operations. Sign-in provisioning is available through
+`WorkOS.Session.establish/2` for later browser integration. Shared credential vending always
+sends `connection_owner=organization`, a verified actor, organization ID, the
+selected account ID and `supports_multiple_connections=true`. If WorkOS reports
+`multiple_connections_unavailable`, keep one connection per provider until plural
+creation is available; do not introduce another resolver. OAuth connection
+establishment requires the administrator's provider consent.
+Old development graphs and run histories use an incompatible contract and may be
+recreated. Do not transfer user-owned credentials or reset unrelated WorkOS data.
 
 ---
 
@@ -564,7 +591,7 @@ process, no `Process.sleep/1`. Each node ships with a sibling `_test.exs`;
 ## 12. Integrations (Google, Slack, …)
 
 Large integrations like Google span several products (Gmail, Sheets, Docs,
-Drive, Slides), dozens of actions, a shared OAuth provider, and per-product API
+Drive, Slides), dozens of actions, a trusted integration descriptor, and per-product API
 clients. The old engine modelled this with a first-class `Integration` behaviour
 (`actions/0`, `triggers/0`, `step_modules/0`), *two* registries (module-based +
 serialized-map), and a hand-maintained `Manifest`. That machinery was the bulk
@@ -585,10 +612,14 @@ lib/hermitscale/workflows/nodes/google/        # catalog nodes ({id, version})
   gmail/send_email/v1.ex      id: "google.gmail.send_email"
 
 lib/hermitscale/integrations/google/           # NOT in the catalog — shared code
-  oauth.ex                    # credential provider: ref -> token (+ refresh)
   sheets/client.ex            # Req-based API client: base URL, pagination, errors
   gmail/client.ex
   sheets/resolvers.ex         # dynamic "pick a spreadsheet" dropdown resolvers
+
+lib/hermitscale/integrations/
+  google.ex                   # node defaults and trusted Google descriptor
+  connected_accounts.ex      # organization account readiness and WorkOS vending
+  request.ex                 # destination checks and immediate authentication
 ```
 
 The split is load-bearing. `Catalog.refresh!/0` discovers every module exporting
@@ -613,7 +644,7 @@ base behaviour:
 defmodule Hermitscale.Integrations.Google do
   @moduledoc "Shared definitions for Google catalog nodes."
 
-  @provider "google.oauth"
+  @provider "google"
   @default_policy %{backoff: "exponential", max_retries: 3, timeout_ms: 30_000}
 
   defmacro __using__(opts) do
@@ -637,8 +668,8 @@ end
 - `default_policy` gives the integration a sane retry/timeout baseline that a
   graph's per-node `policy` still overrides (see §12.3).
 
-The credential requirement the macro injects, and how the bound reference becomes
-a live token at run start, is the dedicated **Credentials** section (§8).
+The credential requirement the macro injects, and how a selected account becomes
+a non-secret runtime reference at run start, is the dedicated **Credentials** section (§8).
 
 A node then reads as pure intent — params in, client call out, zero auth
 plumbing:
@@ -684,14 +715,12 @@ clean:
 - **Resolvers** (`sheets/resolvers.ex`) — `resolve(%{query, params, credentials})
   -> {:ok, [option]}` modules referenced from a param's editor metadata, for
   dropdowns like "pick a spreadsheet". They need credentials too, resolved via
-  the same bound ref but at *edit* time rather than run time — a distinct
-  resolution path to design (§14).
+  the same organization reference and provider request path before a run exists (§8).
 - **Triggers** (Gmail "new email", Sheets "new row") — Oban-driven polling. Open
   question whether these are a sixth `kind` carrying `registration_spec/2` +
   `normalize_event/2`, or a concept outside the graph. See §14.
-- **API-key providers** — the `Provider` behaviour already covers them
-  (`fetch_token/2` ignores scopes for an API key); only the editor's picker
-  differs.
+- **More integrations** — API-key services use a deployed descriptor and the
+  common organization connection path described in §8.
 
 ---
 
@@ -713,10 +742,10 @@ No migration to `Catalog`, `Graph`, `Run`, `RunEvent`, or the policy machinery.
 |------|--------|
 | `integrations/provider.ex` | **New.** `Provider` behaviour + code-first `persistent_term` index (mirrors `Catalog`). |
 | `integrations/google.ex` | **New.** The `use` macro injecting provider + `default_policy`. |
-| `integrations/google/oauth.ex` | **New.** `Provider` impl: credential ref → token (+ refresh). |
+| `integrations/connected_accounts.ex` | Organization readiness and immediate WorkOS vending. |
 | `integrations/google/{sheets,gmail}/client.ex` | **New.** Req-based API clients. |
 | `workflows/nodes/google/**` | **New.** Catalog nodes (`use Hermitscale.Integrations.Google`). |
-| run-start path | Resolve each credentialed node's ref → token; build `run_context` keyed by node id; `validate_run_context/2` before executing. |
+| run-start path | Validate each selected organization account and construct a non-secret reference; build `run_context` keyed by node id; `validate_run_context/2` before executing. |
 
 ---
 
@@ -735,17 +764,11 @@ No migration to `Catalog`, `Graph`, `Run`, `RunEvent`, or the policy machinery.
    carrying `registration_spec/2` + `normalize_event/2`, or a concept outside the
    graph that *produces* a run? Leaning outside-the-graph (an Oban-driven
    producer), since a trigger isn't a Runic component.
-5. **Resolver credential resolution.** Edit-time resolvers ("pick a spreadsheet")
-   need a token from the bound credential ref *before* a run exists. That's a
-   second resolution path (LiveView/editor context, not run context) — shares
-   `Provider.fetch_token/2` but not the `run_context` plumbing.
-6. **Credential ref override UX.** Shared-per-provider binding with per-node
-   override is the model; the editor representation of an override (and how it
-   surfaces in the graph JSON) is undesigned.
-7. **Token expiry on durable runs.** Credentials are resolved once at run start
-   (§8.4). A durable run that outlives its access token needs re-resolution —
-   re-fetch on a step boundary, or refresh lazily inside `Provider`? Out of scope
-   for sync/short runs; must be designed before durable runs use credentials.
+5. **Editor discovery.** Dropdowns such as spreadsheet selection can use the
+   same trusted execution context and immediate provider request path before a
+   run exists. The editor should persist only canonical node account selections.
+6. **Account picker UX.** The workflow canvas and bulk account selection UI are
+   future work. Status and authoring selection are available in the context.
 
 ---
 
@@ -776,13 +799,13 @@ that depends on them.
 
 - [x] `Integrations.Provider` behaviour + code-first `persistent_term` index (§8.3).
 - [x] `Integrations.Google` `use` macro injecting `provider` + `default_policy` (§12.2).
-- [x] `Integrations.Google.OAuth` — `Provider` impl: `fetch_token/2` with refresh,
-      `network_domains/0` (§8.3).
+- [x] Trusted integration descriptors, organization readiness and immediate
+      credential vending (§8.3).
 - [x] `Integrations.Google.Sheets.Client` — Req-based API client (§12.1).
 - [x] Reference nodes: `google.sheets.append_row`, `google.sheets.read_rows` (§12.2).
 - [x] Run-start credential resolver: build `run_context` keyed by node id, then
       `validate_run_context/2` before executing (§8.4).
-- [ ] Editor UI: credential picker, shared-per-provider binding + override, scope
+- [ ] Editor UI: canonical node account picker and bulk selection, scope
       union for consent (§8.5). Backend support exists via
       `Workflows.Credentials.requirements/1`; no editor surface exists yet.
 - [x] Tests: provider resolution, integration node, run-context validation.

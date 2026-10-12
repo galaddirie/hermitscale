@@ -11,6 +11,8 @@ defmodule Hermitscale.Triggers do
   import Ecto.Query
 
   alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Authorization
+  alias Hermitscale.Integrations.ExecutionContext
   alias Hermitscale.Repo
   alias Hermitscale.Triggers.{Dispatcher, Trigger}
   alias Hermitscale.Workflows.{Catalog, Credentials, Graph, Validator}
@@ -85,12 +87,18 @@ defmodule Hermitscale.Triggers do
   """
   def activate_graph(%Scope{} = scope, %Graph{} = graph) do
     Scope.assert_same_org!(scope, graph)
+    graph = Hermitscale.Workflows.get_graph!(scope, graph.id)
     definition = graph.definition
 
-    with :ok <- Credentials.authorize(scope, graph),
+    with :ok <- Authorization.authorize(scope, "workflows:activate"),
+         :ok <- Authorization.authorize(scope, "workflows:run"),
+         :ok <- Validator.validate(definition),
+         {:ok, definition} <- Credentials.select_accounts(scope, definition),
+         :ok <- Credentials.readiness(definition, Scope.execution_context(scope)),
          :ok <- Validator.validate(definition),
          {:ok, trigger_nodes} <- trigger_nodes(definition),
-         {:ok, attrs_list} <- derive_trigger_attrs(graph, trigger_nodes) do
+         {:ok, attrs_list} <-
+           derive_trigger_attrs(%{graph | definition: definition}, trigger_nodes, scope.user.id) do
       existing = Map.new(list_triggers_for_graph(graph.id), &{&1.node_id, &1})
       keep_ids = Enum.map(attrs_list, & &1.node_id)
 
@@ -101,6 +109,7 @@ defmodule Hermitscale.Triggers do
               base = Map.get(existing, attrs.node_id, %Trigger{})
 
               base
+              |> Ecto.Changeset.change(execution_actor_user_id: scope.user.id)
               |> Trigger.changeset(attrs)
               |> Repo.insert_or_update!()
             end)
@@ -112,6 +121,7 @@ defmodule Hermitscale.Triggers do
 
           graph =
             graph
+            |> Ecto.Changeset.change(definition: definition)
             |> Graph.status_changeset(%{status: :active})
             |> Repo.update!()
 
@@ -132,7 +142,7 @@ defmodule Hermitscale.Triggers do
   def deactivate_graph(%Scope{} = scope, %Graph{} = graph) do
     Scope.assert_same_org!(scope, graph)
 
-    with :ok <- Credentials.authorize(scope, graph) do
+    with :ok <- Authorization.authorize(scope, "workflows:activate") do
       do_deactivate_graph(graph)
     end
   end
@@ -158,15 +168,27 @@ defmodule Hermitscale.Triggers do
   def enable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
     trigger = scope |> get_trigger!(trigger.id) |> Repo.preload(:graph)
 
-    with :ok <- Credentials.authorize(scope, trigger.graph) do
-      set_status(trigger, :enabled, nil)
+    with :ok <- Authorization.authorize(scope, "workflows:activate") do
+      with {:ok, _actor} <-
+             Authorization.execution_scope(%ExecutionContext{
+               organization_id: trigger.graph.org_id,
+               actor_user_id: trigger.execution_actor_user_id,
+               required_permissions: ["workflows:run", "workflows:activate"]
+             }),
+           :ok <-
+             Credentials.readiness(trigger.graph.definition, %ExecutionContext{
+               organization_id: trigger.graph.org_id,
+               actor_user_id: trigger.execution_actor_user_id
+             }) do
+        set_status(trigger, :enabled, nil)
+      end
     end
   end
 
   def disable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
     trigger = scope |> get_trigger!(trigger.id) |> Repo.preload(:graph)
 
-    with :ok <- Credentials.authorize(scope, trigger.graph) do
+    with :ok <- Authorization.authorize(scope, "workflows:activate") do
       set_status(trigger, :disabled, nil)
     end
   end
@@ -176,7 +198,11 @@ defmodule Hermitscale.Triggers do
   threshold). Errored triggers stop firing until a user re-enables them.
   """
   def mark_errored(%Trigger{} = trigger, error) do
-    set_status(trigger, :errored, %{"message" => to_error_message(error)})
+    set_status(trigger, :errored, %{
+      "message" => to_error_message(error),
+      "action" =>
+        if(error == :execution_actor_ineligible, do: "reassign_actor", else: "repair_connection")
+    })
   end
 
   ## Firing
@@ -190,8 +216,8 @@ defmodule Hermitscale.Triggers do
     %Trigger{mode: :manual} = trigger = get_trigger!(scope, trigger.id)
     trigger = Repo.preload(trigger, :graph)
 
-    with :ok <- Credentials.authorize(scope, trigger.graph) do
-      Dispatcher.fire(trigger, payload, opts)
+    with :ok <- Authorization.authorize(scope, "workflows:run") do
+      Dispatcher.fire(trigger, payload, Keyword.put(opts, :scope, scope))
     end
   end
 
@@ -239,28 +265,74 @@ defmodule Hermitscale.Triggers do
   end
 
   @doc """
-  Resolves the trigger node's credential binding from its graph. Trigger
-  runtimes call this per poll/connect rather than caching the token, so
+  Resolves the trigger node's selected organization account from its graph. Trigger
+  runtimes call this per poll/connect without caching credential material, so
   provider-side rotation is picked up automatically.
   """
   def credentials_for(%Trigger{} = trigger) do
-    trigger = Repo.preload(trigger, :graph)
+    trigger = get_trigger!(trigger.id) |> Repo.preload(:graph)
 
-    Credentials.resolve_node(
-      trigger.graph.definition,
-      trigger.node_id,
-      {trigger.graph.org_id, trigger.graph.created_by_user_id}
-    )
+    with {:ok, _scope, context} <- execution_scope(trigger) do
+      Credentials.resolve_node(trigger.graph.definition, trigger.node_id, context)
+    end
   end
 
-  @doc """
-  The runtime ctx passed to `poll/3` and `init_stream/2`: trigger/graph ids
-  plus freshly resolved credentials (`nil` when the trigger requires none).
-  """
+  @doc "Validates the recorded activation actor against current WorkOS authority."
+  def execution_scope(%Trigger{} = trigger) do
+    trigger = get_trigger!(trigger.id) |> Repo.preload(:graph)
+
+    context = %ExecutionContext{
+      organization_id: trigger.graph.org_id,
+      actor_user_id: trigger.execution_actor_user_id,
+      required_permissions: ["workflows:run", "workflows:activate"]
+    }
+
+    with :enabled <- trigger.status,
+         {:ok, scope} <- Authorization.execution_scope(context) do
+      {:ok, scope, context}
+    else
+      status when status in [:disabled, :errored] ->
+        {:error, :disabled}
+
+      {:error, :execution_actor_ineligible} = error ->
+        mark_errored(trigger, :execution_actor_ineligible)
+        error
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Explicitly reassigns automation to the verified caller. Enable/disable preserve authority."
+  def reassign_actor(%Scope{} = scope, %Trigger{} = trigger) do
+    trigger = get_trigger!(scope, trigger.id)
+
+    with :ok <- Authorization.authorize(scope, "workflows:activate"),
+         :ok <- Authorization.authorize(scope, "workflows:run") do
+      result =
+        trigger
+        |> Ecto.Changeset.change(execution_actor_user_id: scope.user.id, error: nil)
+        |> Repo.update()
+
+      with {:ok, assigned} <- result do
+        broadcast_changed(assigned.workflow_graph_id)
+        {:ok, assigned}
+      end
+    end
+  end
+
   def source_ctx(%Trigger{} = trigger) do
     case credentials_for(trigger) do
-      {:ok, token} -> {:ok, Map.put(runtime_ctx(trigger), :credentials, token)}
-      {:error, reason} -> {:error, {:credentials, reason}}
+      {:ok, credential} ->
+        {:ok, Map.put(runtime_ctx(trigger), :credentials, credential)}
+
+      {:error, {:connection_not_ready, _node, reason}} = error
+      when reason in [:needs_reauthorization, :account_not_found, :insufficient_scopes] ->
+        mark_errored(trigger, reason)
+        error
+
+      error ->
+        error
     end
   end
 
@@ -287,12 +359,12 @@ defmodule Hermitscale.Triggers do
     end
   end
 
-  defp derive_trigger_attrs(graph, trigger_nodes) do
+  defp derive_trigger_attrs(graph, trigger_nodes, actor_user_id) do
     existing = Map.new(list_triggers_for_graph(graph.id), &{&1.node_id, &1})
 
     trigger_nodes
     |> Enum.reduce_while([], fn {node, module, spec}, acc ->
-      case derive_one(graph, node, module, spec, Map.get(existing, node["id"])) do
+      case derive_one(graph, node, module, spec, Map.get(existing, node["id"]), actor_user_id) do
         {:ok, attrs} -> {:cont, [attrs | acc]}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -303,13 +375,14 @@ defmodule Hermitscale.Triggers do
     end
   end
 
-  defp derive_one(graph, node, module, spec, existing) do
+  defp derive_one(graph, node, module, spec, existing, actor_user_id) do
     config = node["params"] || %{}
     params = Params.cast!(config, spec.params_schema, [], [])
 
     base = %{
       id: (existing && existing.id) || Ecto.UUID.generate(),
       workflow_graph_id: graph.id,
+      execution_actor_user_id: actor_user_id,
       node_id: node["id"],
       type: spec.id,
       version: spec.version,
@@ -341,10 +414,10 @@ defmodule Hermitscale.Triggers do
     if existing && existing.cursor && existing.config == config do
       {:ok, %{cursor: existing.cursor}}
     else
-      # Resolving credentials here doubles as an activation-time check: a bad
-      # or missing binding fails activation with a pointed error instead of a
+      # Resolving credentials here doubles as an activation-time check: a missing
+      # or incompatible account selection fails activation with a pointed error instead of a
       # poller crash-looping later.
-      with {:ok, token} <- node_credentials(graph, base.node_id),
+      with {:ok, token} <- node_credentials(graph, base.node_id, base.execution_actor_user_id),
            ctx = %{trigger_id: base.id, graph_id: base.workflow_graph_id, credentials: token},
            {:ok, cursor} <- init_cursor(module, params, ctx, base.node_id) do
         {:ok, %{cursor: cursor}}
@@ -353,18 +426,18 @@ defmodule Hermitscale.Triggers do
   end
 
   defp mode_attrs(:stream, graph, _module, _params, _config, _existing, base) do
-    with {:ok, _token} <- node_credentials(graph, base.node_id) do
+    with {:ok, _token} <- node_credentials(graph, base.node_id, base.execution_actor_user_id) do
       {:ok, %{}}
     end
   end
 
   defp mode_attrs(_mode, _graph, _module, _params, _config, _existing, _base), do: {:ok, %{}}
 
-  defp node_credentials(graph, node_id) do
+  defp node_credentials(graph, node_id, actor_user_id) do
     case Credentials.resolve_node(
            graph.definition,
            node_id,
-           {graph.org_id, graph.created_by_user_id}
+           %ExecutionContext{organization_id: graph.org_id, actor_user_id: actor_user_id}
          ) do
       {:ok, token} -> {:ok, token}
       {:error, reason} -> {:error, {:credentials, node_id, reason}}
@@ -403,8 +476,8 @@ defmodule Hermitscale.Triggers do
     end
   end
 
-  defp to_error_message(error) when is_binary(error), do: error
-  defp to_error_message(error), do: inspect(error)
+  defp to_error_message(:execution_actor_ineligible), do: "Execution member needs reassignment"
+  defp to_error_message(_error), do: "Automation stopped; check membership and connection setup"
 
   defp broadcast_changed(graph_id) do
     Phoenix.PubSub.broadcast(@pubsub, @topic, {:workflow_triggers_changed, graph_id})

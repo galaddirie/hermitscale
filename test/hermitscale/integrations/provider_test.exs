@@ -10,8 +10,8 @@ defmodule Hermitscale.Integrations.ProviderTest do
 
       assert {:ok, TestProvider} = Provider.fetch(index, "test.credentials")
 
-      assert {:ok, %{access_token: "token:cred_123"}} =
-               Provider.fetch_token("test.credentials", %{"credential_id" => "cred_123"}, [])
+      assert {:ok, %{slug: "test.credentials", destinations: ["test.local"]}} =
+               Provider.descriptor("test.credentials")
     end
 
     test "returns :not_found for undeployed providers" do

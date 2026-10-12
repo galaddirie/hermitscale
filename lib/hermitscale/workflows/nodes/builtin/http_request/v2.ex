@@ -24,7 +24,7 @@ defmodule Hermitscale.Workflows.Nodes.Builtin.HttpRequest.V2 do
 
   @impl true
   def work(%{method: method, url: url}, input, %{credentials: credentials}) do
-    case Hermitscale.HTTP.request(method, url, body: input, auth: credentials) do
+    case Hermitscale.HTTP.request(method, url, body: input, credentials: credentials) do
       {:ok, response} -> response.body
       {:error, reason} -> raise "HTTP request failed: #{inspect(reason)}"
     end

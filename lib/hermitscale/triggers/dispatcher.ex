@@ -11,11 +11,13 @@ defmodule Hermitscale.Triggers.Dispatcher do
        concurrently running runs for the graph (over-limit firings are
        recorded as `:rejected`).
     3. Envelope: a uniform provenance wrapper every run input carries.
-    4. Dispatch: `Workflows.start_run_from_trigger/3` on the trigger's graph.
+    4. Dispatch: `Workflows.start_run_from_trigger/6` on the trigger's graph.
   """
 
   import Ecto.Query
 
+  alias Hermitscale.Authorization
+  alias Hermitscale.Accounts.Scope
   alias Hermitscale.Repo
   alias Hermitscale.Triggers.{Firing, Trigger}
   alias Hermitscale.Workflows
@@ -36,17 +38,18 @@ defmodule Hermitscale.Triggers.Dispatcher do
     * `:idempotency_key` — stable identity of the source event (webhook
       delivery id, poll event key, schedule occurrence). Defaults to a fresh
       UUID, i.e. no deduplication.
-    * `:run_opts` — options forwarded to `Workflows.start_run_from_trigger/3`.
+    * `:run_opts` — options forwarded to `Workflows.start_run_from_trigger/6`.
   """
   @spec fire(Trigger.t() | struct(), map(), keyword()) :: result()
   def fire(%Trigger{} = trigger, payload, opts \\ []) do
-    trigger = Repo.preload(trigger, :graph)
+    trigger = Hermitscale.Triggers.get_trigger!(trigger.id) |> Repo.preload(:graph)
 
     with :ok <- ensure_enabled(trigger),
+         {:ok, scope, context} <- execution_identity(trigger, opts),
          {:ok, firing} <- insert_firing(trigger, opts) do
       case admit(trigger) do
         :ok ->
-          dispatch(trigger, firing, payload, opts)
+          dispatch(trigger, firing, payload, opts, scope, context)
 
         {:error, :max_concurrent_runs} ->
           conclude(firing, %{outcome: :rejected, error: %{"reason" => "max_concurrent_runs"}})
@@ -54,9 +57,24 @@ defmodule Hermitscale.Triggers.Dispatcher do
       end
     else
       {:error, :duplicate} -> {:ok, :deduped}
-      {:error, :disabled} -> {:error, :disabled}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp execution_identity(%Trigger{mode: :manual} = trigger, opts) do
+    case Keyword.get(opts, :scope) do
+      %Scope{} = scope ->
+        Scope.assert_same_org!(scope, trigger.graph)
+
+        with :ok <- Authorization.authorize(scope, "workflows:run"),
+             do: {:ok, scope, Scope.execution_context(scope)}
+
+      _ ->
+        {:error, :caller_scope_required}
+    end
+  end
+
+  defp execution_identity(trigger, _opts), do: Hermitscale.Triggers.execution_scope(trigger)
 
   defp ensure_enabled(%Trigger{status: :enabled}), do: :ok
   defp ensure_enabled(%Trigger{}), do: {:error, :disabled}
@@ -117,16 +135,28 @@ defmodule Hermitscale.Triggers.Dispatcher do
     end
   end
 
-  defp dispatch(trigger, firing, payload, opts) do
+  defp dispatch(trigger, firing, payload, opts, scope, context) do
     envelope = envelope(trigger, firing, payload)
 
-    case Workflows.start_run_from_trigger(trigger.graph, envelope, run_opts(opts)) do
+    case Workflows.start_run_from_trigger(
+           scope,
+           trigger.graph,
+           envelope,
+           run_opts(opts),
+           trigger.id,
+           context
+         ) do
       {:ok, run} ->
         conclude(firing, %{run_id: run.id})
         {:ok, run}
 
+      {:error, {:connection_not_ready, _node, reason}} = error ->
+        Hermitscale.Triggers.mark_errored(trigger, reason)
+        conclude(firing, %{outcome: :failed, error: %{"reason" => "connection_repair_required"}})
+        error
+
       {:error, reason} ->
-        conclude(firing, %{outcome: :failed, error: %{"reason" => inspect(reason)}})
+        conclude(firing, %{outcome: :failed, error: %{"reason" => "workflow_start_failed"}})
         {:error, {:start_run, reason}}
     end
   end

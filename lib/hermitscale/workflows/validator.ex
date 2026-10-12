@@ -54,6 +54,7 @@ defmodule Hermitscale.Workflows.Validator do
         duplicate_node_issues(nodes) ++
         trigger_issues(nodes, catalog, connections) ++
         node_issues(nodes, catalog, connections) ++
+        credential_issues(graph, nodes) ++
         expression_reference_issues(nodes, catalog, connections, nodes_by_id) ++
         connection_issues ++
         region_issues ++
@@ -105,6 +106,62 @@ defmodule Hermitscale.Workflows.Validator do
 
   def node_specs(graph) when is_map(graph) do
     Map.get(graph, "nodes") || []
+  end
+
+  defp credential_issues(graph, nodes) do
+    graph_issues =
+      case Map.has_key?(graph, "credentials") do
+        true -> [issue("$.credentials", :legacy_credentials, "use node connection objects")]
+        false -> []
+      end
+
+    Enum.with_index(nodes)
+    |> Enum.reduce(graph_issues, fn {node, index}, acc ->
+      path = "$.nodes[#{index}]"
+
+      legacy =
+        case Map.has_key?(node, "credentials") do
+          true -> [issue(path <> ".credentials", :legacy_credentials, "use a connection object")]
+          false -> []
+        end
+
+      selection =
+        case node["connection"] do
+          nil ->
+            []
+
+          connection ->
+            requirement = Hermitscale.Workflows.Credentials.requirement(node)
+
+            result =
+              case requirement do
+                nil ->
+                  {:error, :unexpected_connection}
+
+                requirement ->
+                  Hermitscale.Integrations.ConnectedAccounts.validate_selection(
+                    connection,
+                    Keyword.get(requirement, :provider)
+                  )
+              end
+
+            case result do
+              :ok ->
+                []
+
+              {:error, _reason} ->
+                [
+                  issue(
+                    path <> ".connection",
+                    :invalid_connection,
+                    "select an account from the node's deployed integration"
+                  )
+                ]
+            end
+        end
+
+      acc ++ legacy ++ selection
+    end)
   end
 
   defp graph_shape_issues(graph) when is_map(graph) do

@@ -17,7 +17,7 @@ defmodule Hermitscale.Workflows.Nodes.CredentialProbe.V1 do
   @impl true
   def work(_params, input, %{credentials: credentials}) do
     input
-    |> Map.put("access_token", credentials.access_token)
-    |> Map.put("scopes", credentials.scopes)
+    |> Map.put("account_id", credentials.account_id)
+    |> Map.put("actor_user_id", credentials.execution_context.actor_user_id)
   end
 end

@@ -72,16 +72,7 @@ defmodule Hermitscale.Triggers.RuntimeTest do
               "poll_interval_ms" => 25,
               "behavior" => "emit_credentials"
             }),
-            %{
-              "credentials" => %{
-                "providers" => %{
-                  "test.credentials" => %{
-                    "provider" => "test.credentials",
-                    "credential_id" => "cred_42"
-                  }
-                }
-              }
-            }
+            %{}
           )
         )
 
@@ -91,7 +82,7 @@ defmodule Hermitscale.Triggers.RuntimeTest do
       wait_until(fn -> Repo.aggregate(Run, :count) >= 1 end)
 
       run = Repo.one!(Ecto.Query.from(r in Run, limit: 1, order_by: r.inserted_at))
-      assert run.input["value"]["data"]["access_token"] == "token:cred_42"
+      assert run.input["value"]["data"]["account_id"] == "data_test"
 
       stop_source_and_wait_for_runs!(poller)
     end

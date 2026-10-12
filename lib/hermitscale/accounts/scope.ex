@@ -52,6 +52,15 @@ defmodule Hermitscale.Accounts.Scope do
   def organization_id!(_scope),
     do: raise(ArgumentError, "scope has no verified organization membership")
 
+  @doc "Derives execution identity exclusively from verified organization membership."
+  def execution_context(%__MODULE__{} = scope, permissions \\ ["workflows:run"]) do
+    %Hermitscale.Integrations.ExecutionContext{
+      organization_id: organization_id!(scope),
+      actor_user_id: scope.user.id,
+      required_permissions: permissions
+    }
+  end
+
   @doc "Asserts that a resource belongs to the caller's active WorkOS organization."
   def assert_same_org!(%__MODULE__{} = scope, %{org_id: org_id}) do
     true = org_id == organization_id!(scope)

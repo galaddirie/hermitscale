@@ -38,7 +38,13 @@ defmodule Hermitscale.TriggersFixtures do
   end
 
   def polling_trigger_node(params \\ %{}) do
-    %{"id" => "poll", "type" => "test.counter_poll_probe", "version" => 1, "params" => params}
+    %{
+      "id" => "poll",
+      "type" => "test.counter_poll_probe",
+      "version" => 1,
+      "params" => params,
+      "connection" => %{"provider" => "test.credentials", "account_id" => "data_test"}
+    }
   end
 
   def stream_trigger_node(params \\ %{}) do

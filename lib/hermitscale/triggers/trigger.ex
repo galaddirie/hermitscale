@@ -16,6 +16,7 @@ defmodule Hermitscale.Triggers.Trigger do
   @modes [:manual, :webhook, :schedule, :polling, :stream]
 
   schema "workflow_triggers" do
+    field :execution_actor_user_id, :string
     field :node_id, :string
     field :type, :string
     field :version, :integer
@@ -54,7 +55,16 @@ defmodule Hermitscale.Triggers.Trigger do
       :status,
       :error
     ])
-    |> validate_required([:id, :workflow_graph_id, :node_id, :type, :version, :mode, :status])
+    |> validate_required([
+      :id,
+      :workflow_graph_id,
+      :node_id,
+      :type,
+      :version,
+      :mode,
+      :status,
+      :execution_actor_user_id
+    ])
     |> validate_number(:version, greater_than: 0)
     |> unique_constraint([:workflow_graph_id, :node_id])
     |> unique_constraint(:webhook_token)

@@ -11,7 +11,7 @@ defmodule Hermitscale.Integrations.GoogleTest do
                id: "google.sheets.append_row",
                requires: [
                  credentials: [
-                   provider: "google.oauth",
+                   provider: "google",
                    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
                  ]
                ],
@@ -23,15 +23,15 @@ defmodule Hermitscale.Integrations.GoogleTest do
              } = AppendRow.spec()
     end
 
-    test "registers the google oauth provider" do
-      assert {:ok, Hermitscale.Integrations.Google.OAuth} =
-               Provider.fetch(Provider.refresh!(), "google.oauth")
+    test "registers the Google integration descriptor" do
+      assert {:ok, Hermitscale.Integrations.Google} =
+               Provider.fetch(Provider.refresh!(), "google")
     end
 
     test "declares read-only scopes for read rows" do
       assert [
                credentials: [
-                 provider: "google.oauth",
+                 provider: "google",
                  scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"]
                ]
              ] = ReadRows.spec().requires

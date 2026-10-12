@@ -14,6 +14,11 @@ defmodule Hermitscale.Workflows.Run do
       values: [:created, :running, :complete, :failed, :cancelled],
       default: :created
 
+    field :initiated_by_user_id, :string
+    field :execution_actor_user_id, :string
+    field :trigger_id, :string
+    field :account_selections, :map, default: %{}
+
     field :owner, :string
     field :lease_expires_at, :utc_datetime
     field :last_event_sequence, :integer, default: 0
@@ -46,6 +51,15 @@ defmodule Hermitscale.Workflows.Run do
     ])
     |> validate_required([:id, :status, :last_event_sequence])
     |> validate_number(:last_event_sequence, greater_than_or_equal_to: 0)
+    |> validate_execution_actor()
     |> foreign_key_constraint(:workflow_graph_id)
+    |> foreign_key_constraint(:trigger_id)
+  end
+
+  defp validate_execution_actor(changeset) do
+    case get_field(changeset, :workflow_graph_id) do
+      nil -> changeset
+      _id -> validate_required(changeset, [:execution_actor_user_id])
+    end
   end
 end

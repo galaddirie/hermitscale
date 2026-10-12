@@ -13,9 +13,9 @@ defmodule Hermitscale.Triggers.Mode.Polling do
   a stable `:key` per event whenever the source offers one.
 
   When the trigger declares `requires: [credentials: ...]`, the runtime
-  resolves the graph's credential binding freshly for every `init_cursor/2`
-  and `poll/3` call and passes the token under `ctx.credentials` — never cache
-  it in the cursor.
+  validates the selected organization account for every `init_cursor/2` and
+  `poll/3` call and passes a non-secret reference under `ctx.credentials`.
+  Provider clients vend fresh credentials immediately before each request.
   """
 
   @type ctx :: %{

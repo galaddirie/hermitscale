@@ -16,7 +16,7 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
     mode: :polling,
     requires: [
       credentials: [
-        provider: "google.oauth",
+        provider: "google",
         scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"]
       ]
     ],

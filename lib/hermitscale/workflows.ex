@@ -6,6 +6,8 @@ defmodule Hermitscale.Workflows do
   import Ecto.Query
 
   alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Authorization
+  alias Hermitscale.Integrations.ExecutionContext
   alias Hermitscale.Repo
   alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Replay, Run, Validator}
   alias Runic.Workflow
@@ -29,33 +31,51 @@ defmodule Hermitscale.Workflows do
     changeset = Graph.create_changeset(%Graph{}, attrs, scope)
     definition = get_definition(attrs)
 
-    with :ok <- Validator.validate(definition),
+    with :ok <- Authorization.authorize(scope, "workflows:edit"),
+         :ok <- Validator.validate(definition),
+         {:ok, definition} <- Credentials.select_accounts(scope, definition),
+         changeset <- Ecto.Changeset.put_change(changeset, :definition, definition),
+         :ok <- Validator.validate(definition),
          changeset <- put_validation_success(changeset) do
       Repo.insert(changeset)
     else
       {:error, issues} when is_list(issues) ->
         {:error, Graph.put_validation_issues(changeset, issues)}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   def update_graph(%Scope{} = scope, %Graph{} = graph, attrs) do
     Scope.assert_same_org!(scope, graph)
 
+    graph = get_graph!(scope, graph.id)
     changeset = Graph.update_changeset(graph, attrs, scope: scope)
     definition = get_definition(attrs) || graph.definition
 
-    with :ok <- Validator.validate(definition),
+    with :ok <- Authorization.authorize(scope, "workflows:edit"),
+         :ok <- Validator.validate(definition),
+         {:ok, definition} <- Credentials.select_accounts(scope, definition),
+         changeset <- Ecto.Changeset.put_change(changeset, :definition, definition),
+         :ok <- Validator.validate(definition),
          changeset <- put_validation_success(changeset) do
       Repo.update(changeset)
     else
       {:error, issues} when is_list(issues) ->
         {:error, Graph.put_validation_issues(changeset, issues)}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   def change_graph(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
     Scope.assert_same_org!(scope, graph)
-    Graph.update_changeset(graph, attrs, scope: scope)
+
+    with :ok <- Authorization.authorize(scope, "workflows:edit") do
+      Graph.update_changeset(get_graph!(scope, graph.id), attrs, scope: scope)
+    end
   end
 
   def validate_graph(graph), do: Validator.validate(graph)
@@ -64,17 +84,26 @@ defmodule Hermitscale.Workflows do
 
   def create_run(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
     Scope.assert_same_org!(scope, graph)
-    insert_run(graph, attrs)
+
+    with :ok <- Authorization.authorize(scope, "workflows:run") do
+      graph = get_graph!(scope, graph.id)
+      insert_run(graph, attrs, Scope.execution_context(scope), scope.user.id, nil)
+    end
   end
 
-  defp insert_run(%Graph{} = graph, attrs) do
+  defp insert_run(%Graph{} = graph, attrs, context, initiator, trigger_id) do
     attrs =
       attrs
       |> stringify_keys()
       |> Map.put_new("id", Ecto.UUID.generate())
       |> Map.put("workflow_graph_id", graph.id)
 
-    %Run{}
+    %Run{
+      initiated_by_user_id: initiator,
+      execution_actor_user_id: context.actor_user_id,
+      trigger_id: trigger_id,
+      account_selections: Credentials.selections(graph.definition)
+    }
     |> Run.changeset(attrs)
     |> Repo.insert()
   end
@@ -94,17 +123,37 @@ defmodule Hermitscale.Workflows do
   def start_run(%Scope{} = scope, %Graph{} = graph, input, opts \\ []) do
     Scope.assert_same_org!(scope, graph)
 
-    with :ok <- Credentials.authorize(scope, graph) do
-      do_start_run(graph, input, opts)
+    with :ok <- Authorization.authorize(scope, "workflows:run") do
+      graph = get_graph!(scope, graph.id)
+      do_start_run(graph, input, opts, Scope.execution_context(scope), scope.user.id, nil)
     end
   end
 
   @doc false
-  def start_run_from_trigger(%Graph{} = graph, input, opts \\ []) do
-    do_start_run(graph, input, opts)
+  def start_run_from_trigger(%Scope{} = scope, %Graph{} = graph, input, opts, trigger_id, context) do
+    Scope.assert_same_org!(scope, graph)
+
+    with :ok <- Authorization.authorize(scope, "workflows:run"),
+         true <-
+           context.organization_id == graph.org_id and context.actor_user_id == scope.user.id do
+      do_start_run(
+        get_graph!(scope, graph.id),
+        input,
+        opts,
+        context,
+        if(trigger_id && "workflows:activate" in context.required_permissions,
+          do: nil,
+          else: scope.user.id
+        ),
+        trigger_id
+      )
+    else
+      false -> {:error, :invalid_execution_identity}
+      error -> error
+    end
   end
 
-  defp do_start_run(%Graph{} = graph, input, opts) do
+  defp do_start_run(%Graph{} = graph, input, opts, context, initiator, trigger_id) do
     now = DateTime.utc_now(:second)
 
     with {:ok, workflow} <- Compiler.compile(graph.definition),
@@ -114,15 +163,17 @@ defmodule Hermitscale.Workflows do
              graph.definition,
              workflow,
              Keyword.get(opts, :run_context, %{}),
-             {graph.org_id, graph.created_by_user_id}
+             context
            ),
          workflow <- Workflow.put_run_context(workflow, run_context),
          {:ok, run} <-
-           insert_run(graph, %{
-             input: json_payload(input),
-             status: :running,
-             started_at: now
-           }),
+           insert_run(
+             graph,
+             %{input: json_payload(input), status: :running, started_at: now},
+             context,
+             initiator,
+             trigger_id
+           ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
          {:ok, _cursor} <- store_module.append(run.id, [definition_event], store_state),
          {:ok, _pid} <-
@@ -139,9 +190,8 @@ defmodule Hermitscale.Workflows do
 
   def resume_run(%Scope{} = scope, %Run{} = run, opts \\ []) do
     run = get_run!(scope, run.id)
-    graph = get_graph!(scope, run.workflow_graph_id)
 
-    with :ok <- Credentials.authorize(scope, graph) do
+    with :ok <- Authorization.authorize(scope, "workflows:run") do
       do_resume_run(run, opts)
     end
   end
@@ -149,14 +199,23 @@ defmodule Hermitscale.Workflows do
   defp do_resume_run(%Run{} = run, opts) do
     run = Repo.preload(run, :graph)
 
-    with %Graph{} = graph <- run.graph,
+    context = %ExecutionContext{
+      organization_id: run.graph.org_id,
+      actor_user_id: run.execution_actor_user_id,
+      required_permissions: resume_permissions(run)
+    }
+
+    definition = Credentials.with_selections(run.graph.definition, run.account_selections)
+
+    with {:ok, _actor_scope} <- Authorization.execution_scope(context),
+         %Graph{} = graph <- run.graph,
          {:ok, base_workflow} <- Compiler.compile(graph.definition),
          {:ok, run_context} <-
            Credentials.resolve_run_context(
-             graph.definition,
+             definition,
              base_workflow,
              Keyword.get(opts, :run_context, %{}),
-             {graph.org_id, graph.created_by_user_id}
+             context
            ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
          {:ok, event_stream} <- store_module.stream(run.id, store_state),
@@ -173,6 +232,26 @@ defmodule Hermitscale.Workflows do
       nil -> {:error, :missing_graph}
       error -> error
     end
+  end
+
+  defp resume_permissions(%Run{trigger_id: nil}), do: ["workflows:run"]
+
+  defp resume_permissions(%Run{input: input}) do
+    case get_in(input, ["value", "trigger", "mode"]) do
+      "manual" -> ["workflows:run"]
+      _unattended -> ["workflows:run", "workflows:activate"]
+    end
+  end
+
+  @doc "Returns non-secret account selections, requirements and setup readiness for the editor."
+  def connection_status(%Scope{} = scope, %Graph{} = graph) do
+    graph = get_graph!(scope, graph.id)
+
+    %{
+      requirements: Credentials.requirements(graph.definition),
+      selections: Credentials.selections(graph.definition),
+      readiness: Credentials.readiness(graph.definition, Scope.execution_context(scope))
+    }
   end
 
   def mark_run_complete(run_id, %Workflow{} = workflow) do

@@ -4,7 +4,11 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChangeTest do
   alias Hermitscale.Triggers.Google.Sheets.RowChange
   alias Hermitscale.Workflows.Nodes.Params
 
-  @ctx %{trigger_id: "t_1", graph_id: "g_1", credentials: %{access_token: "access_123"}}
+  @ctx %{
+    trigger_id: "t_1",
+    graph_id: "g_1",
+    credentials: Hermitscale.WorkflowsFixtures.credential_reference_fixture()
+  }
 
   setup do
     previous = Application.get_env(:hermitscale, :google_sheets_req_options, [])

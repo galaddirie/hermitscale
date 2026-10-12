@@ -7,6 +7,9 @@ defmodule Hermitscale.WorkOS.Client do
 
   @default_base_url "https://api.workos.com"
 
+  @doc "Returns the configured adapter for a context, retaining one WorkOS boundary."
+  def adapter(context), do: Application.get_env(:hermitscale, context, [])[:client] || __MODULE__
+
   @doc """
   Builds the Hosted AuthKit authorization URL.
   """
@@ -73,23 +76,143 @@ defmodule Hermitscale.WorkOS.Client do
     request(:jwks, :get, "/sso/jwks/#{path_segment(client_id)}", authenticated?: false)
   end
 
-  @doc """
-  Vends a short-lived OAuth access token for an immediate provider request.
-  """
-  def fetch_oauth_token(provider_slug, workos_user_id, workos_organization_id)
-      when is_binary(provider_slug) and is_binary(workos_user_id) do
-    body =
-      %{"user_id" => workos_user_id}
-      |> maybe_put("organization_id", workos_organization_id)
-
+  @doc "Vends credentials for exactly one organization-owned account."
+  def vend_credentials(slug, user_id, org_id, account_id) do
     with {:ok, body} <-
            request(
-             :fetch_oauth_token,
+             :vend_credentials,
              :post,
-             "/data-integrations/#{path_segment(provider_slug)}/token",
-             json: body
+             "/data-integrations/#{path_segment(slug)}/credentials",
+             json: %{
+               "user_id" => user_id,
+               "organization_id" => org_id,
+               "connection_owner" => "organization",
+               "connected_account_id" => account_id,
+               "supports_multiple_connections" => true
+             }
            ) do
-      normalize_oauth_token(body)
+      normalize_credential(body)
+    end
+  end
+
+  @doc "Lists organization-owned providers and accounts, including plural account selections."
+  def list_org_providers(org_id) do
+    request(:list_org_providers, :get, "/organizations/#{path_segment(org_id)}/data_providers",
+      params: [supports_multiple_connections: true]
+    )
+  end
+
+  def authorize_connection(slug, user_id, org_id, return_to, account_id \\ nil) do
+    body =
+      %{
+        "user_id" => user_id,
+        "organization_id" => org_id,
+        "connection_owner" => "organization",
+        "return_to" => return_to,
+        "connection_intent" => if(account_id, do: "reauthorize", else: "add")
+      }
+      |> maybe_put("connected_account_id", account_id)
+
+    request(:authorize_connection, :post, "/data-integrations/#{path_segment(slug)}/authorize",
+      json: body
+    )
+  end
+
+  def rotate_api_key(slug, user_id, org_id, account_id, secret) do
+    body =
+      %{
+        "user_id" => user_id,
+        "organization_id" => org_id,
+        "connection_owner" => "organization",
+        "secret" => secret
+      }
+      |> maybe_put("connected_account_id", account_id)
+
+    request(:rotate_api_key, :put, "/data-integrations/#{path_segment(slug)}/api-key", json: body)
+  end
+
+  def disconnect_account(slug, org_id, account_id) do
+    request(
+      :disconnect_account,
+      :delete,
+      "/organizations/#{path_segment(org_id)}/connected_accounts/#{path_segment(slug)}",
+      params: [connected_account_id: account_id, supports_multiple_connections: true]
+    )
+  end
+
+  def get_organization_by_external_id(external_id),
+    do:
+      request(
+        :get_organization_by_external_id,
+        :get,
+        "/organizations/external_id/#{path_segment(external_id)}",
+        []
+      )
+
+  def get_organization(org_id),
+    do: request(:get_organization, :get, "/organizations/#{path_segment(org_id)}", [])
+
+  def create_organization(attrs),
+    do: request(:create_organization, :post, "/organizations", json: attrs)
+
+  def list_memberships(user_id, org_id \\ nil) do
+    params = %{} |> maybe_put("user_id", user_id) |> maybe_put("organization_id", org_id)
+    list_all(:list_memberships, "/user_management/organization_memberships", params)
+  end
+
+  def get_membership(id),
+    do:
+      request(
+        :get_membership,
+        :get,
+        "/user_management/organization_memberships/#{path_segment(id)}",
+        []
+      )
+
+  def create_membership(user_id, org_id, role),
+    do:
+      request(:create_membership, :post, "/user_management/organization_memberships",
+        json: %{"user_id" => user_id, "organization_id" => org_id, "role_slug" => role}
+      )
+
+  def update_membership(id, role),
+    do:
+      request(
+        :update_membership,
+        :put,
+        "/user_management/organization_memberships/#{path_segment(id)}",
+        json: %{"role_slug" => role}
+      )
+
+  def remove_membership(id),
+    do:
+      request(
+        :remove_membership,
+        :delete,
+        "/user_management/organization_memberships/#{path_segment(id)}",
+        []
+      )
+
+  def invite_member(org_id, inviter_id, email, role),
+    do:
+      request(:invite_member, :post, "/user_management/invitations",
+        json: %{
+          "organization_id" => org_id,
+          "inviter_user_id" => inviter_id,
+          "email" => email,
+          "role_slug" => role
+        }
+      )
+
+  def get_role(slug),
+    do: request(:get_role, :get, "/authorization/roles/#{path_segment(slug)}", [])
+
+  defp list_all(operation, path, params, acc \\ []) do
+    with {:ok, %{"data" => data} = page} <- request(operation, :get, path, params: params) do
+      case get_in(page, ["list_metadata", "after"]) do
+        nil -> {:ok, %{"data" => acc ++ data}}
+        cursor -> list_all(operation, path, Map.put(params, "after", cursor), acc ++ data)
+      end
     end
   end
 
@@ -122,6 +245,7 @@ defmodule Hermitscale.WorkOS.Client do
         method: method,
         url: api_url(path, config),
         retry: retry_strategy(method),
+        redirect: false,
         max_retries: config[:max_retries] || 2,
         retry_log_level: false,
         receive_timeout: config[:receive_timeout] || 10_000
@@ -155,15 +279,41 @@ defmodule Hermitscale.WorkOS.Client do
       code when code in ["invalid_grant", "invalid_refresh_token", "session_expired"] ->
         {:error, :invalid_grant}
 
+      code
+      when code in [
+             "account_selection_required",
+             "connected_account_not_found",
+             "insufficient_scopes",
+             "multiple_connections_unavailable"
+           ] ->
+        credential_error(code)
+
       _code ->
         {:error, {:invalid_request, 400}}
     end
   end
 
+  defp normalize_response({:ok, %Req.Response{status: 403}}), do: {:error, :forbidden}
   defp normalize_response({:ok, %Req.Response{status: 401}}), do: {:error, :unauthorized}
   defp normalize_response({:ok, %Req.Response{status: 404}}), do: {:error, :not_found}
   defp normalize_response({:ok, %Req.Response{status: 409}}), do: {:error, :conflict}
-  defp normalize_response({:ok, %Req.Response{status: 422}}), do: {:error, :unprocessable}
+
+  defp normalize_response({:ok, %Req.Response{status: 422, body: body}}) do
+    case error_code(body) do
+      code
+      when code in [
+             "account_selection_required",
+             "connected_account_not_found",
+             "insufficient_scopes",
+             "multiple_connections_unavailable"
+           ] ->
+        credential_error(code)
+
+      _ ->
+        {:error, :unprocessable}
+    end
+  end
+
   defp normalize_response({:ok, %Req.Response{status: 429}}), do: {:error, :rate_limited}
 
   defp normalize_response({:ok, %Req.Response{status: status}}) when status >= 500,
@@ -174,32 +324,44 @@ defmodule Hermitscale.WorkOS.Client do
 
   defp normalize_response({:error, _reason}), do: {:error, :unavailable}
 
-  defp normalize_oauth_token(%{"active" => false, "error" => "not_installed"}),
-    do: {:error, :not_installed}
+  defp normalize_credential(%{"active" => false, "error" => code}), do: credential_error(code)
 
-  defp normalize_oauth_token(%{"active" => false, "error" => "needs_reauthorization"}),
-    do: {:error, :needs_reauthorization}
-
-  defp normalize_oauth_token(%{
+  defp normalize_credential(%{
          "active" => true,
-         "access_token" =>
-           %{
-             "access_token" => access_token,
-             "scopes" => scopes,
-             "missing_scopes" => missing_scopes
-           } = token
+         "credential" => %{"auth_method" => method, "value" => value} = credential
        })
-       when is_binary(access_token) and is_list(scopes) and is_list(missing_scopes) do
-    {:ok,
-     %{
-       access_token: access_token,
-       expires_at: parse_optional_datetime(token["expires_at"]),
-       scopes: scopes,
-       missing_scopes: missing_scopes
-     }}
+       when method in ["oauth", "api_key"] and is_binary(value) and value != "" do
+    scopes = credential["scopes"] || []
+    missing = credential["missing_scopes"] || []
+
+    case is_list(scopes) and is_list(missing) and Enum.all?(scopes ++ missing, &is_binary/1) do
+      true ->
+        {:ok,
+         %{
+           auth_method: method,
+           value: value,
+           expires_at: parse_optional_datetime(credential["expires_at"]),
+           scopes: scopes,
+           missing_scopes: missing
+         }}
+
+      false ->
+        {:error, :invalid_credential_response}
+    end
   end
 
-  defp normalize_oauth_token(_body), do: {:error, :invalid_token_response}
+  defp normalize_credential(_body), do: {:error, :invalid_credential_response}
+
+  defp credential_error("not_installed"), do: {:error, :not_installed}
+  defp credential_error("needs_reauthorization"), do: {:error, :needs_reauthorization}
+  defp credential_error("account_selection_required"), do: {:error, :account_selection_required}
+  defp credential_error("connected_account_not_found"), do: {:error, :account_not_found}
+  defp credential_error("insufficient_scopes"), do: {:error, :insufficient_scopes}
+
+  defp credential_error("multiple_connections_unavailable"),
+    do: {:error, :multiple_connections_unavailable}
+
+  defp credential_error(_code), do: {:error, :invalid_credential_response}
 
   defp parse_optional_datetime(nil), do: nil
 

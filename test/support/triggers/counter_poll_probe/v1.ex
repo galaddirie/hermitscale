@@ -21,8 +21,8 @@ defmodule Hermitscale.Triggers.CounterPollProbe.V1 do
 
   def poll(%{behavior: "emit_credentials"}, %{"count" => count}, ctx) do
     tick = count + 1
-    token = ctx.credentials && ctx.credentials.access_token
-    event = %{payload: %{"tick" => tick, "access_token" => token}, key: "tick-#{tick}"}
+    account_id = ctx.credentials && ctx.credentials.account_id
+    event = %{payload: %{"tick" => tick, "account_id" => account_id}, key: "tick-#{tick}"}
     {:ok, [event], %{"count" => tick}}
   end
 

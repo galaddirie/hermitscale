@@ -5,8 +5,7 @@ defmodule Hermitscale.Integrations.Google.Sheets.Client do
 
   @base_url "https://sheets.googleapis.com/v4/spreadsheets"
 
-  alias Hermitscale.Integrations.CredentialRef
-  alias Hermitscale.Integrations.Google.OAuth
+  alias Hermitscale.Integrations.Request
 
   @doc """
   Reads values from a spreadsheet range.
@@ -39,43 +38,15 @@ defmodule Hermitscale.Integrations.Google.Sheets.Client do
   end
 
   defp request(method, credentials, path, opts) do
-    with {:ok, access_token} <- immediate_access_token(credentials) do
-      req_opts =
-        [
-          method: method,
-          base_url: @base_url,
-          url: path,
-          auth: {:bearer, access_token}
-        ]
-        |> Keyword.merge(Application.get_env(:hermitscale, :google_sheets_req_options, []))
-        |> Keyword.merge(opts)
+    req_opts =
+      Application.get_env(:hermitscale, :google_sheets_req_options, []) |> Keyword.merge(opts)
 
-      case Req.request(req_opts) do
-        {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-          {:ok, body}
-
-        {:ok, %Req.Response{status: status}} ->
-          {:error, {:google_sheets_request_failed, status}}
-
-        {:error, _reason} ->
-          {:error, :google_sheets_unavailable}
-      end
+    case Request.request(method, @base_url <> path, credentials, req_opts) do
+      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 -> {:ok, body}
+      {:ok, %Req.Response{status: status}} -> {:error, {:google_sheets_request_failed, status}}
+      {:error, reason} -> {:error, reason}
     end
   end
-
-  defp immediate_access_token(%CredentialRef{} = ref) do
-    case OAuth.fetch_token(ref) do
-      {:ok, %{access_token: access_token}} -> {:ok, access_token}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp immediate_access_token(%{access_token: token}) when is_binary(token), do: {:ok, token}
-
-  defp immediate_access_token(%{"access_token" => token}) when is_binary(token),
-    do: {:ok, token}
-
-  defp immediate_access_token(_credentials), do: {:error, :missing_credentials}
 
   defp path_segment(value) when is_binary(value) do
     URI.encode(value, &URI.char_unreserved?/1)

@@ -13,27 +13,20 @@ defmodule Hermitscale.TriggersTest do
     %{scope: user_scope_fixture()}
   end
 
-  describe "creator-owned credentials" do
-    test "another member cannot activate, enable, or fire creator-bound triggers", %{scope: scope} do
-      definition =
-        trigger_graph(manual_trigger_node(), %{
-          "credentials" => %{"providers" => %{"google.oauth" => %{"provider" => "google.oauth"}}}
-        })
+  describe "organization permissions" do
+    test "runners can fire but cannot activate or manage automation", %{scope: scope} do
+      {graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
+      runner = put_in(scope.membership.permissions, ["workflows:run"])
+      assert {:error, :forbidden} = Triggers.activate_graph(runner, graph)
+      assert {:error, :forbidden} = Triggers.enable_trigger(runner, trigger)
+      assert {:error, :forbidden} = Triggers.deactivate_graph(runner, graph)
+      assert {:error, :forbidden} = Triggers.disable_trigger(runner, trigger)
 
-      graph = create_graph!(scope, definition)
-      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
+      assert {:ok, run} =
+               Triggers.fire_manual(runner, trigger, %{}, run_opts: [executor: :inline])
 
-      assert {:error, :credential_owner_required} = Triggers.activate_graph(collaborator, graph)
-      assert {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(scope, graph)
-      assert {:error, :credential_owner_required} = Triggers.enable_trigger(collaborator, trigger)
-
-      assert {:error, :credential_owner_required} =
-               Triggers.fire_manual(collaborator, trigger, %{})
-
-      assert {:error, :credential_owner_required} = Triggers.deactivate_graph(collaborator, graph)
-
-      assert {:error, :credential_owner_required} =
-               Triggers.disable_trigger(collaborator, trigger)
+      assert run.execution_actor_user_id == runner.user.id
+      assert run.trigger_id == trigger.id
     end
   end
 
@@ -119,43 +112,21 @@ defmodule Hermitscale.TriggersTest do
       assert reactivated.cursor == %{"count" => 0}
     end
 
-    test "polling activation resolves credentials into the init_cursor ctx", %{scope: scope} do
-      graph =
-        create_graph!(
-          scope,
-          trigger_graph(polling_trigger_node(), %{
-            "credentials" => %{
-              "providers" => %{
-                "test.credentials" => %{
-                  "provider" => "test.credentials",
-                  "credential_id" => "cred_1"
-                }
-              }
-            }
-          })
-        )
+    test "polling uses the explicitly recorded activation actor", %{scope: scope} do
+      {graph, trigger} = activate_trigger_graph!(scope, polling_trigger_node())
+      assert trigger.execution_actor_user_id == scope.user.id
 
-      assert {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(scope, graph)
-      assert {:ok, %{access_token: "token:cred_1"}} = Triggers.credentials_for(trigger)
-    end
+      assert {:ok, %{account_id: "data_test", execution_context: context}} =
+               Triggers.credentials_for(trigger)
 
-    test "polling activation fails with a pointed error on a broken credential binding", %{
-      scope: scope
-    } do
-      graph =
-        create_graph!(
-          scope,
-          trigger_graph(polling_trigger_node(), %{
-            "credentials" => %{
-              "providers" => %{
-                "test.credentials" => %{"provider" => "test.credentials", "fail" => true}
-              }
-            }
-          })
-        )
-
-      assert {:error, {:credentials, "poll", {:credential_fetch_failed, "poll", _, _}}} =
-               Triggers.activate_graph(scope, graph)
+      assert context.actor_user_id == scope.user.id
+      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
+      {:ok, disabled} = Triggers.disable_trigger(collaborator, trigger)
+      {:ok, enabled} = Triggers.enable_trigger(collaborator, disabled)
+      assert enabled.execution_actor_user_id == scope.user.id
+      {:ok, reassigned} = Triggers.reassign_actor(collaborator, enabled)
+      assert reassigned.execution_actor_user_id == collaborator.user.id
+      assert graph.org_id == collaborator.organization.id
     end
 
     test "removes trigger rows for deleted trigger nodes", %{scope: scope} do
@@ -214,7 +185,7 @@ defmodule Hermitscale.TriggersTest do
 
       assert {:ok, errored} = Triggers.mark_errored(trigger, :quota_exhausted)
       assert errored.status == :errored
-      assert errored.error["message"] =~ "quota_exhausted"
+      assert errored.error["action"] == "repair_connection"
     end
   end
 

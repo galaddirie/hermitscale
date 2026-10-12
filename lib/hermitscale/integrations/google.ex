@@ -3,7 +3,9 @@ defmodule Hermitscale.Integrations.Google do
   Shared defaults for Google catalog nodes.
   """
 
-  @provider "google.oauth"
+  use Hermitscale.Integrations.Provider
+
+  @provider "google"
   @default_policy %{backoff: "exponential", max_retries: 3, timeout_ms: 30_000}
 
   defmacro __using__(opts) do
@@ -20,6 +22,17 @@ defmodule Hermitscale.Integrations.Google do
     end
   end
 
-  @doc false
+  @impl true
+  def descriptor,
+    do: %{
+      slug: "google",
+      auth_methods: ["oauth"],
+      authentication: %{"oauth" => :bearer},
+      destinations: network_domains()
+    }
+
+  @impl true
+  def network_domains, do: ["sheets.googleapis.com", "www.googleapis.com"]
+  @impl true
   def provider_id, do: @provider
 end

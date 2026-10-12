@@ -118,6 +118,71 @@ defmodule Hermitscale.WorkOS.SessionTest do
     end
   end
 
+  describe "explicit organization switching" do
+    test "switches only to the verified requested tenant and keeps the browser lifetime" do
+      {:ok, created} = Session.create(authentication_fixture())
+
+      Client.put_response(
+        :authenticate_with_refresh_token,
+        {:ok, authentication_fixture(%{"org_id" => "org_team"})}
+      )
+
+      assert {:ok, switched} = Session.switch_organization(created.sealed_session, "org_team")
+      assert switched.current_scope.organization.id == "org_team"
+      assert {:ok, _valid} = Session.authenticate(switched.sealed_session)
+
+      for result <- [created, switched] do
+        {:ok, payload} =
+          Phoenix.Token.decrypt(
+            HermitscaleWeb.Endpoint,
+            "workos-browser-session-v1",
+            result.sealed_session
+          )
+
+        send(self(), {:started_at, payload.started_at})
+      end
+
+      assert_receive {:started_at, started}
+      assert_receive {:started_at, ^started}
+    end
+
+    test "rejects wrong tenants, users and sessions returned by a switch" do
+      {:ok, created} = Session.create(authentication_fixture())
+
+      for claims <- [
+            %{"org_id" => "org_wrong"},
+            %{"org_id" => "org_team", "sub" => "user_forged"},
+            %{"org_id" => "org_team", "sid" => "session_forged"}
+          ] do
+        Client.put_response(
+          :authenticate_with_refresh_token,
+          {:ok, authentication_fixture(claims)}
+        )
+
+        assert {:error, :invalid_session} =
+                 Session.switch_organization(created.sealed_session, "org_team")
+      end
+    end
+
+    test "sign-in provisions a personal org even when a team org was selected" do
+      assert {:ok, result} = Session.establish(authentication_fixture())
+      assert result.current_scope.organization.id == "org_workos"
+      assert {:get_organization_by_external_id, ["personal:user_workos"]} in Client.calls()
+    end
+
+    test "organizationless sign-in selects its automatically provisioned organization" do
+      Client.put_response(
+        :authenticate_with_refresh_token,
+        {:ok, authentication_fixture(%{"org_id" => "org_personal"})}
+      )
+
+      assert {:ok, result} = Session.establish(authentication_fixture(%{"org_id" => nil}))
+      assert result.current_scope.organization.id == "org_personal"
+
+      assert {:authenticate_with_refresh_token, ["refresh_secret", "org_personal", %{}]} in Client.calls()
+    end
+  end
+
   describe "logout/2" do
     test "revokes the remote WorkOS session and obtains its logout URL" do
       {:ok, created} = Session.create(authentication_fixture())

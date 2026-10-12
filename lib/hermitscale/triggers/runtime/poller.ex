@@ -79,10 +79,10 @@ defmodule Hermitscale.Triggers.Runtime.Poller do
     case state.module.poll(state.params, state.cursor, ctx) do
       {:ok, events, cursor} when is_list(events) and is_map(cursor) -> {:ok, events, cursor}
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_poll_return, other}}
+      _other -> {:error, :invalid_poll_return}
     end
   rescue
-    exception -> {:error, {exception, __STACKTRACE__}}
+    _exception -> {:error, :source_callback_failed}
   end
 
   defp dispatch_events(state, events) do
@@ -105,10 +105,7 @@ defmodule Hermitscale.Triggers.Runtime.Poller do
   defp fail(state, reason) do
     failures = state.failures + 1
 
-    Logger.warning(
-      "trigger poll failed trigger_id=#{state.trigger.id} failures=#{failures} " <>
-        "reason=#{inspect(reason)}"
-    )
+    Logger.warning("Trigger poll failed", trigger_id: state.trigger.id, failures: failures)
 
     if failures >= state.failure_threshold do
       Triggers.mark_errored(state.trigger, reason)

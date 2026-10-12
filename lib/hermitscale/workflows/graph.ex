@@ -7,7 +7,6 @@ defmodule Hermitscale.Workflows.Graph do
   import Ecto.Changeset
 
   alias Hermitscale.Accounts.Scope
-  alias Hermitscale.Workflows.Credentials
 
   @editable_fields [
     :schema_version,
@@ -50,25 +49,10 @@ defmodule Hermitscale.Workflows.Graph do
   end
 
   @doc false
-  def update_changeset(graph, attrs, opts \\ []) do
+  def update_changeset(graph, attrs, _opts \\ []) do
     graph
     |> cast(attrs, @editable_fields)
-    |> validate_credential_owner(Keyword.get(opts, :scope))
     |> validate_authoring()
-  end
-
-  defp validate_credential_owner(changeset, nil), do: changeset
-
-  defp validate_credential_owner(changeset, scope) do
-    definition = get_field(changeset, :definition)
-
-    case Credentials.bound?(definition) or Credentials.bound?(changeset.data.definition) do
-      true when scope.user.id != changeset.data.created_by_user_id ->
-        add_error(changeset, :definition, "only the creator can edit credential-bound workflows")
-
-      _ ->
-        changeset
-    end
   end
 
   defp validate_authoring(changeset) do

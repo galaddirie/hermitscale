@@ -18,7 +18,7 @@ defmodule Hermitscale.Integrations.Google.Sheets.ClientTest do
 
       assert {:ok, %{"values" => [["sku", "qty"], ["ABC", 2]]}} =
                Client.read_rows(
-                 %{access_token: "access_123"},
+                 Hermitscale.WorkflowsFixtures.credential_reference_fixture(),
                  "sheet_123",
                  "Sheet1!A:B",
                  plug: {Req.Test, __MODULE__}
@@ -42,7 +42,7 @@ defmodule Hermitscale.Integrations.Google.Sheets.ClientTest do
 
       assert {:ok, %{"updates" => %{"updatedRows" => 1}}} =
                Client.append_row(
-                 %{access_token: "access_123"},
+                 Hermitscale.WorkflowsFixtures.credential_reference_fixture(),
                  "sheet_123",
                  "Sheet1!A:B",
                  ["ABC", 2],

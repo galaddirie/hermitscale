@@ -1,160 +1,108 @@
 defmodule Hermitscale.Workflows.CredentialsTest do
-  use ExUnit.Case, async: true
-
+  use ExUnit.Case, async: false
+  import Hermitscale.AccountsFixtures
   import Hermitscale.WorkflowsFixtures
+  alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Workflows.{Compiler, Credentials, Validator}
+  alias Hermitscale.WorkOSTest.Client
 
-  alias Hermitscale.Workflows.{Compiler, Credentials}
-  alias Runic.Workflow
-
-  describe "WorkOS Pipes identity" do
-    test "uses authoritative ownership rather than supplied binding IDs" do
-      graph =
-        google_graph(%{
-          "provider" => "google.oauth",
-          "user_id" => "user_victim",
-          "organization_id" => "org_victim"
-        })
-
-      assert {:ok, workflow} = Compiler.compile(graph)
-
-      assert {:ok, %{"read" => %{credentials: reference}}} =
-               Credentials.resolve_run_context(
-                 graph,
-                 workflow,
-                 %{},
-                 {"org_authoritative", "user_creator"}
-               )
-
-      assert reference.user_id == "user_creator"
-      assert reference.organization_id == "org_authoritative"
-      refute Map.has_key?(Map.from_struct(reference), :access_token)
-    end
-
-    test "legacy local connected-account IDs fail closed" do
-      graph = google_graph(%{"provider" => "google.oauth", "connected_account_id" => "local-id"})
-      assert {:ok, workflow} = Compiler.compile(graph)
-
-      assert {:error,
-              {:credential_fetch_failed, "read", "google.oauth", :legacy_credential_reference}} =
-               Credentials.resolve_run_context(
-                 graph,
-                 workflow,
-                 %{},
-                 {"org_authoritative", "user_creator"}
-               )
-    end
+  setup do
+    start_supervised!({Client, %{}})
+    %{scope: user_scope_fixture(), graph: credential_probe_graph()}
   end
 
-  describe "resolve_run_context/3" do
-    test "resolves provider defaults into per-node run context" do
-      graph = credential_probe_graph()
-      assert {:ok, workflow} = Compiler.compile(graph)
+  describe "canonical selections" do
+    test "two permitted members receive the same account and their own actor", %{
+      scope: scope,
+      graph: graph
+    } do
+      {:ok, workflow} = Compiler.compile(graph)
+      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
 
-      assert {:ok, context} = Credentials.resolve_run_context(graph, workflow)
+      for member <- [scope, collaborator] do
+        assert {:ok, %{"probe" => %{credentials: ref}}} =
+                 Credentials.resolve_run_context(
+                   graph,
+                   workflow,
+                   %{},
+                   Scope.execution_context(member)
+                 )
 
-      assert %{
-               "probe" => %{
-                 credentials: %{
-                   access_token: "token:cred_default",
-                   expires_at: nil,
-                   scopes: ["scope:a"]
-                 }
-               }
-             } = context
+        assert ref.account_id == "data_test"
+        assert ref.execution_context.actor_user_id == member.user.id
+        assert ref.execution_context.organization_id == scope.organization.id
+        refute Map.has_key?(Map.from_struct(ref), :value)
+      end
 
-      assert :ok = Workflow.validate_run_context(workflow, context)
+      refute Enum.any?(Client.calls(), fn {op, _} -> op == :vend_credentials end)
+    end
 
-      results =
-        workflow
-        |> Workflow.put_run_context(context)
-        |> Workflow.react_until_satisfied(%{"input" => true})
-        |> Workflow.raw_productions()
+    test "rejects all former binding formats and forged selection authority", %{graph: graph} do
+      for legacy <- [
+            Map.put(graph, "credentials", %{}),
+            put_in(graph["nodes"], [Map.put(hd(graph["nodes"]), "credentials", %{})]),
+            put_in(graph["nodes"], [
+              put_in(hd(graph["nodes"])["connection"]["actor_user_id"], "user_victim")
+            ])
+          ] do
+        assert {:error, _issues} = Validator.validate(legacy)
+      end
+    end
 
-      assert Enum.any?(
-               results,
-               &match?(
-                 %{
-                   "input" => true,
-                   "access_token" => "token:cred_default",
-                   "scopes" => ["scope:a"]
-                 },
-                 &1
+    test "missing selections and foreign organization accounts fail before execution", %{
+      scope: scope,
+      graph: graph
+    } do
+      missing = update_in(graph["nodes"], &Enum.map(&1, fn n -> Map.delete(n, "connection") end))
+      {:ok, workflow} = Compiler.compile(missing)
+
+      assert {:error, {:connection_setup_required, "probe"}} =
+               Credentials.resolve_run_context(
+                 missing,
+                 workflow,
+                 %{},
+                 Scope.execution_context(scope)
                )
-             )
+
+      Client.put_response(:list_org_providers, {:ok, %{"data" => []}})
+
+      assert {:error, {:connection_not_ready, "probe", :account_not_found}} =
+               Credentials.readiness(graph, Scope.execution_context(scope))
     end
 
-    test "node overrides take precedence over provider defaults" do
-      graph =
-        credential_probe_graph(%{
-          "credentials" => %{
-            "providers" => %{
-              "test.credentials" => %{
-                "provider" => "test.credentials",
-                "credential_id" => "cred_default"
-              }
-            },
-            "nodes" => %{
-              "probe" => %{
-                "provider" => "test.credentials",
-                "credential_id" => "cred_override"
-              }
-            }
-          }
-        })
+    test "runtime context cannot inject credentials or execution authority", %{
+      scope: scope,
+      graph: graph
+    } do
+      {:ok, workflow} = Compiler.compile(graph)
 
-      assert {:ok, workflow} = Compiler.compile(graph)
-
-      assert {:ok,
-              %{
-                "probe" => %{credentials: %{access_token: "token:cred_override"}}
-              }} = Credentials.resolve_run_context(graph, workflow)
+      for context <- [
+            %{credentials: "secret"},
+            %{"probe" => %{credentials: %{value: "secret"}}},
+            %{actor_user_id: "user_victim"},
+            %{env: %{execution_context: %{user_id: "user_victim"}}}
+          ] do
+        assert {:error, :reserved_run_context} =
+                 Credentials.resolve_run_context(
+                   graph,
+                   workflow,
+                   context,
+                   Scope.execution_context(scope)
+                 )
+      end
     end
 
-    test "returns missing run context when a required credential has no binding" do
-      graph = credential_probe_graph(%{"credentials" => %{}})
-      assert {:ok, workflow} = Compiler.compile(graph)
-
-      assert {:error, {:missing_run_context, %{"probe" => [:credentials]}}} =
-               Credentials.resolve_run_context(graph, workflow)
+    test "a persisted selection stays stable when another account is added", %{
+      scope: scope,
+      graph: graph
+    } do
+      Client.put_response(:list_org_providers, {:ok, %{"data" => []}})
+      assert {:ok, ^graph} = Credentials.select_accounts(scope, graph)
     end
 
-    test "returns provider resolution failures without exposing the reference" do
-      graph =
-        credential_probe_graph(%{
-          "credentials" => %{
-            "providers" => %{
-              "test.credentials" => %{
-                "provider" => "test.credentials",
-                "credential_id" => "cred_fail",
-                "fail" => true
-              }
-            }
-          }
-        })
-
-      assert {:ok, workflow} = Compiler.compile(graph)
-
-      assert {:error,
-              {:credential_fetch_failed, "probe", "test.credentials", :test_provider_failed}} =
-               Credentials.resolve_run_context(graph, workflow)
+    test "requirements come from catalog operation metadata", %{graph: graph} do
+      assert [%{provider: "test.credentials", scopes: ["scope:a"], nodes: ["probe"]}] =
+               Credentials.requirements(graph)
     end
-  end
-
-  defp google_graph(ref) do
-    %{
-      "schema_version" => 1,
-      "id" => "google_read",
-      "name" => "Google read",
-      "nodes" => [
-        %{
-          "id" => "read",
-          "type" => "google.sheets.read_rows",
-          "version" => 1,
-          "params" => %{"spreadsheet_id" => "sheet"}
-        }
-      ],
-      "connections" => [],
-      "credentials" => %{"providers" => %{"google.oauth" => ref}}
-    }
   end
 end

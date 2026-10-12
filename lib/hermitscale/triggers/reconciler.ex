@@ -31,7 +31,9 @@ defmodule Hermitscale.Triggers.Reconciler do
   def sync(server \\ __MODULE__), do: GenServer.call(server, :sync)
 
   def fingerprint(%Trigger{} = trigger) do
-    :erlang.phash2({trigger.type, trigger.version, trigger.config})
+    :erlang.phash2(
+      {trigger.type, trigger.version, trigger.config, trigger.execution_actor_user_id}
+    )
   end
 
   @impl true

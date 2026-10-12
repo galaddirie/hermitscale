@@ -72,8 +72,6 @@ defmodule Hermitscale.WorkflowsFixtures do
   end
 
   def credential_probe_graph(attrs \\ %{}) do
-    attrs = Map.new(attrs)
-
     Map.merge(
       %{
         "schema_version" => 1,
@@ -84,22 +82,26 @@ defmodule Hermitscale.WorkflowsFixtures do
             "id" => "probe",
             "type" => "test.credential_probe",
             "version" => 1,
-            "params" => %{}
+            "params" => %{},
+            "connection" => %{"provider" => "test.credentials", "account_id" => "data_test"}
           }
         ],
-        "connections" => [],
-        "credentials" => %{
-          "providers" => %{
-            "test.credentials" => %{
-              "provider" => "test.credentials",
-              "credential_id" => "cred_default"
-            }
-          },
-          "nodes" => %{}
-        }
+        "connections" => []
       },
-      attrs
+      Map.new(attrs)
     )
+  end
+
+  def credential_reference_fixture(provider \\ "google", account_id \\ "data_google") do
+    %Hermitscale.Integrations.CredentialRef{
+      execution_context: %Hermitscale.Integrations.ExecutionContext{
+        organization_id: "org_test",
+        actor_user_id: "user_test"
+      },
+      provider_id: provider,
+      account_id: account_id,
+      required_scopes: []
+    }
   end
 
   def map_probe_graph(attrs \\ %{}) do

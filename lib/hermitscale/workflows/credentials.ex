@@ -1,280 +1,219 @@
 defmodule Hermitscale.Workflows.Credentials do
-  @moduledoc """
-  Resolves graph credential references into Runic run context.
-
-  Supported graph bindings:
-
-      %{
-        "credentials" => %{
-          "providers" => %{
-            "google.oauth" => %{"provider" => "google.oauth"}
-          },
-          "nodes" => %{
-            "node_id" => %{"provider" => "google.oauth"}
-          }
-        }
-      }
-
-  A node-local `"credentials"` map is also accepted as a direct override. The
-  node-specific binding wins over the provider default.
-  """
-
-  alias Hermitscale.Integrations.{ConnectedAccounts, Provider}
+  @moduledoc "Canonical node account selection and non-secret runtime references."
+  alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Integrations.{ConnectedAccounts, ExecutionContext}
   alias Hermitscale.Workflows.{Catalog, Validator}
   alias Runic.Workflow
 
-  @doc """
-  Resolves credential bindings and validates the resulting Runic run context.
-  """
-  def resolve_run_context(graph, %Workflow{} = workflow, base_context \\ %{})
-      when is_map(graph) do
-    resolve_run_context(graph, workflow, base_context, nil)
-  end
+  @reserved ~w(credentials credential_ref actor_user_id user_id organization_id execution_context execution_actor_user_id owner scope)
 
-  @doc """
-  Resolves run context with the graph's trusted WorkOS identities.
-  """
-  def resolve_run_context(graph, %Workflow{} = workflow, base_context, identity)
-      when is_map(graph) and (is_tuple(identity) or is_nil(identity)) do
-    with {:ok, credential_context} <- credential_context(graph, identity),
-         base_context <- merge_context(Workflow.get_run_context(workflow), base_context),
-         run_context <- merge_context(base_context, credential_context),
-         :ok <- validate_run_context(workflow, run_context) do
-      {:ok, run_context}
+  @doc "Resolves per-node references from trusted execution identity, never from expression data."
+  def resolve_run_context(graph, workflow, base_context \\ %{}, identity \\ nil)
+
+  def resolve_run_context(graph, %Workflow{} = workflow, base_context, identity) do
+    with :ok <- validate_context(base_context),
+         {:ok, credential_context} <- contexts(graph, identity),
+         context = Map.merge(Workflow.get_run_context(workflow), base_context),
+         context =
+           Map.merge(context, credential_context, fn _id, base, credentials ->
+             Map.merge(if(is_map(base), do: base, else: %{}), credentials)
+           end),
+         :ok <- validate_run_context(workflow, context) do
+      {:ok, context}
     end
   end
 
-  @doc """
-  Resolves the credential binding for a single node at call time.
-
-  Unlike `resolve_run_context/3`, which resolves once when a run starts, this
-  is for long-lived trigger runtimes that must re-resolve on every poll or
-  reconnect so rotated tokens stay fresh. Returns `{:ok, nil}` when the node
-  declares no credential requirement or the graph binds none.
-  """
-  def resolve_node(graph, node_id) when is_map(graph) and is_binary(node_id) do
-    resolve_node(graph, node_id, nil)
-  end
-
-  @doc """
-  Resolves one node credential with its graph's trusted WorkOS identities.
-  """
-  def resolve_node(graph, node_id, identity)
-      when is_map(graph) and is_binary(node_id) and
-             (is_tuple(identity) or is_nil(identity)) do
-    catalog = Catalog.index()
-
-    node =
-      graph
-      |> Validator.node_specs()
-      |> Enum.find(&(&1["id"] == node_id))
-
-    case node do
-      nil ->
-        {:error, {:missing_node, node_id}}
-
-      node ->
-        with {:ok, {_node_id, %{credentials: credential}}} <-
-               node_context(node, graph, catalog, identity) do
-          {:ok, credential}
-        end
+  @doc "Resolves a trigger node's reference at each poll or reconnect."
+  def resolve_node(graph, node_id, identity \\ nil) do
+    case Enum.find(Validator.node_specs(graph), &(&1["id"] == node_id)) do
+      nil -> {:error, {:missing_node, node_id}}
+      node -> node_reference(node, identity)
     end
   end
 
-  @doc """
-  Returns credential requirements grouped by provider for editor consent flows.
-  """
-  def requirements(graph) when is_map(graph) do
-    catalog = Catalog.index()
+  @doc "Checks every selection before run admission or activation."
+  def readiness(graph, %ExecutionContext{} = identity) do
+    with {:ok, _context} <- contexts(graph, identity), do: :ok
+  end
 
+  @doc "Returns the catalog credential requirement for a node."
+  def requirement(%{"type" => type, "version" => version} = node)
+      when is_binary(type) and is_integer(version) do
+    with {:ok, module} <- Catalog.fetch(node["type"], node["version"]) do
+      Keyword.get(module.__catalog_node__().requires, :credentials)
+    else
+      _ -> nil
+    end
+  end
+
+  def requirement(_node), do: nil
+
+  @doc "Collects requirements without retrieving secrets."
+  def requirements(graph) do
     graph
     |> Validator.node_specs()
     |> Enum.reduce(%{}, fn node, acc ->
-      with {:ok, module} <- Catalog.fetch(catalog, node["type"], node["version"]),
-           %{requires: requires} <- module.__catalog_node__(),
-           requirement when is_list(requirement) <- Keyword.get(requires, :credentials),
-           provider when is_binary(provider) <- Keyword.get(requirement, :provider) do
-        scopes = Keyword.get(requirement, :scopes, [])
+      case requirement(node) do
+        requirement when is_list(requirement) ->
+          provider =
+            Keyword.get(requirement, :provider) || get_in(node, ["connection", "provider"])
 
-        Map.update(
-          acc,
-          provider,
-          %{provider: provider, scopes: scopes, nodes: [node["id"]]},
-          &merge_requirement(&1, scopes, node["id"])
-        )
-      else
-        _other -> acc
+          scopes = Keyword.get(requirement, :scopes, [])
+
+          case provider do
+            nil ->
+              acc
+
+            provider ->
+              Map.update(
+                acc,
+                provider,
+                %{provider: provider, scopes: scopes, nodes: [node["id"]]},
+                fn r ->
+                  %{r | scopes: Enum.uniq(r.scopes ++ scopes), nodes: r.nodes ++ [node["id"]]}
+                end
+              )
+          end
+
+        nil ->
+          acc
       end
     end)
     |> Map.values()
-    |> Enum.map(&Map.update!(&1, :scopes, fn scopes -> Enum.sort(Enum.uniq(scopes)) end))
     |> Enum.sort_by(& &1.provider)
   end
 
-  defp credential_context(graph, identity) do
-    catalog = Catalog.index()
+  @doc "Fills missing selections with the only compatible org account; keeps existing choices stable."
+  def select_accounts(%Scope{} = scope, graph) do
+    graph["nodes"]
+    |> Enum.reduce_while({:ok, []}, fn node, {:ok, nodes} ->
+      case select_node(scope, node) do
+        {:ok, selected} -> {:cont, {:ok, nodes ++ [selected]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, nodes} -> {:ok, Map.put(graph, "nodes", nodes)}
+      error -> error
+    end
+  end
 
+  defp select_node(scope, node) do
+    case {node["connection"], requirement(node)} do
+      {nil, requirement} when is_list(requirement) ->
+        case Keyword.get(requirement, :provider) do
+          nil ->
+            {:ok, node}
+
+          provider ->
+            case ConnectedAccounts.select(scope, provider, Keyword.get(requirement, :scopes, [])) do
+              {:ok, selection} -> {:ok, Map.put(node, "connection", selection)}
+              {:error, :connection_setup_required} -> {:ok, node}
+              error -> error
+            end
+        end
+
+      _ ->
+        {:ok, node}
+    end
+  end
+
+  @doc "Snapshots selected accounts for run provenance and resume."
+  def selections(graph),
+    do:
+      graph
+      |> Validator.node_specs()
+      |> Enum.filter(&is_map(&1["connection"]))
+      |> Map.new(&{&1["id"], &1["connection"]})
+
+  @doc "Restores a run's selected accounts without changing graph topology."
+  def with_selections(graph, selections) do
+    Map.update!(graph, "nodes", fn nodes ->
+      Enum.map(nodes, fn node ->
+        case Map.fetch(selections, node["id"]) do
+          {:ok, connection} -> Map.put(node, "connection", connection)
+          :error -> Map.delete(node, "connection")
+        end
+      end)
+    end)
+  end
+
+  defp contexts(graph, identity) do
     graph
     |> Validator.node_specs()
-    # Trigger entry steps never consume credentials at run time (their tokens
-    # are resolved by the trigger runtime per poll/connect), so fetching one
-    # per run would be a wasted provider round-trip.
-    |> Enum.reject(&trigger_node?(&1, catalog))
-    |> Enum.reduce_while({:ok, %{}}, fn node, {:ok, context} ->
-      case node_context(node, graph, catalog, identity) do
-        {:ok, nil} -> {:cont, {:ok, context}}
-        {:ok, {node_id, node_context}} -> {:cont, {:ok, Map.put(context, node_id, node_context)}}
-        {:error, reason} -> {:halt, {:error, reason}}
+    |> Enum.reduce_while({:ok, %{}}, fn node, {:ok, acc} ->
+      case node_reference(node, identity) do
+        {:ok, nil} ->
+          case requirement(node) do
+            [] -> {:cont, {:ok, Map.put(acc, node["id"], %{credentials: nil})}}
+            _ -> {:cont, {:ok, acc}}
+          end
+
+        {:ok, reference} ->
+          {:cont, {:ok, Map.put(acc, node["id"], %{credentials: reference})}}
+
+        error ->
+          {:halt, error}
       end
     end)
   end
 
-  defp trigger_node?(node, catalog) do
-    case Catalog.fetch(catalog, node["type"], node["version"]) do
-      {:ok, module} -> match?(%{kind: :trigger}, module.__catalog_node__())
-      {:error, :not_found} -> false
-    end
-  end
+  defp node_reference(node, identity) do
+    case {requirement(node), node["connection"]} do
+      {nil, nil} ->
+        {:ok, nil}
 
-  defp node_context(node, graph, catalog, identity) do
-    with {:ok, module} <- Catalog.fetch(catalog, node["type"], node["version"]),
-         %{requires: requires} <- module.__catalog_node__(),
-         requirement when is_list(requirement) <- Keyword.get(requires, :credentials),
-         {:ok, ref} when is_map(ref) <- credential_ref(graph, node, requirement) do
-      resolve_node_credentials(node["id"], requirement, ref, identity)
-    else
-      {:ok, nil} -> {:ok, nil}
-      nil -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
-      _other -> {:ok, nil}
-    end
-  end
+      {[], nil} ->
+        {:ok, nil}
 
-  defp credential_ref(graph, node, requirement) do
-    provider = Keyword.get(requirement, :provider)
-    node_id = node["id"]
+      {requirement, nil} when is_list(requirement) ->
+        {:error, {:connection_setup_required, node["id"]}}
 
-    ref =
-      node["credentials"] ||
-        get_in(graph, ["credentials", "nodes", node_id]) ||
-        provider_ref(graph, provider)
-
-    case ref do
-      ref when is_map(ref) -> {:ok, ref}
-      nil -> {:ok, nil}
-      _other -> {:error, {:invalid_credential_ref, node_id}}
-    end
-  end
-
-  defp provider_ref(_graph, nil), do: nil
-  defp provider_ref(graph, provider), do: get_in(graph, ["credentials", "providers", provider])
-
-  defp resolve_node_credentials(node_id, requirement, ref, identity) do
-    expected_provider = Keyword.get(requirement, :provider)
-    scopes = Keyword.get(requirement, :scopes, [])
-
-    with {:ok, provider} <- provider_id(expected_provider, ref),
-         :ok <- validate_provider_match(node_id, expected_provider, provider),
-         {:ok, credential} <-
-           resolve_credential(node_id, provider, ref, scopes, identity) do
-      {:ok, {node_id, %{credentials: credential}}}
-    end
-  end
-
-  defp provider_id(nil, ref) do
-    case ref_value(ref, :provider) do
-      provider when is_binary(provider) -> {:ok, provider}
-      _other -> {:error, :missing_credential_provider}
-    end
-  end
-
-  defp provider_id(provider, ref) when is_binary(provider) do
-    case ref_value(ref, :provider) do
-      nil -> {:ok, provider}
-      ref_provider when is_binary(ref_provider) -> {:ok, ref_provider}
-      _other -> {:error, :missing_credential_provider}
-    end
-  end
-
-  defp validate_provider_match(_node_id, nil, _provider), do: :ok
-
-  defp validate_provider_match(node_id, expected, provider) do
-    ref_provider = provider
-
-    case ref_provider do
-      ^expected -> :ok
-      _other -> {:error, {:credential_provider_mismatch, node_id, expected, ref_provider}}
-    end
-  end
-
-  defp resolve_credential(node_id, "google.oauth" = provider, ref, scopes, identity) do
-    case ref_value(ref, :connected_account_id) do
-      nil ->
-        case ConnectedAccounts.credential_ref(identity, provider, scopes) do
-          {:ok, credential_ref} -> {:ok, credential_ref}
-          {:error, reason} -> {:error, {:credential_fetch_failed, node_id, provider, reason}}
+      {requirement, selection} when is_list(requirement) ->
+        with :ok <-
+               ConnectedAccounts.validate_selection(
+                 selection,
+                 Keyword.get(requirement, :provider)
+               ),
+             {:ok, reference} <-
+               ConnectedAccounts.credential_ref(
+                 identity,
+                 selection,
+                 Keyword.get(requirement, :scopes, [])
+               ) do
+          {:ok, reference}
+        else
+          {:error, reason} -> {:error, {:connection_not_ready, node["id"], reason}}
         end
 
-      _legacy_id ->
-        {:error, {:credential_fetch_failed, node_id, provider, :legacy_credential_reference}}
+      _ ->
+        {:error, {:invalid_connection, node["id"]}}
     end
   end
 
-  defp resolve_credential(node_id, provider, ref, scopes, _identity) do
-    case Provider.fetch_token(provider, ref, scopes) do
-      {:ok, token} -> {:ok, token}
-      {:error, reason} -> {:error, {:credential_fetch_failed, node_id, provider, reason}}
-    end
-  end
-
-  @doc """
-  Whether a definition binds provider credentials to its creator.
-  """
-  def bound?(definition) when is_map(definition) do
-    case Map.get(definition, "credentials") do
-      credentials when is_map(credentials) and map_size(credentials) > 0 -> true
-      _ -> Enum.any?(Map.values(definition), &bound?/1)
-    end
-  end
-
-  def bound?(values) when is_list(values), do: Enum.any?(values, &bound?/1)
-  def bound?(_value), do: false
-
-  @doc """
-  Authorizes use of creator-owned credential bindings.
-  """
-  def authorize(scope, graph) do
-    case bound?(graph.definition) do
+  defp validate_context(context) when is_map(context) do
+    case reserved_context?(context) do
+      true -> {:error, :reserved_run_context}
       false -> :ok
-      true when scope.user.id == graph.created_by_user_id -> :ok
-      true -> {:error, :credential_owner_required}
     end
   end
 
-  defp validate_run_context(workflow, run_context) do
-    case Workflow.validate_run_context(workflow, run_context) do
+  defp validate_context(_context), do: {:error, :invalid_run_context}
+  defp reserved_context?(%_{}), do: true
+
+  defp reserved_context?(map) when is_map(map),
+    do:
+      Enum.any?(map, fn {key, value} ->
+        to_string(key) in @reserved or reserved_context?(value)
+      end)
+
+  defp reserved_context?(list) when is_list(list), do: Enum.any?(list, &reserved_context?/1)
+  defp reserved_context?(_value), do: false
+
+  defp validate_run_context(workflow, context) do
+    case Workflow.validate_run_context(workflow, context) do
       :ok -> :ok
       {:error, missing} -> {:error, {:missing_run_context, missing}}
     end
-  end
-
-  defp merge_context(base_context, credential_context) do
-    Map.merge(base_context, credential_context, fn _key, base, credentials ->
-      merge_node_context(base, credentials)
-    end)
-  end
-
-  defp merge_node_context(base, credentials) when is_map(base) and is_map(credentials) do
-    Map.merge(base, credentials)
-  end
-
-  defp merge_node_context(_base, credentials), do: credentials
-
-  defp ref_value(ref, key), do: Map.get(ref, key) || Map.get(ref, Atom.to_string(key))
-
-  defp merge_requirement(requirement, scopes, node_id) do
-    requirement
-    |> Map.update!(:scopes, &(scopes ++ &1))
-    |> Map.update!(:nodes, &[node_id | &1])
   end
 end

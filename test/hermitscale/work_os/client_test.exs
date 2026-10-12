@@ -63,12 +63,24 @@ defmodule Hermitscale.WorkOS.ClientTest do
     assert {:error, :unavailable} = Client.revoke_session("session_123")
   end
 
-  test "normalizes Pipes token states without exposing provider tokens in errors" do
+  test "normalizes organization Pipes credential states without exposing provider tokens in errors" do
     Req.Test.expect(__MODULE__, fn conn ->
+      assert conn.request_path == "/data-integrations/google/credentials"
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+
+      assert Jason.decode!(body) == %{
+               "user_id" => "user_123",
+               "organization_id" => "org_123",
+               "connection_owner" => "organization",
+               "connected_account_id" => "data_123",
+               "supports_multiple_connections" => true
+             }
+
       Req.Test.json(conn, %{
         "active" => true,
-        "access_token" => %{
-          "access_token" => "provider-secret",
+        "credential" => %{
+          "auth_method" => "oauth",
+          "value" => "provider-secret",
           "expires_at" => "2026-07-26T13:00:00Z",
           "scopes" => ["scope:a"],
           "missing_scopes" => []
@@ -78,11 +90,12 @@ defmodule Hermitscale.WorkOS.ClientTest do
 
     assert {:ok,
             %{
-              access_token: "provider-secret",
+              auth_method: "oauth",
+              value: "provider-secret",
               expires_at: ~U[2026-07-26 13:00:00Z],
               scopes: ["scope:a"],
               missing_scopes: []
-            }} = Client.fetch_oauth_token("google", "user_123", nil)
+            }} = Client.vend_credentials("google", "user_123", "org_123", "data_123")
 
     Req.Test.expect(__MODULE__, fn conn ->
       Req.Test.json(conn, %{
@@ -92,6 +105,35 @@ defmodule Hermitscale.WorkOS.ClientTest do
     end)
 
     assert {:error, :needs_reauthorization} =
-             Client.fetch_oauth_token("google", "user_123", nil)
+             Client.vend_credentials("google", "user_123", "org_123", "data_123")
+  end
+
+  test "selection errors and API-key credentials are normalized without reflecting errors" do
+    Req.Test.expect(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{
+        "active" => true,
+        "credential" => %{"auth_method" => "api_key", "value" => "opaque-secret"}
+      })
+    end)
+
+    assert {:ok, %{auth_method: "api_key", value: "opaque-secret"}} =
+             Client.vend_credentials("example", "user_123", "org_123", "data_123")
+
+    for code <- ["account_selection_required", "multiple_connections_unavailable"] do
+      Req.Test.expect(__MODULE__, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          422,
+          Jason.encode!(%{"code" => code, "message" => "opaque-secret"})
+        )
+      end)
+
+      assert {:error, reason} =
+               Client.vend_credentials("example", "user_123", "org_123", "data_123")
+
+      assert to_string(reason) == code
+      refute inspect(reason) =~ "opaque-secret"
+    end
   end
 end

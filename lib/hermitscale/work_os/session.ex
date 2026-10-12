@@ -58,6 +58,38 @@ defmodule Hermitscale.WorkOS.Session do
     end
   end
 
+  @doc "Provisions every sign-in user's personal org and selects it when no tenant was supplied."
+  def establish(authentication, metadata \\ %{}) do
+    with {:ok, result} <- create(authentication),
+         {:ok, org} <-
+           Hermitscale.Accounts.ensure_personal_organization(result.current_scope.user) do
+      case result.current_scope.organization do
+        nil -> switch_organization(result.sealed_session, org["id"], metadata)
+        _organization -> {:ok, result}
+      end
+    end
+  end
+
+  @doc "Explicitly switches workspace, verifying returned user, session and requested tenant."
+  def switch_organization(sealed_session, organization_id, metadata \\ %{})
+      when is_binary(organization_id) and organization_id != "" do
+    with {:ok, payload} <- unseal(sealed_session),
+         {:ok, _claims} <- verify_payload(payload, true),
+         {:ok, replacement, claims} <-
+           refresh(%{payload | organization_id: organization_id}, metadata) do
+      authentication_result(replacement, claims)
+    end
+  end
+
+  @doc "Refreshes permissions while preserving the current tenant and original browser lifetime."
+  def refresh_claims(sealed_session, metadata \\ %{}) do
+    with {:ok, payload} <- unseal(sealed_session),
+         {:ok, _claims} <- verify_payload(payload, true),
+         {:ok, replacement, claims} <- refresh(payload, metadata) do
+      authentication_result(replacement, claims)
+    end
+  end
+
   @doc "Revokes the WorkOS session and returns its browser logout URL."
   def logout(sealed_session, return_to \\ nil) do
     with {:ok, payload} <- unseal(sealed_session),
@@ -130,6 +162,7 @@ defmodule Hermitscale.WorkOS.Session do
              payload.organization_id,
              request_metadata
            ),
+         :ok <- verify_refresh_user(authentication, payload.user.id),
          {:ok, access_token} <- required_string(authentication, "access_token"),
          {:ok, refresh_token} <- required_string(authentication, "refresh_token"),
          replacement = %{payload | access_token: access_token, refresh_token: refresh_token},
@@ -140,6 +173,9 @@ defmodule Hermitscale.WorkOS.Session do
       _other -> {:error, :invalid_session}
     end
   end
+
+  defp verify_refresh_user(%{"user" => %{"id" => id}}, id), do: :ok
+  defp verify_refresh_user(_authentication, _id), do: {:error, :invalid_session}
 
   defp validate_claim_shape(%{"sub" => subject, "sid" => sid, "exp" => expiration} = claims)
        when is_binary(subject) and subject != "" and is_binary(sid) and sid != "" and

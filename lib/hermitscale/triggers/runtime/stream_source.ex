@@ -68,9 +68,7 @@ defmodule Hermitscale.Triggers.Runtime.StreamSource do
         {:noreply, %{state | stream: stream}}
 
       {:reconnect, reason, stream} ->
-        Logger.info(
-          "stream reconnecting trigger_id=#{state.trigger.id} reason=#{inspect(reason)}"
-        )
+        Logger.info("Stream reconnecting", trigger_id: state.trigger.id)
 
         state = close(%{state | stream: stream}, {:reconnect, reason})
         {:noreply, schedule_connect(state, @base_backoff_ms)}
@@ -109,16 +107,16 @@ defmodule Hermitscale.Triggers.Runtime.StreamSource do
     case state.module.init_stream(state.params, ctx) do
       {:ok, stream} -> {:ok, stream}
       {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_init_stream_return, other}}
+      _other -> {:error, :invalid_init_stream_return}
     end
   rescue
-    exception -> {:error, {exception, __STACKTRACE__}}
+    _exception -> {:error, :source_callback_failed}
   end
 
   defp safe_handle_event(state, message) do
     state.module.handle_event(message, state.stream)
   rescue
-    exception -> {:error, {exception, __STACKTRACE__}}
+    _exception -> {:error, :source_callback_failed}
   end
 
   defp close(state, reason) do
@@ -134,10 +132,7 @@ defmodule Hermitscale.Triggers.Runtime.StreamSource do
   defp fail(state, reason) do
     failures = state.failures + 1
 
-    Logger.warning(
-      "stream source failed trigger_id=#{state.trigger.id} failures=#{failures} " <>
-        "reason=#{inspect(reason)}"
-    )
+    Logger.warning("Stream source failed", trigger_id: state.trigger.id, failures: failures)
 
     if failures >= state.failure_threshold do
       Triggers.mark_errored(state.trigger, reason)

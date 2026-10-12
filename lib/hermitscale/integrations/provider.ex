@@ -1,23 +1,18 @@
 defmodule Hermitscale.Integrations.Provider do
   @moduledoc """
-  Behaviour and registry for credential providers.
-
-  Providers resolve persisted credential references into short-lived runtime
-  tokens. The graph stores references; only this provider layer handles token
-  material.
+  Discovery and trusted metadata for deployed integrations.
   """
 
   @app :hermitscale
   @cache_key {__MODULE__, :index}
 
   @callback provider_id() :: String.t()
-  @callback fetch_token(ref :: map(), scopes :: [String.t()]) ::
-              {:ok,
-               %{
-                 required(:access_token) => String.t(),
-                 optional(:expires_at) => DateTime.t() | nil
-               }}
-              | {:error, term()}
+  @callback descriptor() :: %{
+              slug: String.t(),
+              auth_methods: [String.t()],
+              authentication: map(),
+              destinations: [String.t()]
+            }
   @callback network_domains() :: [String.t()]
 
   defmacro __using__(_opts) do
@@ -91,14 +86,13 @@ defmodule Hermitscale.Integrations.Provider do
     end
   end
 
-  @doc """
-  Resolves a credential reference through its provider.
-  """
-  def fetch_token(provider_id, ref, scopes \\ [])
-      when is_binary(provider_id) and is_map(ref) and is_list(scopes) do
-    provider_id
-    |> fetch!()
-    |> apply(:fetch_token, [ref, scopes])
+  @doc "Fetches the deployed integration's trusted vending and request metadata."
+  def descriptor(provider_id) do
+    with {:ok, module} <- fetch(provider_id) do
+      {:ok, module.descriptor()}
+    else
+      {:error, :not_found} -> {:error, :unknown_provider}
+    end
   end
 
   @doc """

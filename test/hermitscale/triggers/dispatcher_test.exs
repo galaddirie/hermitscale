@@ -13,10 +13,56 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     %{scope: user_scope_fixture()}
   end
 
+  test "manual dispatch requires caller scope and never uses the activation actor", %{
+    scope: scope
+  } do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
+    assert {:error, :caller_scope_required} = Dispatcher.fire(trigger, %{})
+    collaborator = organization_scope_fixture(user_fixture(), scope.organization)
+
+    assert {:ok, run} =
+             Triggers.fire_manual(collaborator, trigger, %{}, run_opts: [executor: :inline])
+
+    assert run.initiated_by_user_id == collaborator.user.id
+    assert run.execution_actor_user_id == collaborator.user.id
+    assert run.execution_actor_user_id != trigger.execution_actor_user_id
+  end
+
+  test "unattended modes preserve the activation actor and recheck current authority", %{
+    scope: scope
+  } do
+    alias Hermitscale.WorkOSTest.Client
+    start_supervised!({Client, %{}})
+
+    for node <- [
+          webhook_trigger_node(),
+          schedule_trigger_node(),
+          polling_trigger_node(),
+          stream_trigger_node()
+        ] do
+      {_graph, trigger} = activate_trigger_graph!(scope, node)
+      assert {:ok, run} = Dispatcher.fire(trigger, %{}, run_opts: [executor: :inline])
+      assert run.execution_actor_user_id == scope.user.id
+      assert run.initiated_by_user_id == nil
+      assert run.trigger_id == trigger.id
+    end
+
+    {_graph, trigger} =
+      activate_trigger_graph!(scope, webhook_trigger_node(%{"max_concurrent_runs" => 3}), %{
+        "id" => "wf_actor_removed"
+      })
+
+    Client.put_response(:get_role, {:ok, %{"permissions" => ["workflows:run"]}})
+    assert {:error, :execution_actor_ineligible} = Dispatcher.fire(trigger, %{})
+    errored = Triggers.get_trigger!(trigger.id)
+    assert errored.status == :errored
+    assert errored.error["action"] == "reassign_actor"
+  end
+
   test "fires a run and records a dispatched firing", %{scope: scope} do
     {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
-    assert {:ok, %Run{} = run} = Dispatcher.fire(trigger, %{"n" => 1})
+    assert {:ok, %Run{} = run} = Dispatcher.fire(trigger, %{"n" => 1}, scope: scope)
 
     assert [firing] = Repo.all(Firing)
     assert firing.outcome == :dispatched
@@ -26,8 +72,11 @@ defmodule Hermitscale.Triggers.DispatcherTest do
   test "dedupes on idempotency key", %{scope: scope} do
     {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
 
-    assert {:ok, %Run{}} = Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
-    assert {:ok, :deduped} = Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
+    assert {:ok, %Run{}} =
+             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1", scope: scope)
+
+    assert {:ok, :deduped} =
+             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1", scope: scope)
 
     assert Repo.aggregate(Firing, :count) == 1
     assert Repo.aggregate(Run, :count) == 1
@@ -45,13 +94,13 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     |> Repo.update!()
 
     assert {:error, {:start_run, _reason}} =
-             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
+             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1", scope: scope)
 
     assert [%Firing{outcome: :failed}] = Repo.all(Firing)
 
     # Retry claims the failed firing instead of deduping against it.
     assert {:error, {:start_run, _reason}} =
-             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1")
+             Dispatcher.fire(trigger, %{"n" => 1}, idempotency_key: "event-1", scope: scope)
 
     assert Repo.aggregate(Firing, :count) == 1
   end
@@ -66,7 +115,7 @@ defmodule Hermitscale.Triggers.DispatcherTest do
         id: Ecto.UUID.generate()
       })
 
-    assert {:error, :rejected} = Dispatcher.fire(trigger, %{"n" => 1})
+    assert {:error, :rejected} = Dispatcher.fire(trigger, %{"n" => 1}, scope: scope)
 
     assert [firing] = Repo.all(from(f in Firing, where: f.outcome == :rejected))
     assert firing.error["reason"] == "max_concurrent_runs"

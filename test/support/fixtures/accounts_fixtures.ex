@@ -24,11 +24,20 @@ defmodule Hermitscale.AccountsFixtures do
     })
   end
 
+  def role_permissions_fixture("admin"),
+    do:
+      ~w(workflows:run workflows:edit workflows:activate connections:manage members:manage widgets:pipes:manage widgets:users-table:manage)
+
+  def role_permissions_fixture("editor"), do: ~w(workflows:run workflows:edit workflows:activate)
+  def role_permissions_fixture("runner"), do: ~w(workflows:run)
+
   def organization_membership_fixture(user, organization, attrs \\ %{}) do
     Enum.into(attrs, %{
       user_id: user.id,
       org_id: organization.id,
-      role: :member,
+      role: "admin",
+      permissions:
+        ~w(workflows:run workflows:edit workflows:activate connections:manage members:manage),
       status: :active
     })
   end
