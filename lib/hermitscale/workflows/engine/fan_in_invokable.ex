@@ -1,4 +1,4 @@
-defimpl Runic.Workflow.Invokable, for: Hermitscale.Workflows.Engine.Collect do
+defimpl Runic.Workflow.Invokable, for: Hermitscale.Workflows.Engine.FanIn do
   alias Hermitscale.Workflows.Engine.Coordination
 
   def match_or_execute(_node), do: :execute

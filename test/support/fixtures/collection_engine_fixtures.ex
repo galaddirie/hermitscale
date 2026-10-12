@@ -1,7 +1,7 @@
 defmodule Hermitscale.CollectionEngineFixtures do
   @moduledoc false
 
-  alias Hermitscale.Workflows.Engine.{Collect, FanOut, Join, Node}
+  alias Hermitscale.Workflows.Engine.{FanIn, FanOut, Join, Node}
   alias Hermitscale.Workflows.Nodes.Builtin.Math.V1, as: Math
   alias Hermitscale.Workflows.Nodes.Params
   alias Runic.Workflow
@@ -17,37 +17,37 @@ defmodule Hermitscale.CollectionEngineFixtures do
     middle = math_node("middle", "add", 0)
     right = math_node("right", "multiply", 10)
     join = Join.new("joined", [left.hash, right.hash])
-    collect = Collect.new("collected", join.hash, "items")
+    fan_in = FanIn.new("collected", join.hash, "items")
 
     collection_workflow_fixture()
     |> Workflow.add(left, to: "items$fan_out")
     |> Workflow.add(middle, to: "items$fan_out")
     |> Workflow.add(right, to: "middle")
     |> Workflow.add(join, to: ["left", "right"])
-    |> Workflow.add(collect, to: "joined")
+    |> Workflow.add(fan_in, to: "joined")
   end
 
   def empty_collection_workflow_fixture do
     fan_out = FanOut.new("items$fan_out", "items")
-    collect = Collect.new("collected", fan_out.hash, "items")
+    fan_in = FanIn.new("collected", fan_out.hash, "items")
 
     Workflow.new()
     |> Workflow.add(fan_out)
-    |> Workflow.add(collect, to: "items$fan_out")
+    |> Workflow.add(fan_in, to: "items$fan_out")
     |> Workflow.enable_event_emission()
   end
 
   def nested_collection_workflow_fixture do
     outer = FanOut.new("outer$fan_out", "outer")
     inner = FanOut.new("inner$fan_out", "inner")
-    inner_collect = Collect.new("inner$collected", inner.hash, "inner")
-    outer_collect = Collect.new("outer$collected", inner_collect.hash, "outer")
+    inner_fan_in = FanIn.new("inner$fan_in", inner.hash, "inner")
+    outer_fan_in = FanIn.new("outer$fan_in", inner_fan_in.hash, "outer")
 
     Workflow.new()
     |> Workflow.add(outer)
     |> Workflow.add(inner, to: outer.name)
-    |> Workflow.add(inner_collect, to: inner.name)
-    |> Workflow.add(outer_collect, to: inner_collect.name)
+    |> Workflow.add(inner_fan_in, to: inner.name)
+    |> Workflow.add(outer_fan_in, to: inner_fan_in.name)
     |> Workflow.enable_event_emission()
   end
 

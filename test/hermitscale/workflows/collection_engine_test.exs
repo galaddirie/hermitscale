@@ -4,7 +4,7 @@ defmodule Hermitscale.Workflows.CollectionEngineTest do
   import Hermitscale.CollectionEngineFixtures
 
   alias Hermitscale.Workflows.Engine
-  alias Hermitscale.Workflows.Engine.{Collect, FanOut, Join, Metadata}
+  alias Hermitscale.Workflows.Engine.{FanIn, FanOut, Join, Metadata}
   alias Runic.Workflow
   alias Runic.Workflow.Invokable
 
@@ -128,8 +128,8 @@ defmodule Hermitscale.Workflows.CollectionEngineTest do
       base = nested_collection_workflow_fixture()
       executed = Workflow.react_until_satisfied(base, [[1, 2], [], [1, 2]], async: true)
 
-      assert Workflow.raw_productions(executed, "outer$collected") == [[[1, 2], [], [1, 2]]]
-      inner = Workflow.productions(executed, "inner$collected")
+      assert Workflow.raw_productions(executed, "outer$fan_in") == [[[1, 2], [], [1, 2]]]
+      inner = Workflow.productions(executed, "inner$fan_in")
       assert length(inner) == 3
       assert length(Enum.uniq_by(inner, & &1.hash)) == 3
       assert Enum.sort(Enum.map(inner, &hd(&1.meta.hermitscale.frames).index)) == [0, 1, 2]
@@ -139,18 +139,18 @@ defmodule Hermitscale.Workflows.CollectionEngineTest do
           Workflow.build_log(base) ++ Enum.reverse(executed.uncommitted_events)
         )
 
-      assert Workflow.raw_productions(restored, "outer$collected") == [[[1, 2], [], [1, 2]]]
+      assert Workflow.raw_productions(restored, "outer$fan_in") == [[[1, 2], [], [1, 2]]]
 
-      assert Enum.sort_by(Workflow.productions(restored, "inner$collected"), & &1.hash) ==
+      assert Enum.sort_by(Workflow.productions(restored, "inner$fan_in"), & &1.hash) ==
                Enum.sort_by(inner, & &1.hash)
     end
 
     test "empty outer collections remain empty through a nested map" do
       executed = Workflow.react_until_satisfied(nested_collection_workflow_fixture(), [])
 
-      [inner] = Workflow.productions(executed, "inner$collected")
+      [inner] = Workflow.productions(executed, "inner$fan_in")
       assert inner.meta.hermitscale.status == :empty
-      assert Workflow.raw_productions(executed, "outer$collected") == [[]]
+      assert Workflow.raw_productions(executed, "outer$fan_in") == [[]]
     end
 
     test "an explicitly skipped collection stays skipped after scope closure" do
@@ -206,7 +206,7 @@ defmodule Hermitscale.Workflows.CollectionEngineTest do
     {workflow, runnables} = Workflow.prepare_for_dispatch(workflow)
 
     {coordination, branches} =
-      Enum.split_with(runnables, &(match?(%Join{}, &1.node) or match?(%Collect{}, &1.node)))
+      Enum.split_with(runnables, &(match?(%Join{}, &1.node) or match?(%FanIn{}, &1.node)))
 
     if branches == [] do
       assert coordination != []

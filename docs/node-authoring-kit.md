@@ -2,7 +2,7 @@
 
 Catalog nodes declare static metadata and implement `work/3`. The compiler
 validates graph params, resolves collection scopes, and builds Runic components.
-The domain uses `Join` to converge branches and `Collect` to close a map scope.
+The domain uses `Join` to converge branches and `FanIn` to close a map scope.
 Ordinary callbacks use Runic's `SingleOutput` lifecycle for hooks, attempts,
 failures, output facts, and accepted events.
 

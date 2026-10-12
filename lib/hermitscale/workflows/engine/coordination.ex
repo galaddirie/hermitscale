@@ -1,7 +1,7 @@
 defmodule Hermitscale.Workflows.Engine.Coordination do
   @moduledoc false
 
-  alias Hermitscale.Workflows.Engine.{Collect, Join, Metadata}
+  alias Hermitscale.Workflows.Engine.{FanIn, Join, Metadata}
   alias Runic.Workflow
   alias Runic.Workflow.{CausalContext, Fact, Private, Runnable}
 
@@ -114,7 +114,7 @@ defmodule Hermitscale.Workflows.Engine.Coordination do
     {state.root, Enum.map(state.frames, & &1.item)}
   end
 
-  defp correlation_key(%Collect{map_id: map_id}, fact) do
+  defp correlation_key(%FanIn{map_id: map_id}, fact) do
     state = Metadata.state(fact.meta)
     {outer, %{map: ^map_id, batch: batch}} = collection_frame!(state.frames)
     {state.root, Enum.map(outer, & &1.item), batch}
@@ -142,7 +142,7 @@ defmodule Hermitscale.Workflows.Engine.Coordination do
     if Enum.any?(facts, &is_nil/1), do: :waiting, else: {:ready, facts}
   end
 
-  defp arrivals(%Collect{parent: parent}, edges) do
+  defp arrivals(%FanIn{parent: parent}, edges) do
     facts = Enum.map(edges, & &1.v1)
     frames = Enum.map(facts, &(&1.meta |> Metadata.state() |> Map.fetch!(:frames) |> List.last()))
     sizes = Enum.uniq(Enum.map(frames, & &1.size))
@@ -210,7 +210,7 @@ defmodule Hermitscale.Workflows.Engine.Coordination do
     {Enum.map(joined, & &1.value), state |> Map.put(:joined, joined) |> Map.put(:status, status)}
   end
 
-  defp result(%Collect{}, _workflow, facts, state) do
+  defp result(%FanIn{}, _workflow, facts, state) do
     [first | _] = facts
     first_state = Metadata.state(first.meta)
     {outer, frame} = collection_frame!(first_state.frames)

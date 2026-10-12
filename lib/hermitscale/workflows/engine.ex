@@ -1,7 +1,7 @@
 defmodule Hermitscale.Workflows.Engine do
   @moduledoc "Public result and completion projections for the Runic-backed workflow engine."
 
-  alias Hermitscale.Workflows.Engine.{Collect, Join}
+  alias Hermitscale.Workflows.Engine.{FanIn, Join}
   alias Runic.Identity
   alias Runic.Workflow
   alias Runic.Workflow.Fact
@@ -27,7 +27,7 @@ defmodule Hermitscale.Workflows.Engine do
       |> Multigraph.edges(by: :joined)
       |> Enum.flat_map(fn
         %{v2: %Join{name: name}} -> [name]
-        %{v2: %Collect{name: name}} -> [name]
+        %{v2: %FanIn{name: name}} -> [name]
         _edge -> []
       end)
       |> Enum.uniq()

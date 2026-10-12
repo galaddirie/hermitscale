@@ -7,7 +7,7 @@ defmodule Hermitscale.Workflows.Compiler do
   """
 
   alias Hermitscale.Workflows.{Catalog, CollectionScopes, Policy, Topology, Validator}
-  alias Hermitscale.Workflows.Engine.{Collect, FanOut, Join}
+  alias Hermitscale.Workflows.Engine.{FanIn, FanOut, Join}
   alias Hermitscale.Workflows.Nodes.Params
   alias Runic.Workflow
 
@@ -89,8 +89,8 @@ defmodule Hermitscale.Workflows.Compiler do
 
   defp prepare_inputs(workflow, kind, id, parents, scope) when kind in [:reduce, :aggregate] do
     [parent] = parent_hashes(workflow, parents)
-    collect = Collect.new("#{id}$collect", parent, scope.map)
-    {add_node(workflow, collect, parents), [collect.name]}
+    fan_in = FanIn.new("#{id}$fanin", parent, scope.map)
+    {add_node(workflow, fan_in, parents), [fan_in.name]}
   end
 
   defp prepare_inputs(workflow, :join, id, parents, _scope) do

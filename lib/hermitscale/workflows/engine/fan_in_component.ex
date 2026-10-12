@@ -1,10 +1,10 @@
-defimpl Runic.Component, for: Hermitscale.Workflows.Engine.Collect do
+defimpl Runic.Component, for: Hermitscale.Workflows.Engine.FanIn do
   alias Runic.Workflow
 
   def connect(node, parent, workflow) do
     workflow
     |> Workflow.add_step(parent, node)
-    |> Workflow.draw_connection(node, node, :component_of, properties: %{kind: :collect})
+    |> Workflow.draw_connection(node, node, :component_of, properties: %{kind: :fan_in})
     |> Workflow.register_component(node)
   end
 
@@ -15,7 +15,7 @@ defimpl Runic.Component, for: Hermitscale.Workflows.Engine.Collect do
 
   def source(node) do
     quote do
-      Hermitscale.Workflows.Engine.Collect.new(
+      Hermitscale.Workflows.Engine.FanIn.new(
         unquote(node.name),
         unquote(Macro.escape(node.parent)),
         unquote(node.map_id)

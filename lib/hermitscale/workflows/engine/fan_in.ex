@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workflows.Engine.Collect do
+defmodule Hermitscale.Workflows.Engine.FanIn do
   @moduledoc "Collects ordered terminal item results and closes one map scope."
 
   alias Runic.Workflow.Components
