@@ -1,6 +1,9 @@
 defmodule Hermitscale.Integrations.Google.OAuth do
   @moduledoc """
-  Google OAuth credentials are managed by WorkOS Pipes.
+  Google credential adapter backed by WorkOS Pipes.
+
+  Tokens are vended for each immediate provider request, checking both the
+  credential reference's requirements and any additional caller scopes.
   """
 
   use Hermitscale.Integrations.Provider
@@ -14,8 +17,13 @@ defmodule Hermitscale.Integrations.Google.OAuth do
   def network_domains, do: ["sheets.googleapis.com", "www.googleapis.com"]
 
   @impl true
-  def fetch_token(%CredentialRef{provider_id: "google.oauth"} = ref, _scopes),
-    do: ConnectedAccounts.fetch_oauth_token(ref)
+  def fetch_token(ref, scopes \\ [])
+
+  def fetch_token(%CredentialRef{provider_id: "google.oauth"} = ref, scopes)
+      when is_list(scopes) do
+    %{ref | required_scopes: Enum.uniq(ref.required_scopes ++ scopes)}
+    |> ConnectedAccounts.fetch_oauth_token()
+  end
 
   def fetch_token(_ref, _scopes), do: {:error, :missing_credential_identity}
 end

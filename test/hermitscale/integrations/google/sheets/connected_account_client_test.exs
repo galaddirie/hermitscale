@@ -71,4 +71,25 @@ defmodule Hermitscale.Integrations.Google.Sheets.ConnectedAccountClientTest do
 
     assert length(vend_calls) == 2
   end
+
+  test "rejects another provider's reference before vending or requesting Sheets" do
+    scope = user_scope_fixture()
+
+    {:ok, reference} =
+      ConnectedAccounts.credential_ref(
+        {scope.organization.id, scope.user.id},
+        "google.oauth",
+        [@read_scope]
+      )
+
+    assert {:error, :missing_credential_identity} =
+             SheetsClient.read_rows(
+               %{reference | provider_id: "another.oauth"},
+               "sheet_123",
+               "Sheet1!A:B",
+               plug: {Req.Test, __MODULE__}
+             )
+
+    assert WorkOSClient.calls() == []
+  end
 end
