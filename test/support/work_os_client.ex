@@ -141,24 +141,66 @@ defmodule Hermitscale.WorkOSTest.Client do
       respond(
         :get_organization_by_external_id,
         [external],
-        {:ok, %{"id" => "org_personal", "external_id" => external}}
+        {:ok,
+         Hermitscale.WorkOS.ClientFixtures.organization_fixture(%{
+           "id" => "org_personal",
+           "external_id" => external
+         })}
       )
 
   def get_organization(id),
-    do: respond(:get_organization, [id], {:ok, %{"id" => id, "name" => "Workspace"}})
+    do:
+      respond(
+        :get_organization,
+        [id],
+        {:ok,
+         Hermitscale.WorkOS.ClientFixtures.organization_fixture(%{
+           "id" => id,
+           "name" => "Workspace",
+           "external_id" => nil
+         })}
+      )
 
   def create_organization(attrs),
     do: respond(:create_organization, [attrs], {:ok, Map.put(attrs, "id", "org_personal")})
 
   def create_membership(user, org, role),
-    do: respond(:create_membership, [user, org, role], {:ok, %{"id" => "om_test"}})
+    do:
+      respond(
+        :create_membership,
+        [user, org, role],
+        {:ok,
+         Hermitscale.WorkOS.ClientFixtures.membership_fixture("om_test", %{
+           "user_id" => user,
+           "organization_id" => org,
+           "role" => %{"slug" => role}
+         })}
+      )
 
   def get_membership(id), do: respond(:get_membership, [id], {:error, :not_found})
-  def update_membership(id, role), do: respond(:update_membership, [id, role], {:ok, %{}})
+
+  def update_membership(id, role),
+    do:
+      respond(
+        :update_membership,
+        [id, role],
+        {:ok, Hermitscale.WorkOS.ClientFixtures.membership_fixture(id, %{"role" => role})}
+      )
+
   def remove_membership(id), do: respond(:remove_membership, [id], {:ok, %{}})
 
   def invite_member(org, user, email, role),
-    do: respond(:invite_member, [org, user, email, role], {:ok, %{}})
+    do:
+      respond(
+        :invite_member,
+        [org, user, email, role],
+        {:ok,
+         Hermitscale.WorkOS.ClientFixtures.invitation_fixture(%{
+           "organization_id" => org,
+           "email" => email,
+           "role_slug" => role
+         })}
+      )
 
   def revoke_session(session_id) do
     respond(:revoke_session, [session_id], {:ok, %{}})

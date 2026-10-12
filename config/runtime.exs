@@ -23,7 +23,20 @@ end
 config :hermitscale, HermitscaleWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
-if config_env() == :dev do
+auth_provider =
+  case System.get_env("AUTH_PROVIDER") do
+    nil ->
+      :hermitscale
+      |> Application.get_env(Hermitscale.Auth, provider: Hermitscale.Auth.WorkOS)
+      |> Keyword.fetch!(:provider)
+
+    module_name ->
+      Module.safe_concat([module_name])
+  end
+
+config :hermitscale, Hermitscale.Auth, provider: auth_provider
+
+if config_env() == :dev and auth_provider == Hermitscale.Auth.WorkOS do
   workos_client_id = System.get_env("WORKOS_CLIENT_ID", "client_development")
 
   config :hermitscale, Hermitscale.WorkOS.Client,
@@ -74,19 +87,23 @@ if config_env() == :prod do
 
   host = System.get_env("PHX_HOST") || "example.com"
 
-  workos_api_key = required_env.("WORKOS_API_KEY")
-  workos_client_id = required_env.("WORKOS_CLIENT_ID")
-  workos_redirect_uri = required_env.("WORKOS_REDIRECT_URI")
-
+  # Pipes can still use WorkOS independently of the authentication provider.
   config :hermitscale, Hermitscale.WorkOS.Client,
-    api_key: workos_api_key,
-    client_id: workos_client_id,
-    redirect_uri: workos_redirect_uri,
+    api_key: System.get_env("WORKOS_API_KEY"),
     base_url: System.get_env("WORKOS_API_BASE_URL", "https://api.workos.com")
 
-  config :hermitscale, Hermitscale.WorkOS.JWT,
-    client_id: workos_client_id,
-    issuer: System.get_env("WORKOS_JWT_ISSUER")
+  if auth_provider == Hermitscale.Auth.WorkOS do
+    workos_client_id = required_env.("WORKOS_CLIENT_ID")
+
+    config :hermitscale, Hermitscale.WorkOS.Client,
+      api_key: required_env.("WORKOS_API_KEY"),
+      client_id: workos_client_id,
+      redirect_uri: required_env.("WORKOS_REDIRECT_URI")
+
+    config :hermitscale, Hermitscale.WorkOS.JWT,
+      client_id: workos_client_id,
+      issuer: System.get_env("WORKOS_JWT_ISSUER")
+  end
 
   config :hermitscale, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

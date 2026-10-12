@@ -115,7 +115,7 @@ defmodule Hermitscale.Triggers.SchedulerTest do
     assert {:error, :unavailable} = perform_job(FireWorker, args)
     assert Repo.get!(Trigger, trigger.id).status == :enabled
 
-    Client.put_response(:get_role, {:ok, %{"permissions" => []}})
+    Client.put_response(:get_role, {:ok, %{"slug" => "admin", "permissions" => []}})
     assert {:cancel, :execution_actor_ineligible} = perform_job(FireWorker, args)
     assert Repo.get!(Trigger, trigger.id).status == :errored
   end

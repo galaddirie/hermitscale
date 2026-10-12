@@ -1,8 +1,8 @@
 defmodule Hermitscale.Authorization do
-  @moduledoc "Organization action authorization from verified WorkOS permission claims."
+  @moduledoc "Organization action authorization from verified provider permissions."
   alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Auth
   alias Hermitscale.Integrations.ExecutionContext
-  alias Hermitscale.WorkOS.Client
 
   @doc "Checks both membership integrity and the requested permission slug."
   def authorize(
@@ -23,29 +23,22 @@ defmodule Hermitscale.Authorization do
 
   def authorize(_scope, _permission), do: {:error, :forbidden}
 
-  @doc "Checks an execution actor's current membership and permissions through WorkOS."
+  @doc "Checks an execution actor's current membership and permissions through the auth provider."
   def execution_scope(%ExecutionContext{
-        organization_id: "org_" <> _ = org_id,
-        actor_user_id: "user_" <> _ = user_id,
+        organization_id: org_id,
+        actor_user_id: user_id,
         required_permissions: permissions
-      }) do
-    with {:ok, %{"data" => memberships}} <-
-           Client.adapter(__MODULE__).list_memberships(user_id, org_id),
-         %{
-           "user_id" => ^user_id,
-           "organization_id" => ^org_id,
-           "status" => "active",
-           "role" => %{"slug" => slug}
-         } <-
-           Enum.find(memberships, &(&1["user_id"] == user_id and &1["organization_id"] == org_id)),
-         {:ok, %{"permissions" => granted}} <- Client.adapter(__MODULE__).get_role(slug),
+      })
+      when is_binary(org_id) and org_id != "" and is_binary(user_id) and user_id != "" do
+    with {:ok, memberships} <- Auth.list_memberships(user_id, org_id),
+         %{user_id: ^user_id, org_id: ^org_id, status: "active", role: slug} = membership
+         when is_binary(slug) and slug != "" <-
+           Enum.find(memberships, &(&1.user_id == user_id and &1.org_id == org_id)),
+         {:ok, %{permissions: granted}} <- Auth.get_role(slug),
          scope =
-           Scope.from_workos(%{id: user_id}, %{
-             "sub" => user_id,
-             "org_id" => org_id,
-             "role" => slug,
-             "permissions" => granted
-           }),
+           %{id: user_id}
+           |> Scope.for_user()
+           |> Scope.put_organization(%{id: org_id}, Map.put(membership, :permissions, granted)),
          true <- Enum.all?(permissions, &(authorize(scope, &1) == :ok)) do
       {:ok, scope}
     else

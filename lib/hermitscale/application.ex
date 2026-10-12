@@ -7,6 +7,8 @@ defmodule Hermitscale.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = Hermitscale.Auth.validate_provider!()
+
     children = [
       HermitscaleWeb.Telemetry,
       Hermitscale.Repo,

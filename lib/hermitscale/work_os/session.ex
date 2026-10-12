@@ -18,19 +18,13 @@ defmodule Hermitscale.WorkOS.Session do
   def create(authentication) when is_map(authentication) do
     with {:ok, access_token} <- required_string(authentication, "access_token"),
          {:ok, refresh_token} <- required_string(authentication, "refresh_token"),
-         %{"id" => user_id} = profile when is_binary(user_id) and user_id != "" <-
-           authentication["user"],
-         {:ok, claims} <- verify_token(access_token, subject: user_id),
+         {:ok, user} <- user_from_profile(authentication["user"]),
+         {:ok, claims} <- verify_token(access_token, subject: user.id),
          :ok <- validate_claim_shape(claims) do
       payload = %{
         access_token: access_token,
         refresh_token: refresh_token,
-        user: %{
-          id: user_id,
-          email: profile["email"],
-          first_name: profile["first_name"],
-          last_name: profile["last_name"]
-        },
+        user: user,
         session_id: claims["sid"],
         organization_id: claims["org_id"],
         started_at: System.system_time(:second)
@@ -39,7 +33,6 @@ defmodule Hermitscale.WorkOS.Session do
       authentication_result(payload, claims)
     else
       {:error, _reason} = error -> error
-      _other -> {:error, :invalid_authentication_response}
     end
   end
 
@@ -55,18 +48,6 @@ defmodule Hermitscale.WorkOS.Session do
         claims,
         retained_seal(payload, refreshed_payload, sealed_session)
       )
-    end
-  end
-
-  @doc "Provisions every sign-in user's personal org and selects it when no tenant was supplied."
-  def establish(authentication, metadata \\ %{}) do
-    with {:ok, result} <- create(authentication),
-         {:ok, org} <-
-           Hermitscale.Accounts.ensure_personal_organization(result.current_scope.user) do
-      case result.current_scope.organization do
-        nil -> switch_organization(result.sealed_session, org["id"], metadata)
-        _organization -> {:ok, result}
-      end
     end
   end
 
@@ -99,24 +80,67 @@ defmodule Hermitscale.WorkOS.Session do
     end
   end
 
-  @doc "Returns the LiveView disconnect topic for the authoritative WorkOS session."
-  def socket_topic(%{id: session_id}), do: "workos_sessions:#{session_id}"
-
   defp retained_seal(payload, payload, sealed_session), do: sealed_session
   defp retained_seal(_previous, _refreshed, _sealed_session), do: nil
 
   defp authentication_result(payload, claims, sealed_session \\ nil) do
-    with {:ok, authenticated_at} <- JWT.authenticated_at(claims) do
+    with {:ok, authenticated_at} <- JWT.authenticated_at(claims),
+         {:ok, current_scope} <- scope_from_claims(payload.user, claims) do
       {:ok,
        %{
          sealed_session:
            sealed_session || Phoenix.Token.encrypt(HermitscaleWeb.Endpoint, @salt, payload),
-         current_scope: Scope.from_workos(payload.user, claims),
-         session: %{id: payload.session_id, authenticated_at: authenticated_at},
-         claims: claims
+         current_scope: current_scope,
+         session: %{id: payload.session_id, authenticated_at: authenticated_at}
        }}
     end
   end
+
+  defp scope_from_claims(%{id: user_id} = user, %{"sub" => user_id} = claims) do
+    scope = Scope.for_user(user)
+
+    with {:ok, role} <- optional_string(claims["role"]),
+         {:ok, permissions} <- permissions_from_claims(claims["permissions"]) do
+      case claims["org_id"] do
+        nil ->
+          {:ok, scope}
+
+        organization_id ->
+          {:ok,
+           Scope.put_organization(scope, %{id: organization_id}, %{
+             user_id: user_id,
+             org_id: organization_id,
+             role: role,
+             permissions: permissions
+           })}
+      end
+    end
+  end
+
+  defp user_from_profile(%{"id" => id} = profile) when is_binary(id) and id != "" do
+    with {:ok, email} <- optional_string(profile["email"]),
+         {:ok, first_name} <- optional_string(profile["first_name"]),
+         {:ok, last_name} <- optional_string(profile["last_name"]) do
+      {:ok, %{id: id, email: email, first_name: first_name, last_name: last_name}}
+    end
+  end
+
+  defp user_from_profile(_profile), do: {:error, :invalid_authentication_response}
+
+  defp optional_string(nil), do: {:ok, nil}
+  defp optional_string(value) when is_binary(value), do: {:ok, value}
+  defp optional_string(_value), do: {:error, :invalid_response}
+
+  defp permissions_from_claims(nil), do: {:ok, []}
+
+  defp permissions_from_claims(permissions) when is_list(permissions) do
+    case Enum.all?(permissions, &(is_binary(&1) and &1 != "")) do
+      true -> {:ok, permissions}
+      false -> {:error, :invalid_response}
+    end
+  end
+
+  defp permissions_from_claims(_permissions), do: {:error, :invalid_response}
 
   defp unseal(sealed_session) when is_binary(sealed_session) do
     with {:ok, %{started_at: started_at} = payload} <-
@@ -213,7 +237,7 @@ defmodule Hermitscale.WorkOS.Session do
     verifier.verify(access_token, opts)
   end
 
-  defp client, do: config()[:client] || Client
+  defp client, do: config()[:client] || Client.adapter(Hermitscale.Auth.WorkOS)
   defp max_age_seconds, do: config()[:max_age_seconds] || @default_max_age_seconds
   defp config, do: Application.get_env(:hermitscale, __MODULE__, [])
 end

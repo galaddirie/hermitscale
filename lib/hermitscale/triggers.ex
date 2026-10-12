@@ -277,7 +277,7 @@ defmodule Hermitscale.Triggers do
     end
   end
 
-  @doc "Validates the recorded activation actor against current WorkOS authority."
+  @doc "Validates the recorded activation actor against current provider authority."
   def execution_scope(%Trigger{} = trigger) do
     case get_trigger(trigger.id) do
       %Trigger{} = trigger -> execution_scope_for_loaded(trigger)

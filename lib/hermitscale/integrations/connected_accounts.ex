@@ -55,11 +55,12 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
 
   @doc "Constructs a validated non-secret reference after checking the account's current readiness."
   def credential_ref(
-        %ExecutionContext{organization_id: "org_" <> _, actor_user_id: "user_" <> _} = context,
+        %ExecutionContext{organization_id: org_id, actor_user_id: user_id} = context,
         selection,
         scopes
       )
-      when is_list(scopes) do
+      when is_list(scopes) and is_binary(org_id) and org_id != "" and is_binary(user_id) and
+             user_id != "" do
     with {:ok, descriptor} <- selection_descriptor(selection, nil),
          {:ok, accounts} <- list_for_org(context.organization_id),
          {:ok, _account} <- ready_account(accounts, selection, scopes, descriptor) do

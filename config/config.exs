@@ -33,6 +33,8 @@ config :hermitscale, Hermitscale.Triggers,
   start_runtime?: true,
   webhook_await_timeout_ms: 30_000
 
+config :hermitscale, Hermitscale.Auth, provider: Hermitscale.Auth.WorkOS
+
 config :hermitscale, Hermitscale.WorkOS.Client,
   base_url: "https://api.workos.com",
   receive_timeout: 10_000,

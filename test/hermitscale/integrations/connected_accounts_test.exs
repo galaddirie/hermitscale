@@ -138,9 +138,26 @@ defmodule Hermitscale.Integrations.ConnectedAccountsTest do
     end
 
     test "current permission removal prevents vending despite an old run reference", %{ref: ref} do
-      Client.put_response(:get_role, {:ok, %{"permissions" => []}})
+      Client.put_response(:get_role, {:ok, %{"slug" => "admin", "permissions" => []}})
       assert {:error, :execution_actor_ineligible} = ConnectedAccounts.vend(ref)
       refute Enum.any?(Client.calls(), fn {op, _} -> op == :vend_credentials end)
+    end
+
+    test "credential references accept opaque authentication provider IDs" do
+      scope =
+        organization_scope_fixture(
+          user_fixture(%{id: "identity:123"}),
+          organization_fixture(%{id: "workspace:123"})
+        )
+
+      assert {:ok, ref} =
+               ConnectedAccounts.credential_ref(
+                 Scope.execution_context(scope),
+                 %{"provider" => "test.credentials", "account_id" => "data_test"},
+                 ["scope:a"]
+               )
+
+      assert {:ok, %{value: "access_123"}} = ConnectedAccounts.vend(ref)
     end
 
     test "runners and editors cannot manage shared connections", %{scope: scope} do

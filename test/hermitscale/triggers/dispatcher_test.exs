@@ -52,7 +52,11 @@ defmodule Hermitscale.Triggers.DispatcherTest do
         "id" => "wf_actor_removed"
       })
 
-    Client.put_response(:get_role, {:ok, %{"permissions" => ["workflows:run"]}})
+    Client.put_response(
+      :get_role,
+      {:ok, %{"slug" => "admin", "permissions" => ["workflows:run"]}}
+    )
+
     assert {:error, :execution_actor_ineligible} = Dispatcher.fire(trigger, %{})
     errored = Triggers.get_trigger!(trigger.id)
     assert errored.status == :errored

@@ -1,14 +1,16 @@
 defmodule Hermitscale.Accounts.Scope do
   @moduledoc """
-  Caller identity and tenant authority derived from a verified WorkOS session.
+  Caller identity and tenant authority derived from a verified provider session.
 
-  Identity and organization IDs are WorkOS IDs. These values are held in memory;
+  Identity and organization IDs are opaque provider IDs. These values are held in memory;
   the application does not maintain a second identity or membership database.
   """
 
   defstruct user: nil, organization: nil, membership: nil
 
-  @doc "Creates a scope for a WorkOS identity, or nil for an anonymous caller."
+  @type t :: %__MODULE__{user: map() | nil, organization: map() | nil, membership: map() | nil}
+
+  @doc "Creates a scope for a verified identity, or nil for an anonymous caller."
   def for_user(%{id: id} = user) when is_binary(id) and id != "", do: %__MODULE__{user: user}
   def for_user(nil), do: nil
 
@@ -22,25 +24,7 @@ defmodule Hermitscale.Accounts.Scope do
     %{scope | organization: organization, membership: membership}
   end
 
-  @doc "Builds a scope from verified WorkOS JWT claims and its matching user profile."
-  def from_workos(%{id: user_id} = user, %{"sub" => user_id} = claims) do
-    scope = for_user(user)
-
-    case claims["org_id"] do
-      nil ->
-        scope
-
-      org_id when is_binary(org_id) and org_id != "" ->
-        put_organization(scope, %{id: org_id}, %{
-          user_id: user_id,
-          org_id: org_id,
-          role: claims["role"],
-          permissions: claims["permissions"] || []
-        })
-    end
-  end
-
-  @doc "Returns the WorkOS tenant ID after checking that the scope membership matches."
+  @doc "Returns the tenant ID after checking that the scope membership matches."
   def organization_id!(%__MODULE__{
         user: %{id: user_id},
         organization: %{id: org_id},
@@ -61,7 +45,7 @@ defmodule Hermitscale.Accounts.Scope do
     }
   end
 
-  @doc "Asserts that a resource belongs to the caller's active WorkOS organization."
+  @doc "Asserts that a resource belongs to the caller's active organization."
   def assert_same_org!(%__MODULE__{} = scope, %{org_id: org_id}) do
     true = org_id == organization_id!(scope)
     :ok

@@ -24,6 +24,7 @@ defmodule Hermitscale.WorkOS.SessionTest do
       assert authentication.current_scope.membership.role == "admin"
       assert authentication.current_scope.membership.permissions == ["workflow:write"]
       assert authentication.session.id == "session_workos"
+      refute Map.has_key?(authentication, :claims)
     end
 
     test "rejects a mismatched user, expired JWT and missing refresh token" do
@@ -211,24 +212,6 @@ defmodule Hermitscale.WorkOS.SessionTest do
         assert {:error, :invalid_session} =
                  Session.switch_organization(created.sealed_session, "org_team")
       end
-    end
-
-    test "sign-in provisions a personal org even when a team org was selected" do
-      assert {:ok, result} = Session.establish(authentication_fixture())
-      assert result.current_scope.organization.id == "org_workos"
-      assert {:get_organization_by_external_id, ["personal:user_workos"]} in Client.calls()
-    end
-
-    test "organizationless sign-in selects its automatically provisioned organization" do
-      Client.put_response(
-        :authenticate_with_refresh_token,
-        {:ok, authentication_fixture(%{"org_id" => "org_personal"})}
-      )
-
-      assert {:ok, result} = Session.establish(authentication_fixture(%{"org_id" => nil}))
-      assert result.current_scope.organization.id == "org_personal"
-
-      assert {:authenticate_with_refresh_token, ["refresh_secret", "org_personal", %{}]} in Client.calls()
     end
   end
 

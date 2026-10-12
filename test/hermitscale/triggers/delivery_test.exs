@@ -43,7 +43,11 @@ defmodule Hermitscale.Triggers.DeliveryTest do
         assert Repo.get!(Trigger, trigger.id).cursor == %{"count" => 0}
       end
 
-      Client.put_response(:get_role, {:ok, %{"permissions" => role_permissions_fixture("admin")}})
+      Client.put_response(
+        :get_role,
+        {:ok, %{"slug" => "admin", "permissions" => role_permissions_fixture("admin")}}
+      )
+
       assert %{failures: 0} = poll(pid)
       assert Repo.aggregate(Run, :count) == 0
     end
@@ -79,17 +83,21 @@ defmodule Hermitscale.Triggers.DeliveryTest do
 
       pid = start_poller!(trigger)
 
-      Client.put_response(:get_role, fn _slug ->
+      Client.put_response(:get_role, fn slug ->
         if Repo.aggregate(Run, :count) == 1,
           do: {:error, :unavailable},
-          else: {:ok, %{"permissions" => role_permissions_fixture("admin")}}
+          else: {:ok, %{"slug" => slug, "permissions" => role_permissions_fixture("admin")}}
       end)
 
       poll(pid)
       assert Repo.aggregate(Run, :count) == 1
       assert Repo.get!(Trigger, trigger.id).cursor == %{"count" => 0}
 
-      Client.put_response(:get_role, {:ok, %{"permissions" => role_permissions_fixture("admin")}})
+      Client.put_response(
+        :get_role,
+        {:ok, %{"slug" => "admin", "permissions" => role_permissions_fixture("admin")}}
+      )
+
       poll(pid)
       assert Repo.aggregate(Run, :count) == 2
       assert Repo.aggregate(Firing, :count) == 2

@@ -1,6 +1,7 @@
 defmodule Hermitscale.AccountsTest do
   use ExUnit.Case, async: false
   import Hermitscale.AccountsFixtures
+  import Hermitscale.WorkOS.ClientFixtures, only: [membership_fixture: 2]
   alias Hermitscale.Accounts
   alias Hermitscale.WorkOSTest.Client
 
@@ -24,9 +25,9 @@ defmodule Hermitscale.AccountsTest do
 
       Client.put_response(:create_organization, {:error, :conflict})
       Client.put_response(:list_memberships, {:ok, %{"data" => []}})
-      assert {:ok, %{"id" => "org_personal"}} = Accounts.ensure_personal_organization(scope.user)
+      assert {:ok, %{id: "org_personal"}} = Accounts.ensure_personal_organization(scope.user)
       assert {:create_membership, [scope.user.id, "org_personal", "admin"]} in Client.calls()
-      assert {:ok, %{"id" => "org_personal"}} = Accounts.ensure_personal_organization(scope.user)
+      assert {:ok, %{id: "org_personal"}} = Accounts.ensure_personal_organization(scope.user)
     end
 
     test "existing personal memberships are preserved and invited users have the same actions", %{
@@ -65,7 +66,12 @@ defmodule Hermitscale.AccountsTest do
 
       Client.put_response(:list_memberships, fn user_id, org_id ->
         Agent.get_and_update(attempts, fn count ->
-          membership = %{"user_id" => user_id, "organization_id" => org_id, "status" => "active"}
+          membership =
+            membership_fixture("om_personal", %{
+              "user_id" => user_id,
+              "organization_id" => org_id
+            })
+
           data = if count == 0, do: [], else: [membership]
           {{:ok, %{"data" => data}}, count + 1}
         end)
@@ -82,11 +88,15 @@ defmodule Hermitscale.AccountsTest do
     } do
       memberships =
         for org <- ["org_first", "org_second"],
-            do: %{"user_id" => scope.user.id, "organization_id" => org, "status" => "active"}
+            do:
+              membership_fixture("membership:" <> org, %{
+                "user_id" => scope.user.id,
+                "organization_id" => org
+              })
 
       Client.put_response(:list_memberships, {:ok, %{"data" => memberships}})
 
-      assert {:ok, [%{"id" => "org_first"}, %{"id" => "org_second"}]} =
+      assert {:ok, [%{id: "org_first"}, %{id: "org_second"}]} =
                Accounts.list_organizations(scope)
 
       Client.put_response(:get_organization, {:error, :unavailable})
@@ -103,9 +113,62 @@ defmodule Hermitscale.AccountsTest do
         assert {:error, :forbidden} = Accounts.remove_member(member, "om_test")
       end
 
-      Client.put_response(:get_membership, {:ok, %{"organization_id" => "org_other"}})
+      Client.put_response(
+        :get_membership,
+        {:ok, membership_fixture("om_other", %{"organization_id" => "org_other"})}
+      )
+
       assert {:error, :forbidden} = Accounts.assign_role(scope, "om_other", "runner")
       assert {:error, :forbidden} = Accounts.remove_member(scope, "om_other")
+    end
+
+    test "provisioning accepts opaque provider identity IDs" do
+      user = user_fixture(%{id: "identity:123"})
+
+      assert {:ok, %{id: "org_personal", external_id: "personal:identity:123"}} =
+               Accounts.ensure_personal_organization(user)
+    end
+
+    test "collaboration returns normalized invitations and memberships", %{scope: scope} do
+      membership =
+        membership_fixture("membership:123", %{
+          "user_id" => scope.user.id,
+          "organization_id" => scope.organization.id
+        })
+
+      Client.put_response(:get_membership, {:ok, membership})
+
+      Client.put_response(:update_membership, fn id, role ->
+        {:ok, %{membership | "id" => id, "role" => %{"slug" => role}}}
+      end)
+
+      assert {:ok, %{email: "member@example.test", org_id: org_id, role: "runner"}} =
+               Accounts.invite(scope, "member@example.test")
+
+      assert org_id == scope.organization.id
+
+      assert {:ok, %{id: "membership:123", role: "editor"}} =
+               Accounts.assign_role(scope, "membership:123", "editor")
+
+      assert :ok = Accounts.remove_member(scope, "membership:123")
+    end
+
+    test "inactive personal memberships cannot provision authority", %{scope: scope} do
+      Client.put_response(:list_memberships, fn user_id, org_id ->
+        {:ok,
+         %{
+           "data" => [
+             membership_fixture("om_personal", %{
+               "user_id" => user_id,
+               "organization_id" => org_id,
+               "status" => "inactive"
+             })
+           ]
+         }}
+      end)
+
+      assert {:error, :membership_inactive} = Accounts.ensure_personal_organization(scope.user)
+      refute Enum.any?(Client.calls(), fn {op, _} -> op == :create_membership end)
     end
   end
 end
