@@ -71,13 +71,14 @@ defmodule Hermitscale.Workflows.UpstreamCompatibilityTest do
   end
 
   defp iteration_count(workflow) do
-    [fan_out] = Workflow.get_component!(workflow, {"mapper$collection", :fan_out})
+    fan_out = Workflow.get_component!(workflow, "mapper$fanout")
 
     items =
       workflow
       |> Workflow.facts()
       |> Enum.filter(fn fact ->
-        match?({producer, _} when producer == fan_out.hash, fact.ancestry)
+        match?({producer, _} when producer == fan_out.hash, fact.ancestry) and
+          fact.meta.hermitscale.status == :ok
       end)
 
     assert length(Enum.uniq_by(items, & &1.hash)) == length(items)

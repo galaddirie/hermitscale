@@ -167,7 +167,7 @@ defmodule Hermitscale.Workflows.CompilerTest do
       assert [6, input] in results
     end
 
-    test "delivers $node references into a map via an added edge (zip path)" do
+    test "retains upstream $node references for each mapped occurrence" do
       input = [%{"n" => 1}, %{"n" => 2}]
 
       assert {:ok, workflow} = Compiler.compile(node_ref_map_graph())

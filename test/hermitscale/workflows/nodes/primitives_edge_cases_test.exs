@@ -2,6 +2,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
   use ExUnit.Case, async: true
 
   alias Hermitscale.Workflows.Compiler
+  alias Hermitscale.Workflows.Engine
   alias Hermitscale.Workflows.Nodes.Builtin.Merge.V1, as: Merge
   alias Runic.Workflow
 
@@ -26,7 +27,9 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
 
     workflow
     |> Workflow.react_until_satisfied(input)
-    |> Workflow.raw_productions()
+    |> then(fn workflow ->
+      graph["nodes"] |> Enum.flat_map(&Engine.productions(workflow, &1["id"]))
+    end)
   end
 
   # A source that simply forwards the workflow input, then a `map`.
@@ -99,9 +102,14 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
       assert %{"n" => 2} in results
     end
 
-    test "scalar (non-list) input maps as a single element instead of crashing" do
-      results = run(map_graph(%{}), 42)
-      assert 42 in results
+    test "scalar input fails with an explicit collection error" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          workflow = map_graph(%{}) |> Compiler.compile!() |> Workflow.react_until_satisfied(42)
+          assert Engine.productions(workflow, "m") == []
+        end)
+
+      assert log =~ "expected_collection"
     end
 
     test "ambient $env resolves inside a mapped element" do
@@ -131,7 +139,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
       assert "abc" in results
     end
 
-    test "empty upstream collection produces no reduce output" do
+    test "empty upstream collection returns the reduce seed" do
       results =
         run(
           map_reduce_graph(
@@ -141,7 +149,7 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
           []
         )
 
-      assert Enum.all?(results, &(&1 == []))
+      assert 0 in results
     end
 
     test "no value expression returns the static seed unchanged" do
@@ -228,9 +236,8 @@ defmodule Hermitscale.Workflows.Nodes.PrimitivesEdgeCasesTest do
       results = run(composed, input)
 
       # merge emits the ordered list, and mapping over it extracts the field.
-      # (Runic content-dedupes identical facts, so the two identical 1s collapse.)
       assert [%{"v" => 1}, %{"v" => 1}] in results
-      assert 1 in results
+      assert Enum.count(results, &(&1 == 1)) >= 2
     end
   end
 end

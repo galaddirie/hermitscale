@@ -3,10 +3,10 @@ defmodule Hermitscale.Workflows.Validator do
   Validates stored workflow graph JSON before it is compiled into Runic structs.
   """
 
-  alias Hermitscale.Workflows.{Catalog, Expr, Policy, Topology}
+  alias Hermitscale.Workflows.{Catalog, CollectionScopes, Expr, Policy, Topology}
   alias Hermitscale.Workflows.Nodes.Params
 
-  alias Hermitscale.Workflows.Validator.{Issue, MapRegions}
+  alias Hermitscale.Workflows.Validator.Issue
 
   @node_id_pattern ~r/^[A-Za-z][A-Za-z0-9_:-]*$/
   @max_nodes 100
@@ -39,7 +39,7 @@ defmodule Hermitscale.Workflows.Validator do
 
       region_issues =
         case {connection_issues, cycle_issues} do
-          {[], []} -> MapRegions.issues(nodes, catalog, connections)
+          {[], []} -> CollectionScopes.issues(nodes, catalog, connections)
           _issues -> []
         end
 
@@ -505,19 +505,7 @@ defmodule Hermitscale.Workflows.Validator do
            ) do
       refs = Expr.node_references(params)
 
-      cond do
-        spec.kind == :reduce and refs != [] ->
-          [
-            Issue.new(
-              "$.nodes[#{index}].params",
-              :node_ref_unsupported_in_reduce,
-              "reduce nodes cannot reference other nodes via $node[...] (got #{inspect(refs)})"
-            )
-          ]
-
-        true ->
-          Enum.flat_map(refs, &node_reference_issues(&1, id, index, nodes_by_id, ancestors))
-      end
+      Enum.flat_map(refs, &node_reference_issues(&1, id, index, nodes_by_id, ancestors))
     else
       _other -> []
     end

@@ -75,7 +75,7 @@ defmodule Hermitscale.Workflows.ReplayTest do
                )
     end
 
-    test "rewiring unchanged components rejects old history but unchanged recompilation resumes" do
+    test "rewiring changes component dependencies and rejects old history" do
       graph = rewirable_map_reduce_graph()
       base = Compiler.compile!(graph) |> Workflow.enable_event_emission()
       partial = Workflow.react(base, :start, [])
@@ -88,7 +88,9 @@ defmodule Hermitscale.Workflows.ReplayTest do
         ])
 
       changed = Compiler.compile!(changed_graph)
-      assert base.components == changed.components
+      refute base.components == changed.components
+      assert base.components["a"] == changed.components["a"]
+      assert base.components["b"] == changed.components["b"]
       assert {:error, :incompatible_workflow_events} = Replay.restore(events, changed)
 
       assert {:ok, restored} = Replay.restore(events, Compiler.compile!(graph))

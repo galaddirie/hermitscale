@@ -16,7 +16,7 @@ defmodule Hermitscale.Workflows.Nodes.Google.Sheets.BuiltinsTest do
           spec.expr_fields
         )
 
-      step = AppendRow.build(params, %{name: "append", parents: [], main_count: 0})
+      step = AppendRow.build(params, %{name: "append", parents: []})
 
       assert step.name == "append"
     end
@@ -33,7 +33,7 @@ defmodule Hermitscale.Workflows.Nodes.Google.Sheets.BuiltinsTest do
           spec.expr_fields
         )
 
-      step = ReadRows.build(params, %{name: "read", parents: [], main_count: 0})
+      step = ReadRows.build(params, %{name: "read", parents: []})
 
       assert step.name == "read"
     end

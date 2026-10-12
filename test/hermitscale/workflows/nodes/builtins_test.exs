@@ -25,7 +25,7 @@ defmodule Hermitscale.Workflows.Nodes.BuiltinsTest do
           spec.expr_fields
         )
 
-      step = HttpRequest.build(params, %{name: "fetch_order", parents: [], main_count: 0})
+      step = HttpRequest.build(params, %{name: "fetch_order", parents: []})
 
       assert step.name == "fetch_order"
     end

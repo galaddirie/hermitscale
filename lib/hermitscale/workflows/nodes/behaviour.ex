@@ -6,7 +6,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   generate a compile-time-validated `spec/0` and catalog marker.
   """
 
-  @type kind :: :step | :join | :map | :reduce | :rule | :trigger
+  @type kind :: :step | :join | :map | :reduce | :aggregate | :rule | :trigger
   @type spec :: %{
           required(:id) => String.t(),
           required(:version) => pos_integer(),
@@ -23,9 +23,6 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   @type ctx :: %{
           required(:name) => String.t(),
           optional(:parents) => [String.t()],
-          optional(:main_count) => non_neg_integer(),
-          optional(:ref_ids) => [String.t()],
-          optional(:ambient) => map(),
           optional(:map) => String.t()
         }
 
@@ -36,7 +33,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
 
   @optional_callbacks validate_params: 1
 
-  @kinds ~w(step join map reduce rule)a
+  @kinds ~w(step join map reduce aggregate rule)a
   @options ~w(id version kind inputs outputs params expr predicate requires default_policy deprecated)a
 
   defmacro __using__(opts) do
@@ -125,137 +122,11 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   end
 
   @doc false
-  # Steps and joins share one closure. Facts flow as bare values; the node
-  # reconstructs its `$json`/`$node` view from the inputs Runic delivered (a
-  # single value for 0/1 parent, an ordered list for a join of 2+ parents).
-  def __gen_build__(%{kind: kind, requires: requires}) when kind in [:step, :join] do
-    deps = deps_ast(requires)
-
+  def __gen_build__(%{kind: kind}) when kind in [:step, :join, :map, :reduce, :aggregate] do
     quote generated: true do
       @impl true
-      def build(params, %{name: name, parents: parents, main_count: main_count}) do
-        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
-        joined? = length(parents) >= 2
-
-        Runic.step(
-          fn input ->
-            runtime = context(:_expr, default: %{})
-            deps = unquote(deps)
-
-            {main, node_map} =
-              Hermitscale.Workflows.Expr.node_view(input, ^parents, ^main_count, ^joined?)
-
-            expression_context =
-              Hermitscale.Workflows.Expr.build_context(
-                %{"json" => main, "node" => node_map},
-                runtime
-              )
-
-            resolved_params =
-              Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
-
-            work(resolved_params, main, deps)
-          end,
-          name: name
-        )
-      end
-    end
-  end
-
-  # Prepare normalizes the collection and zips in `$node` references. Native
-  # Map owns fan-out and the mapper; the compiler composes the body and Reduce
-  # through the public component API.
-  def __gen_build__(%{kind: :map, requires: requires}) do
-    deps = deps_ast(requires)
-
-    quote generated: true do
-      @impl true
-      def build(params, %{name: name, ref_ids: ref_ids}) do
-        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
-
-        prepare =
-          Runic.step(
-            fn input ->
-              {collection, refs} =
-                case ^ref_ids do
-                  [] ->
-                    {input, []}
-
-                  ids ->
-                    [collection | ref_values] = input
-                    {collection, Enum.zip(ids, ref_values)}
-                end
-
-              # Only genuine lists fan out; a scalar/map becomes one element and
-              # nil becomes none, so a misconfigured collection never crashes.
-              collection
-              |> List.wrap()
-              |> Enum.map(fn element -> {element, refs} end)
-            end,
-            # `$` cannot appear in a node id, so these never collide with one.
-            name: "#{name}$prepare"
-          )
-
-        mapper =
-          Runic.step(
-            fn {element, refs} ->
-              runtime = context(:_expr, default: %{})
-              deps = unquote(deps)
-
-              node_map = Map.new(refs, fn {id, value} -> {id, %{"json" => value}} end)
-
-              expression_context =
-                Hermitscale.Workflows.Expr.build_context(
-                  %{"json" => element, "node" => node_map},
-                  runtime
-                )
-
-              resolved_params =
-                Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
-
-              work(resolved_params, element, deps)
-            end,
-            name: name
-          )
-
-        map = Runic.map([mapper], name: "#{name}$collection")
-        {:region, prepare, map}
-      end
-    end
-  end
-
-  # Native Reduce folds per-element values. Its mapped coordinator invokes
-  # reducer/2, so ambient expression namespaces remain captured at compile time.
-  # The named Map binding identifies the owning collection through body Steps.
-  def __gen_build__(%{kind: :reduce, requires: requires}) do
-    deps = deps_ast(requires)
-
-    quote generated: true do
-      @impl true
-      def build(params, %{name: name, ambient: ambient, map: map_name}) do
-        params_binding = Hermitscale.Workflows.Nodes.Params.bind(params)
-
-        reduce =
-          Runic.reduce(
-            Map.get(params, :initial),
-            fn element, acc ->
-              deps = Map.put(unquote(deps), :acc, acc)
-
-              expression_context =
-                %{"json" => element, "node" => %{}}
-                |> Hermitscale.Workflows.Expr.build_context(^ambient)
-                |> Map.put("acc", acc)
-
-              resolved_params =
-                Hermitscale.Workflows.Nodes.Params.resolve!(^params_binding, expression_context)
-
-              work(resolved_params, element, deps)
-            end,
-            name: name,
-            map: map_name
-          )
-
-        reduce
+      def build(params, ctx) do
+        Hermitscale.Workflows.Engine.Node.new(__MODULE__, params, ctx)
       end
     end
   end
@@ -280,13 +151,6 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   defp ports?(list), do: is_list(list) and list != [] and Enum.all?(list, &is_atom/1)
   defp ports_or_empty?(list), do: is_list(list) and Enum.all?(list, &is_atom/1)
   defp unique?(list), do: length(Enum.uniq(list)) == length(list)
-
-  defp deps_ast(requires) do
-    {:%{}, [],
-     Enum.map(requires, fn {key, _opts} ->
-       {key, quote(do: context(unquote(key)))}
-     end)}
-  end
 
   defp assert!(true, _module, _message), do: :ok
 

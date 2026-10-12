@@ -36,4 +36,15 @@ defmodule Hermitscale.Workflows.PolicyTest do
       end
     end
   end
+
+  describe "execution/1" do
+    test "runtime skip overrides use the same durable outcome contract as graph policies" do
+      policy = Policy.execution(%{on_failure: :skip, max_retries: 2, executor: :inline})
+      assert policy.on_failure == :halt
+      assert policy.max_retries == 2
+      assert policy.executor == :inline
+      assert policy.fallback == (&Hermitscale.Workflows.Engine.Node.skip_failure/2)
+      assert Policy.execution(%{on_failure: :halt}) == %{on_failure: :halt}
+    end
+  end
 end

@@ -223,15 +223,15 @@ defmodule Hermitscale.WorkflowsFixtures do
       "nodes" => [
         %{
           "id" => "a",
-          "type" => "math",
+          "type" => "test.collection_value",
           "version" => 1,
-          "params" => %{"operation" => "multiply", "left" => 10, "right" => 1}
+          "params" => %{"value" => [10]}
         },
         %{
           "id" => "b",
-          "type" => "math",
+          "type" => "test.collection_value",
           "version" => 1,
-          "params" => %{"operation" => "multiply", "left" => 20, "right" => 1}
+          "params" => %{"value" => [20]}
         },
         %{"id" => "mapper", "type" => "map", "version" => 1, "params" => %{}},
         %{

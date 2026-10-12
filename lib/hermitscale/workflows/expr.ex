@@ -127,8 +127,9 @@ defmodule Hermitscale.Workflows.Expr do
       "binary" => envelope_value(envelope, "binary", nil),
       "env" => runtime_value(runtime, :env, %{}),
       "execution" => runtime_value(runtime, :execution, %{}),
-      "item" => json(envelope),
+      "item" => Map.get(envelope, "item", json(envelope)),
       "itemIndex" => envelope_value(envelope, "itemIndex", nil),
+      "ancestry" => Map.get(envelope, "ancestry", []),
       "json" => json(envelope),
       "node" => node_outputs(envelope),
       "now" => DateTime.to_iso8601(now),
@@ -154,43 +155,6 @@ defmodule Hermitscale.Workflows.Expr do
   @spec json(term()) :: term()
   def json(%{"json" => value, "node" => node}) when is_map(node), do: value
   def json(value), do: value
-
-  @doc """
-  Builds a node's transient expression view (`$json` payload and `$node` map)
-  from the actual Runic inputs it received.
-
-  Facts flow as bare values; this reconstructs the local view used to resolve
-  expressions. `joined?` is true when the node has 2+ parents and therefore
-  receives an ordered list of parent values (a Runic join), false when it
-  receives a single parent value (or the workflow input) directly. `main_count`
-  is the number of structural (non-reference) parents; their values form `$json`
-  (a single value for one main, a list for a multi-input join).
-  """
-  @spec node_view(term(), [String.t()], non_neg_integer(), boolean()) :: {term(), map()}
-  def node_view(values, parents, main_count, true) when is_list(values) do
-    node_map =
-      parents
-      |> Enum.zip(values)
-      |> Map.new(fn {id, value} -> {id, %{"json" => value}} end)
-
-    main =
-      case Enum.take(values, main_count) do
-        [single] -> single
-        mains -> mains
-      end
-
-    {main, node_map}
-  end
-
-  def node_view(value, parents, _main_count, false) do
-    node_map =
-      case parents do
-        [parent] -> %{parent => %{"json" => value}}
-        _other -> %{}
-      end
-
-    {value, node_map}
-  end
 
   @doc """
   Extracts static `$node["id"]` dependencies from compiled params.
@@ -482,7 +446,10 @@ defmodule Hermitscale.Workflows.Expr do
   defp node_outputs(_envelope), do: %{}
 
   defp envelope_value(envelope, key, default) do
-    Map.get(envelope, key) || Map.get(envelope, atom_key(key)) || default
+    case Map.fetch(envelope, key) do
+      {:ok, value} -> value
+      :error -> Map.get(envelope, atom_key(key), default)
+    end
   end
 
   defp runtime_value(runtime, key, default) do

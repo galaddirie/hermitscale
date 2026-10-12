@@ -9,7 +9,18 @@ defmodule Hermitscale.Workflows do
   alias Hermitscale.Authorization
   alias Hermitscale.Integrations.ExecutionContext
   alias Hermitscale.Repo
-  alias Hermitscale.Workflows.{Compiler, Credentials, Graph, Replay, Run, Validator}
+
+  alias Hermitscale.Workflows.{
+    Compiler,
+    Credentials,
+    Engine,
+    Graph,
+    Policy,
+    Replay,
+    Run,
+    Validator
+  }
+
   alias Runic.Workflow
 
   @runner Hermitscale.WorkflowRunner
@@ -180,7 +191,13 @@ defmodule Hermitscale.Workflows do
              workflow,
              runner_opts(opts, graph.definition)
            ),
-         :ok <- Runic.Runner.run(@runner, run.id, input, run_opts(opts, run_context)) do
+         :ok <-
+           Runic.Runner.run(
+             @runner,
+             run.id,
+             Engine.input(input, run.id),
+             run_opts(opts, run_context)
+           ) do
       run_result(run, opts)
     end
   end
@@ -228,7 +245,9 @@ defmodule Hermitscale.Workflows do
         @runner,
         run.id,
         workflow,
-        Keyword.merge(runner_opts(opts, graph.definition), resumed: true)
+        runner_opts(opts, graph.definition)
+        |> Keyword.merge(run_opts(opts, run_context))
+        |> Keyword.put(:resumed, true)
       )
     end
   end
@@ -259,7 +278,22 @@ defmodule Hermitscale.Workflows do
   end
 
   defp complete_run(run, workflow, terminal_ids) do
-    output = Map.new(terminal_ids, &{&1, Workflow.raw_productions(workflow, &1)})
+    case Engine.completion(workflow) do
+      :ok ->
+        complete_run_output(run, workflow, terminal_ids)
+
+      {:error, error} ->
+        update_run_result(run, %{
+          status: :failed,
+          output: nil,
+          error: error,
+          completed_at: DateTime.utc_now(:second)
+        })
+    end
+  end
+
+  defp complete_run_output(run, workflow, terminal_ids) do
+    output = Map.new(terminal_ids, &{&1, Engine.productions(workflow, &1)})
     now = DateTime.utc_now(:second)
 
     update_run_result(run, %{
@@ -369,6 +403,9 @@ defmodule Hermitscale.Workflows do
   defp run_opts(opts, run_context) do
     opts
     |> Keyword.take([:scheduler_policies])
+    |> Keyword.update(:scheduler_policies, [], fn policies ->
+      Enum.map(policies, fn {matcher, policy} -> {matcher, Policy.execution(policy)} end)
+    end)
     |> Keyword.put(:run_context, run_context)
   end
 

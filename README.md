@@ -13,10 +13,14 @@ Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
 Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
 
-Workflow collections use native Runic Map/Reduce components and named Reduce
-output connections. Full Facts and incremental events retain per-item ancestry
-and zero-based indexes for iteration inspection; terminal `Run.output` contains
-only final outputs.
+Workflow execution uses Runic's native single-output lifecycle and focused
+collection coordinators. Maps support branching, correlated joins, and nested
+scopes. Reduce folds in source order; aggregate collects ordered values. Empty
+collections return the reduce seed or `[]`. Facts and accepted events preserve
+occurrence identity, lineage, and local upstream history; runtime credentials
+remain separate. See the [node authoring guide](docs/node-authoring-kit.md).
+Terminal `Run.output` contains successful final payloads and excludes internal
+empty and skipped outcomes.
 
 Recovery records a compiled-definition fingerprint before execution and replays
 incremental events against a matching compiled graph. Changed connections,

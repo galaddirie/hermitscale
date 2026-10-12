@@ -3,6 +3,7 @@ defmodule Hermitscale.WorkflowsTest do
 
   import Hermitscale.AccountsFixtures
   import Hermitscale.WorkflowsFixtures
+  import Hermitscale.CollectionWorkflowsFixtures, only: [skipped_collection_graph: 2]
 
   alias Hermitscale.Workflows
   alias Hermitscale.Workflows.{Graph, PostgresStore, Run}
@@ -256,6 +257,65 @@ defmodule Hermitscale.WorkflowsTest do
       assert_receive {:run_failed, id}
       assert id == run.id
       refute_receive {:run_complete, _id}
+    end
+
+    test "nil admissions run empty collection semantics and exclude control outputs", %{
+      scope: scope
+    } do
+      assert {:ok, graph} =
+               Workflows.create_graph(scope, graph_attrs(definition: map_reduce_graph()))
+
+      assert {:ok, %Run{status: :complete} = run} =
+               Workflows.start_run(scope, graph, nil, executor: :inline)
+
+      assert run.output == %{"value" => %{"summer" => [0]}}
+      assert {:ok, events} = PostgresStore.load(run.id, %{repo: Hermitscale.Repo})
+
+      [input] =
+        Enum.filter(
+          events,
+          &match?(%Runic.Workflow.Events.FactProduced{producer_label: :input}, &1)
+        )
+
+      assert input.value == nil
+      assert input.hash == Hermitscale.Workflows.Engine.input(nil, run.id).hash
+    end
+
+    test "runtime skip policies preserve item correlation through the runner", %{scope: scope} do
+      definition = skipped_collection_graph("nil", %{"fail" => true})
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: definition))
+
+      assert {:ok, %Run{status: :complete} = run} =
+               Workflows.start_run(scope, graph, [%{"n" => 1}, %{"n" => 1}, %{"n" => 2}],
+                 executor: :inline,
+                 scheduler_policies: [{{:name, ~r/^right$/}, %{on_failure: :skip}}]
+               )
+
+      assert run.output == %{"value" => %{"collected" => [[[1, nil], [1, nil], [2, nil]]]}}
+    end
+
+    test "unsatisfied joins fail an idle run clearly", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+      assert {:ok, run} = Workflows.create_run(scope, graph, %{status: :running})
+
+      workflow =
+        graph.definition
+        |> Workflows.compile_graph()
+        |> then(fn {:ok, workflow} -> Workflow.react(workflow, %{"id" => 1}) end)
+        |> Workflow.react()
+
+      [left] = Workflow.productions(workflow, "inventory")
+      join = Workflow.get_component!(workflow, "decide$join")
+      {:ok, runnable} = Runic.Workflow.Invokable.prepare(join, workflow, left)
+
+      workflow =
+        Workflow.apply_runnable(workflow, Runic.Workflow.Invokable.execute(join, runnable))
+
+      assert {:ok, %Run{status: :failed} = failed} =
+               Workflows.record_run_idle(idle_worker_fixture(run, workflow: workflow), ["decide"])
+
+      assert failed.output == nil
+      assert failed.error == %{"reason" => "incomplete_collection", "nodes" => ["decide$join"]}
     end
 
     test "records exhausted node failures as failed runs", %{scope: scope} do

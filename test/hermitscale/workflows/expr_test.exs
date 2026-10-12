@@ -80,4 +80,22 @@ defmodule Hermitscale.Workflows.ExprTest do
       assert Expr.node_references(compiled) == ["fetch_order", "fetch_user"]
     end
   end
+
+  describe "build_context/2" do
+    test "keeps the original item, ancestry and zero index separate from current json" do
+      context =
+        Expr.build_context(%{
+          "json" => 20,
+          "item" => false,
+          "itemIndex" => 0,
+          "ancestry" => [%{"map" => "items", "index" => 0}],
+          "node" => %{}
+        })
+
+      assert context["json"] == 20
+      assert context["item"] == false
+      assert context["itemIndex"] == 0
+      assert context["ancestry"] == [%{"map" => "items", "index" => 0}]
+    end
+  end
 end

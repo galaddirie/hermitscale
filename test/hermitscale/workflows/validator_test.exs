@@ -214,7 +214,7 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       assert Enum.any?(issues, &(&1.code == :non_upstream_expression_node))
     end
 
-    test "rejects $node references inside reduce nodes" do
+    test "accepts upstream $node references inside reduce nodes" do
       graph =
         map_reduce_graph(%{
           "nodes" => [
@@ -241,8 +241,7 @@ defmodule Hermitscale.Workflows.ValidatorTest do
           ]
         })
 
-      assert {:error, issues} = Validator.validate(graph)
-      assert Enum.any?(issues, &(&1.code == :node_ref_unsupported_in_reduce))
+      assert :ok = Validator.validate(graph)
     end
 
     test "accepts a linear map region closed by reduce" do
@@ -357,11 +356,11 @@ defmodule Hermitscale.Workflows.ValidatorTest do
         )
 
       assert {:error, issues} = Validator.validate(graph)
-      assert Enum.any?(issues, &(&1.code == :reduce_ambiguous_map))
+      assert Enum.any?(issues, &(&1.code == :mixed_collection_scopes))
       assert Enum.any?(issues, &(&1.code == :reduce_parent_count))
     end
 
-    test "rejects map region branching before reduce" do
+    test "accepts map region branching before reduce" do
       graph =
         region_graph(
           [
@@ -377,11 +376,10 @@ defmodule Hermitscale.Workflows.ValidatorTest do
           ]
         )
 
-      assert {:error, issues} = Validator.validate(graph)
-      assert Enum.any?(issues, &(&1.code == :map_region_branch))
+      assert :ok = Validator.validate(graph)
     end
 
-    test "rejects nested maps and joins inside map regions" do
+    test "accepts nested maps and explicit joins inside map regions" do
       nested_map_graph =
         region_graph(
           [
@@ -400,22 +398,24 @@ defmodule Hermitscale.Workflows.ValidatorTest do
           [
             region_node("source", "test.identity_probe"),
             region_node("mapper", "map"),
+            region_node("left", "test.identity_probe"),
+            region_node("right", "test.identity_probe"),
             region_node("merged", "merge", %{"mode" => "append"})
           ],
           [
             %{"from" => "source", "to" => "mapper"},
-            %{"from" => "mapper", "to" => "merged"}
+            %{"from" => "mapper", "to" => "left"},
+            %{"from" => "mapper", "to" => "right"},
+            %{"from" => "left", "to" => "merged", "to_input" => 0},
+            %{"from" => "right", "to" => "merged", "to_input" => 1}
           ]
         )
 
-      assert {:error, nested_issues} = Validator.validate(nested_map_graph)
-      assert Enum.any?(nested_issues, &(&1.code == :unsupported_map_region_node))
-
-      assert {:error, join_issues} = Validator.validate(join_graph)
-      assert Enum.any?(join_issues, &(&1.code == :unsupported_map_region_node))
+      assert :ok = Validator.validate(nested_map_graph)
+      assert :ok = Validator.validate(join_graph)
     end
 
-    test "rejects node references to per-item map region nodes" do
+    test "accepts ancestor references inside and after a collected map region" do
       graph =
         region_graph(
           [
@@ -440,9 +440,7 @@ defmodule Hermitscale.Workflows.ValidatorTest do
           ]
         )
 
-      assert {:error, issues} = Validator.validate(graph)
-      assert Enum.any?(issues, &(&1.code == :node_ref_unsupported_in_map_region))
-      assert Enum.any?(issues, &(&1.code == :map_region_node_ref))
+      assert :ok = Validator.validate(graph)
     end
 
     test "returns connection issues for map regions with missing children" do

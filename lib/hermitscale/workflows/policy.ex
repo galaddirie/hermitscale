@@ -30,6 +30,22 @@ defmodule Hermitscale.Workflows.Policy do
     end)
   end
 
+  @doc "Keeps skipped attempts as durable item outcomes for graph and runtime policies."
+  def execution(%{on_failure: :skip} = policy) do
+    case Map.get(policy, :fallback) do
+      nil ->
+        Map.merge(policy, %{
+          on_failure: :halt,
+          fallback: &Hermitscale.Workflows.Engine.Node.skip_failure/2
+        })
+
+      fallback when is_function(fallback) ->
+        policy
+    end
+  end
+
+  def execution(policy) when is_map(policy), do: policy
+
   defp normalize_pair(key, value)
        when key in @integer_keys and is_integer(value) and value >= 0,
        do: {key, value}
