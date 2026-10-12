@@ -86,18 +86,41 @@ defmodule Hermitscale.WorkflowsTest do
       assert updated_graph.created_by_user_id == creator_scope.user.id
     end
 
-    test "keeps a shared graph when its creator is deleted", %{scope: scope} do
-      org = organization_fixture()
-      creator = user_fixture()
-      creator_scope = organization_scope_fixture(creator, org)
-      collaborator_scope = organization_scope_fixture(scope.user, org)
+    test "stores WorkOS creator metadata without requiring a local user", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+      assert graph.created_by_user_id == scope.user.id
+      assert graph.org_id == scope.organization.id
+      refute :organization in Graph.__schema__(:associations)
+      refute :created_by_user in Graph.__schema__(:associations)
+    end
 
-      assert {:ok, graph} = Workflows.create_graph(creator_scope, graph_attrs())
-      Repo.delete!(creator)
+    test "another organization member cannot edit or run creator-bound credentials", %{
+      scope: scope
+    } do
+      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
 
-      graph = Workflows.get_graph!(collaborator_scope, graph.id)
-      assert graph.org_id == org.id
-      assert is_nil(graph.created_by_user_id)
+      assert {:ok, graph} =
+               Workflows.create_graph(scope, graph_attrs(definition: credential_probe_graph()))
+
+      assert {:error, changeset} =
+               Workflows.update_graph(collaborator, graph, %{name: "Changed"})
+
+      assert errors_on(changeset).definition ==
+               ["only the creator can edit credential-bound workflows"]
+
+      assert {:error, :credential_owner_required} =
+               Workflows.start_run(collaborator, graph, %{}, executor: :inline)
+    end
+
+    test "another organization member cannot bind the creator's credentials", %{scope: scope} do
+      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+
+      assert {:error, changeset} =
+               Workflows.update_graph(collaborator, graph, %{definition: credential_probe_graph()})
+
+      assert errors_on(changeset).definition ==
+               ["only the creator can edit credential-bound workflows"]
     end
 
     test "returns a changeset with validation issues for invalid graph JSON", %{scope: scope} do

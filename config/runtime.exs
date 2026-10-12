@@ -23,6 +23,20 @@ end
 config :hermitscale, HermitscaleWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+if config_env() == :dev do
+  workos_client_id = System.get_env("WORKOS_CLIENT_ID", "client_development")
+
+  config :hermitscale, Hermitscale.WorkOS.Client,
+    api_key: System.get_env("WORKOS_API_KEY", "sk_test_development"),
+    client_id: workos_client_id,
+    redirect_uri:
+      System.get_env("WORKOS_REDIRECT_URI", "http://localhost:4000/auth/workos/callback")
+
+  config :hermitscale, Hermitscale.WorkOS.JWT,
+    client_id: workos_client_id,
+    issuer: System.get_env("WORKOS_JWT_ISSUER")
+end
+
 if config_env() == :prod do
   required_env = fn name ->
     System.get_env(name) ||
@@ -63,35 +77,6 @@ if config_env() == :prod do
   workos_api_key = required_env.("WORKOS_API_KEY")
   workos_client_id = required_env.("WORKOS_CLIENT_ID")
   workos_redirect_uri = required_env.("WORKOS_REDIRECT_URI")
-  workos_webhook_endpoint_token = required_env.("WORKOS_WEBHOOK_ENDPOINT_TOKEN")
-
-  workos_webhook_secrets =
-    "WORKOS_WEBHOOK_SECRETS"
-    |> required_env.()
-    |> String.split(",", trim: true)
-
-  workos_encryption_keys =
-    "WORKOS_TOKEN_ENCRYPTION_KEYS"
-    |> required_env.()
-    |> String.split(",", trim: true)
-    |> Map.new(fn entry ->
-      case String.split(entry, ":", parts: 2) do
-        [key_id, encoded_key] when key_id != "" ->
-          case Base.decode64(encoded_key) do
-            {:ok, key} when byte_size(key) == 32 -> {key_id, key}
-            _invalid -> raise "WORKOS_TOKEN_ENCRYPTION_KEYS contains an invalid 32-byte key"
-          end
-
-        _invalid ->
-          raise "WORKOS_TOKEN_ENCRYPTION_KEYS must use key_id:base64 entries"
-      end
-    end)
-
-  workos_active_encryption_key_id = required_env.("WORKOS_TOKEN_ENCRYPTION_ACTIVE_KEY_ID")
-
-  unless Map.has_key?(workos_encryption_keys, workos_active_encryption_key_id) do
-    raise "WORKOS_TOKEN_ENCRYPTION_ACTIVE_KEY_ID is not present in WORKOS_TOKEN_ENCRYPTION_KEYS"
-  end
 
   config :hermitscale, Hermitscale.WorkOS.Client,
     api_key: workos_api_key,
@@ -102,15 +87,6 @@ if config_env() == :prod do
   config :hermitscale, Hermitscale.WorkOS.JWT,
     client_id: workos_client_id,
     issuer: System.get_env("WORKOS_JWT_ISSUER")
-
-  config :hermitscale, Hermitscale.WorkOS.TokenCipher,
-    active_key_id: workos_active_encryption_key_id,
-    keys: workos_encryption_keys
-
-  config :hermitscale, Hermitscale.WorkOS.EventInbox,
-    endpoint_token: workos_webhook_endpoint_token,
-    secrets: workos_webhook_secrets,
-    tolerance_seconds: 300
 
   config :hermitscale, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 

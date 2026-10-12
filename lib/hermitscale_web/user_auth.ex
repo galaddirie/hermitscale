@@ -1,10 +1,5 @@
 defmodule HermitscaleWeb.UserAuth do
-  @moduledoc """
-  Phoenix integration for WorkOS-bounded application sessions.
-
-  The browser session contains only an opaque random handle. The WorkOS
-  access and refresh tokens remain encrypted in `auth_sessions`.
-  """
+  @moduledoc "Phoenix integration for WorkOS sessions and request scopes."
 
   use HermitscaleWeb, :verified_routes
 
@@ -14,57 +9,57 @@ defmodule HermitscaleWeb.UserAuth do
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.WorkOS.Session
 
-  @session_key :auth_session_token
-  @fresh_auth_minutes 10
+  @session_cookie "_hermitscale_workos"
+  @cookie_max_age 30 * 24 * 60 * 60
+  @max_sealed_session_bytes 3_800
 
-  @doc """
-  Establishes a verified WorkOS session and renews the Phoenix cookie session.
-  """
-  def put_workos_session(conn, handle, auth_session, return_to \\ nil)
-      when is_binary(handle) do
-    destination = return_to || signed_in_path(conn)
-
+  @doc "Stores the sealed WorkOS session in a renewed Phoenix browser session."
+  def put_workos_session(conn, %{sealed_session: sealed_session})
+      when byte_size(sealed_session) <= @max_sealed_session_bytes do
     conn
     |> renew_session()
-    |> put_session(@session_key, handle)
-    |> put_session(:live_socket_id, Session.socket_topic(auth_session))
-    |> redirect(to: destination)
+    |> put_resp_cookie(@session_cookie, sealed_session, cookie_options())
+    |> redirect(to: ~p"/")
   end
 
-  @doc """
-  Clears all local browser session data and renews the session identifier.
-  """
+  def put_workos_session(conn, _authentication) do
+    conn
+    |> clear_workos_session()
+    |> put_flash(:error, "We could not complete sign in. Please start again.")
+    |> redirect(to: ~p"/")
+  end
+
+  @doc "Clears the browser session and renews the session identifier."
   def clear_workos_session(conn) do
-    if live_socket_id = get_session(conn, :live_socket_id) do
-      HermitscaleWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
-    end
-
-    renew_session(conn)
+    conn
+    |> renew_session()
+    |> delete_resp_cookie(@session_cookie, cookie_options())
   end
 
-  @doc """
-  Authenticates the opaque session handle and assigns the active local scope.
-
-  An invalid or revoked handle is cleared. A refresh-time WorkOS outage fails
-  the request closed with a retryable 503 while preserving the server-side row
-  so authentication can resume after recovery.
-  """
+  @doc "Verifies WorkOS credentials and assigns the request's current scope."
   def fetch_current_scope_for_user(conn, _opts) do
-    case get_session(conn, @session_key) do
-      handle when is_binary(handle) ->
-        authenticate_conn(conn, handle)
+    conn = fetch_cookies(conn)
 
-      _missing ->
-        assign(conn, :current_scope, nil)
+    case sealed_session(conn) do
+      session when is_binary(session) -> authenticate_conn(conn, session)
+      _missing -> assign(conn, :current_scope, nil)
     end
   end
 
-  defp authenticate_conn(conn, handle) do
-    case Session.authenticate(handle, request_metadata(conn)) do
-      {:ok, authentication} ->
+  defp authenticate_conn(conn, sealed_session) do
+    case Session.authenticate(sealed_session, request_metadata(conn)) do
+      {:ok, %{sealed_session: replacement} = authentication}
+      when byte_size(replacement) <= @max_sealed_session_bytes ->
         conn
+        |> maybe_rotate_cookie(sealed_session, replacement)
         |> assign(:current_scope, authentication.current_scope)
         |> assign(:auth_session, authentication.session)
+        |> assign(:sealed_workos_session, replacement)
+
+      {:ok, _oversized_session} ->
+        conn
+        |> clear_workos_session()
+        |> assign(:current_scope, nil)
 
       {:error, :unavailable} ->
         conn
@@ -77,108 +72,23 @@ defmodule HermitscaleWeb.UserAuth do
 
       {:error, _reason} ->
         conn
-        |> renew_session()
+        |> clear_workos_session()
         |> assign(:current_scope, nil)
     end
   end
 
-  @doc """
-  Handles mounting and authentication for the router's two LiveView sessions.
-  """
-  def on_mount(:mount_current_scope, _params, session, socket) do
-    {:cont, mount_current_scope(socket, session)}
-  end
+  @doc "Requires a verified WorkOS scope before a controller action can run."
+  def require_authenticated_user(%{assigns: %{current_scope: %Scope{user: %{}}}} = conn, _opts),
+    do: conn
 
-  def on_mount(:require_authenticated, _params, session, socket) do
-    socket = mount_current_scope(socket, session)
-
-    if authenticated?(socket) do
-      {:cont, socket}
-    else
-      {:halt, redirect_to_login(socket)}
-    end
-  end
-
-  def on_mount(:require_sudo_mode, _params, session, socket) do
-    socket = mount_current_scope(socket, session)
-
-    if authenticated?(socket) &&
-         Session.fresh?(socket.assigns.auth_session, @fresh_auth_minutes) do
-      {:cont, socket}
-    else
-      socket =
-        socket
-        |> Phoenix.LiveView.put_flash(
-          :error,
-          "Please confirm your identity before continuing."
-        )
-        |> Phoenix.LiveView.redirect(
-          to:
-            ~p"/auth/sign-in?#{[max_age: @fresh_auth_minutes * 60, return_to: "/users/settings"]}"
-        )
-
-      {:halt, socket}
-    end
-  end
-
-  defp mount_current_scope(socket, session) do
-    authentication = authenticate_live_session(session)
-
-    Phoenix.Component.assign_new(socket, :current_scope, fn ->
-      case authentication do
-        {:ok, authentication} -> authentication.current_scope
-        {:error, _reason} -> nil
-      end
-    end)
-    |> Phoenix.Component.assign_new(:auth_session, fn ->
-      case authentication do
-        {:ok, authentication} -> authentication.session
-        {:error, _reason} -> nil
-      end
-    end)
-  end
-
-  defp authenticate_live_session(%{"auth_session_token" => handle}) when is_binary(handle) do
-    Session.authenticate(handle)
-  end
-
-  defp authenticate_live_session(_session), do: {:error, :invalid_session}
-
-  defp authenticated?(socket) do
-    match?(%Scope{user: %{}}, socket.assigns[:current_scope]) &&
-      not is_nil(socket.assigns[:auth_session])
-  end
-
-  defp redirect_to_login(socket) do
-    socket
-    |> Phoenix.LiveView.put_flash(:error, "You must log in to access this page.")
-    |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
-  end
-
-  @doc "Returns the local path used after a successful login."
-  def signed_in_path(%Plug.Conn{assigns: %{current_scope: %Scope{user: %{}}}}),
-    do: ~p"/users/settings"
-
-  def signed_in_path(_conn), do: ~p"/"
-
-  @doc """
-  Plug for routes that require a verified WorkOS session.
-  """
   def require_authenticated_user(conn, _opts) do
-    if match?(%Scope{user: %{}}, conn.assigns[:current_scope]) do
-      conn
-    else
-      conn
-      |> put_flash(:error, "You must log in to access this page.")
-      |> maybe_store_return_to()
-      |> redirect(to: ~p"/users/log-in")
-      |> halt()
-    end
+    conn
+    |> put_flash(:error, "You must log in to access this page.")
+    |> redirect(to: ~p"/auth/sign-in")
+    |> halt()
   end
 
-  @doc """
-  Extracts request metadata accepted by WorkOS session exchange endpoints.
-  """
+  @doc "Request metadata accepted by WorkOS authentication endpoints."
   def request_metadata(%Plug.Conn{} = conn) do
     %{
       ip_address: conn.remote_ip |> :inet.ntoa() |> to_string(),
@@ -187,24 +97,28 @@ defmodule HermitscaleWeb.UserAuth do
   end
 
   @doc false
-  def session_handle(%Plug.Conn{} = conn), do: get_session(conn, @session_key)
+  def sealed_session(%Plug.Conn{assigns: %{sealed_workos_session: session}}), do: session
 
-  @doc false
-  def disconnect_sessions(tokens) do
-    Enum.each(tokens, fn %{token: token} ->
-      HermitscaleWeb.Endpoint.broadcast(
-        "users_sessions:#{Base.url_encode64(token)}",
-        "disconnect",
-        %{}
-      )
-    end)
+  def sealed_session(%Plug.Conn{} = conn) do
+    conn = fetch_cookies(conn)
+    conn.cookies[@session_cookie]
   end
 
-  defp maybe_store_return_to(%{method: "GET"} = conn) do
-    put_session(conn, :user_return_to, current_path(conn))
+  defp maybe_rotate_cookie(conn, session, session), do: conn
+
+  defp maybe_rotate_cookie(conn, _previous, replacement) do
+    put_resp_cookie(conn, @session_cookie, replacement, cookie_options())
   end
 
-  defp maybe_store_return_to(conn), do: conn
+  defp cookie_options do
+    [
+      http_only: true,
+      same_site: "Lax",
+      secure: Application.get_env(:hermitscale, :secure_cookies, false),
+      max_age: @cookie_max_age,
+      path: "/"
+    ]
+  end
 
   defp renew_session(conn) do
     delete_csrf_token()

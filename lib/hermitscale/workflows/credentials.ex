@@ -7,10 +7,10 @@ defmodule Hermitscale.Workflows.Credentials do
       %{
         "credentials" => %{
           "providers" => %{
-            "google.oauth" => %{"provider" => "google.oauth", "credential_id" => "..."}
+            "google.oauth" => %{"provider" => "google.oauth"}
           },
           "nodes" => %{
-            "node_id" => %{"provider" => "google.oauth", "credential_id" => "..."}
+            "node_id" => %{"provider" => "google.oauth"}
           }
         }
       }
@@ -32,11 +32,11 @@ defmodule Hermitscale.Workflows.Credentials do
   end
 
   @doc """
-  Resolves run context with the graph's authoritative local organization.
+  Resolves run context with the graph's trusted WorkOS identities.
   """
-  def resolve_run_context(graph, %Workflow{} = workflow, base_context, organization_id)
-      when is_map(graph) and (is_binary(organization_id) or is_nil(organization_id)) do
-    with {:ok, credential_context} <- credential_context(graph, organization_id),
+  def resolve_run_context(graph, %Workflow{} = workflow, base_context, identity)
+      when is_map(graph) and (is_tuple(identity) or is_nil(identity)) do
+    with {:ok, credential_context} <- credential_context(graph, identity),
          base_context <- merge_context(Workflow.get_run_context(workflow), base_context),
          run_context <- merge_context(base_context, credential_context),
          :ok <- validate_run_context(workflow, run_context) do
@@ -57,11 +57,11 @@ defmodule Hermitscale.Workflows.Credentials do
   end
 
   @doc """
-  Resolves one node credential with its graph's local organization boundary.
+  Resolves one node credential with its graph's trusted WorkOS identities.
   """
-  def resolve_node(graph, node_id, organization_id)
+  def resolve_node(graph, node_id, identity)
       when is_map(graph) and is_binary(node_id) and
-             (is_binary(organization_id) or is_nil(organization_id)) do
+             (is_tuple(identity) or is_nil(identity)) do
     catalog = Catalog.index()
 
     node =
@@ -75,7 +75,7 @@ defmodule Hermitscale.Workflows.Credentials do
 
       node ->
         with {:ok, {_node_id, %{credentials: credential}}} <-
-               node_context(node, graph, catalog, organization_id) do
+               node_context(node, graph, catalog, identity) do
           {:ok, credential}
         end
     end
@@ -111,7 +111,7 @@ defmodule Hermitscale.Workflows.Credentials do
     |> Enum.sort_by(& &1.provider)
   end
 
-  defp credential_context(graph, organization_id) do
+  defp credential_context(graph, identity) do
     catalog = Catalog.index()
 
     graph
@@ -121,7 +121,7 @@ defmodule Hermitscale.Workflows.Credentials do
     # per run would be a wasted provider round-trip.
     |> Enum.reject(&trigger_node?(&1, catalog))
     |> Enum.reduce_while({:ok, %{}}, fn node, {:ok, context} ->
-      case node_context(node, graph, catalog, organization_id) do
+      case node_context(node, graph, catalog, identity) do
         {:ok, nil} -> {:cont, {:ok, context}}
         {:ok, {node_id, node_context}} -> {:cont, {:ok, Map.put(context, node_id, node_context)}}
         {:error, reason} -> {:halt, {:error, reason}}
@@ -136,12 +136,12 @@ defmodule Hermitscale.Workflows.Credentials do
     end
   end
 
-  defp node_context(node, graph, catalog, organization_id) do
+  defp node_context(node, graph, catalog, identity) do
     with {:ok, module} <- Catalog.fetch(catalog, node["type"], node["version"]),
          %{requires: requires} <- module.__catalog_node__(),
          requirement when is_list(requirement) <- Keyword.get(requires, :credentials),
          {:ok, ref} when is_map(ref) <- credential_ref(graph, node, requirement) do
-      resolve_node_credentials(node["id"], requirement, ref, organization_id)
+      resolve_node_credentials(node["id"], requirement, ref, identity)
     else
       {:ok, nil} -> {:ok, nil}
       nil -> {:ok, nil}
@@ -169,14 +169,14 @@ defmodule Hermitscale.Workflows.Credentials do
   defp provider_ref(_graph, nil), do: nil
   defp provider_ref(graph, provider), do: get_in(graph, ["credentials", "providers", provider])
 
-  defp resolve_node_credentials(node_id, requirement, ref, organization_id) do
+  defp resolve_node_credentials(node_id, requirement, ref, identity) do
     expected_provider = Keyword.get(requirement, :provider)
     scopes = Keyword.get(requirement, :scopes, [])
 
     with {:ok, provider} <- provider_id(expected_provider, ref),
          :ok <- validate_provider_match(node_id, expected_provider, provider),
          {:ok, credential} <-
-           resolve_credential(node_id, provider, ref, scopes, organization_id) do
+           resolve_credential(node_id, provider, ref, scopes, identity) do
       {:ok, {node_id, %{credentials: credential}}}
     end
   end
@@ -207,52 +207,47 @@ defmodule Hermitscale.Workflows.Credentials do
     end
   end
 
-  defp resolve_credential(node_id, provider, ref, scopes, organization_id) do
+  defp resolve_credential(node_id, "google.oauth" = provider, ref, scopes, identity) do
     case ref_value(ref, :connected_account_id) do
-      connected_account_id when is_binary(connected_account_id) ->
-        resolve_connected_account(
-          node_id,
-          organization_id,
-          provider,
-          connected_account_id,
-          scopes
-        )
+      nil ->
+        case ConnectedAccounts.credential_ref(identity, provider, scopes) do
+          {:ok, credential_ref} -> {:ok, credential_ref}
+          {:error, reason} -> {:error, {:credential_fetch_failed, node_id, provider, reason}}
+        end
 
-      _legacy_reference ->
-        fetch_legacy_token(node_id, provider, ref, scopes)
+      _legacy_id ->
+        {:error, {:credential_fetch_failed, node_id, provider, :legacy_credential_reference}}
     end
   end
 
-  defp resolve_connected_account(
-         node_id,
-         organization_id,
-         provider,
-         connected_account_id,
-         scopes
-       )
-       when is_binary(organization_id) do
-    case ConnectedAccounts.credential_ref(
-           organization_id,
-           provider,
-           connected_account_id,
-           scopes
-         ) do
-      {:ok, credential_ref} ->
-        {:ok, credential_ref}
-
-      {:error, reason} ->
-        {:error, {:credential_fetch_failed, node_id, provider, reason}}
-    end
-  end
-
-  defp resolve_connected_account(node_id, nil, provider, _connected_account_id, _scopes) do
-    {:error, {:credential_fetch_failed, node_id, provider, :missing_credential_organization}}
-  end
-
-  defp fetch_legacy_token(node_id, provider, ref, scopes) do
+  defp resolve_credential(node_id, provider, ref, scopes, _identity) do
     case Provider.fetch_token(provider, ref, scopes) do
       {:ok, token} -> {:ok, token}
       {:error, reason} -> {:error, {:credential_fetch_failed, node_id, provider, reason}}
+    end
+  end
+
+  @doc """
+  Whether a definition binds provider credentials to its creator.
+  """
+  def bound?(definition) when is_map(definition) do
+    case Map.get(definition, "credentials") do
+      credentials when is_map(credentials) and map_size(credentials) > 0 -> true
+      _ -> Enum.any?(Map.values(definition), &bound?/1)
+    end
+  end
+
+  def bound?(values) when is_list(values), do: Enum.any?(values, &bound?/1)
+  def bound?(_value), do: false
+
+  @doc """
+  Authorizes use of creator-owned credential bindings.
+  """
+  def authorize(scope, graph) do
+    case bound?(graph.definition) do
+      false -> :ok
+      true when scope.user.id == graph.created_by_user_id -> :ok
+      true -> {:error, :credential_owner_required}
     end
   end
 

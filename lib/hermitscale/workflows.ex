@@ -41,7 +41,7 @@ defmodule Hermitscale.Workflows do
   def update_graph(%Scope{} = scope, %Graph{} = graph, attrs) do
     Scope.assert_same_org!(scope, graph)
 
-    changeset = Graph.update_changeset(graph, attrs)
+    changeset = Graph.update_changeset(graph, attrs, scope: scope)
     definition = get_definition(attrs) || graph.definition
 
     with :ok <- Validator.validate(definition),
@@ -55,7 +55,7 @@ defmodule Hermitscale.Workflows do
 
   def change_graph(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
     Scope.assert_same_org!(scope, graph)
-    Graph.update_changeset(graph, attrs)
+    Graph.update_changeset(graph, attrs, scope: scope)
   end
 
   def validate_graph(graph), do: Validator.validate(graph)
@@ -93,7 +93,10 @@ defmodule Hermitscale.Workflows do
 
   def start_run(%Scope{} = scope, %Graph{} = graph, input, opts \\ []) do
     Scope.assert_same_org!(scope, graph)
-    do_start_run(graph, input, opts)
+
+    with :ok <- Credentials.authorize(scope, graph) do
+      do_start_run(graph, input, opts)
+    end
   end
 
   @doc false
@@ -111,7 +114,7 @@ defmodule Hermitscale.Workflows do
              graph.definition,
              workflow,
              Keyword.get(opts, :run_context, %{}),
-             graph.org_id
+             {graph.org_id, graph.created_by_user_id}
            ),
          workflow <- Workflow.put_run_context(workflow, run_context),
          {:ok, run} <-
@@ -136,7 +139,11 @@ defmodule Hermitscale.Workflows do
 
   def resume_run(%Scope{} = scope, %Run{} = run, opts \\ []) do
     run = get_run!(scope, run.id)
-    do_resume_run(run, opts)
+    graph = get_graph!(scope, run.workflow_graph_id)
+
+    with :ok <- Credentials.authorize(scope, graph) do
+      do_resume_run(run, opts)
+    end
   end
 
   defp do_resume_run(%Run{} = run, opts) do
@@ -149,7 +156,7 @@ defmodule Hermitscale.Workflows do
              graph.definition,
              base_workflow,
              Keyword.get(opts, :run_context, %{}),
-             graph.org_id
+             {graph.org_id, graph.created_by_user_id}
            ),
          {store_module, store_state} <- Runic.Runner.get_store(@runner),
          {:ok, event_stream} <- store_module.stream(run.id, store_state),

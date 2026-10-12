@@ -6,7 +6,8 @@ defmodule Hermitscale.Workflows.Graph do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Hermitscale.Accounts.{Organization, Scope, User}
+  alias Hermitscale.Accounts.Scope
+  alias Hermitscale.Workflows.Credentials
 
   @editable_fields [
     :schema_version,
@@ -21,8 +22,8 @@ defmodule Hermitscale.Workflows.Graph do
   @foreign_key_type :string
 
   schema "workflow_graphs" do
-    belongs_to :organization, Organization, foreign_key: :org_id
-    belongs_to :created_by_user, User, type: :id
+    field :org_id, :string
+    field :created_by_user_id, :string
 
     field :schema_version, :integer, default: 1
     field :name, :string
@@ -37,7 +38,7 @@ defmodule Hermitscale.Workflows.Graph do
   end
 
   @doc false
-  def create_changeset(graph, attrs, %Scope{user: %User{id: user_id}} = scope) do
+  def create_changeset(graph, attrs, %Scope{user: %{id: user_id}} = scope) do
     org_id = Scope.organization_id!(scope)
 
     graph
@@ -46,15 +47,28 @@ defmodule Hermitscale.Workflows.Graph do
     |> put_change(:created_by_user_id, user_id)
     |> validate_authoring()
     |> validate_required([:created_by_user_id])
-    |> foreign_key_constraint(:created_by_user_id)
   end
 
   @doc false
-  def update_changeset(graph, attrs) do
+  def update_changeset(graph, attrs, opts \\ []) do
     graph
     |> cast(attrs, @editable_fields)
+    |> validate_credential_owner(Keyword.get(opts, :scope))
     |> validate_authoring()
-    |> foreign_key_constraint(:created_by_user_id)
+  end
+
+  defp validate_credential_owner(changeset, nil), do: changeset
+
+  defp validate_credential_owner(changeset, scope) do
+    definition = get_field(changeset, :definition)
+
+    case Credentials.bound?(definition) or Credentials.bound?(changeset.data.definition) do
+      true when scope.user.id != changeset.data.created_by_user_id ->
+        add_error(changeset, :definition, "only the creator can edit credential-bound workflows")
+
+      _ ->
+        changeset
+    end
   end
 
   defp validate_authoring(changeset) do
@@ -62,7 +76,6 @@ defmodule Hermitscale.Workflows.Graph do
     |> validate_required([:id, :org_id, :schema_version, :name, :definition, :status])
     |> validate_format(:id, ~r/^[A-Za-z][A-Za-z0-9_:-]*$/)
     |> validate_number(:schema_version, greater_than: 0)
-    |> foreign_key_constraint(:org_id)
   end
 
   @doc false

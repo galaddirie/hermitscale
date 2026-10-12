@@ -43,60 +43,6 @@ defmodule Hermitscale.WorkOS.ClientTest do
            }
   end
 
-  test "lists events with comma-encoded filters and bearer authentication" do
-    range_start = ~U[2026-07-26 12:30:00Z]
-
-    Req.Test.expect(__MODULE__, fn conn ->
-      conn = Plug.Conn.fetch_query_params(conn)
-
-      assert conn.method == "GET"
-      assert conn.request_path == "/events"
-      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer sk_test_hermitscale"]
-
-      assert conn.query_params == %{
-               "after" => "event_previous",
-               "events" => "user.updated,session.revoked",
-               "limit" => "50",
-               "range_start" => "2026-07-26T12:30:00Z"
-             }
-
-      Req.Test.json(conn, %{"data" => [], "list_metadata" => %{"after" => nil}})
-    end)
-
-    assert {:ok, %{"data" => []}} =
-             Client.list_events(
-               "event_previous",
-               ["user.updated", "session.revoked"],
-               limit: 50,
-               range_start: range_start
-             )
-  end
-
-  test "encodes State API filters and paths" do
-    Req.Test.expect(__MODULE__, fn conn ->
-      conn = Plug.Conn.fetch_query_params(conn)
-
-      assert conn.request_path == "/user_management/organization_memberships"
-
-      assert conn.query_params == %{
-               "after" => "membership_previous",
-               "limit" => "25",
-               "organization_id" => "org_123",
-               "statuses" => "active,inactive"
-             }
-
-      Req.Test.json(conn, %{"data" => [], "list_metadata" => %{"after" => nil}})
-    end)
-
-    assert {:ok, %{"data" => []}} =
-             Client.list_organization_memberships(
-               "org_123",
-               "membership_previous",
-               limit: 25,
-               statuses: ["active", "inactive"]
-             )
-  end
-
   test "retries safe reads but never retries writes" do
     Req.Test.expect(
       __MODULE__,
@@ -105,16 +51,16 @@ defmodule Hermitscale.WorkOS.ClientTest do
     )
 
     Req.Test.expect(__MODULE__, fn conn ->
-      Req.Test.json(conn, %{"data" => [], "list_metadata" => %{"after" => nil}})
+      Req.Test.json(conn, %{"keys" => []})
     end)
 
-    assert {:ok, %{"data" => []}} = Client.list_users()
+    assert {:ok, %{"keys" => []}} = Client.jwks()
 
     Req.Test.expect(__MODULE__, fn conn ->
       Plug.Conn.send_resp(conn, 503, Jason.encode!(%{"error" => "unavailable"}))
     end)
 
-    assert {:error, :unavailable} = Client.delete_user("user_123")
+    assert {:error, :unavailable} = Client.revoke_session("session_123")
   end
 
   test "normalizes Pipes token states without exposing provider tokens in errors" do

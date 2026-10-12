@@ -1,8 +1,5 @@
 import Config
 
-# Only in tests, remove the complexity from the password hashing algorithm
-config :bcrypt_elixir, :log_rounds, 1
-
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -24,15 +21,6 @@ config :hermitscale, Hermitscale.WorkOS.Client,
   redirect_uri: "http://www.example.com/auth/workos/callback"
 
 config :hermitscale, Hermitscale.WorkOS.JWT, client_id: "client_test_hermitscale"
-
-config :hermitscale, Hermitscale.WorkOS.TokenCipher,
-  active_key_id: "test",
-  keys: %{"test" => :crypto.hash(:sha256, "hermitscale-test-workos-key")}
-
-config :hermitscale, Hermitscale.WorkOS.EventInbox,
-  endpoint_token: "workos-test-endpoint",
-  secrets: ["whsec_test_hermitscale"],
-  tolerance_seconds: 300
 
 config :hermitscale, Hermitscale.WorkOS.Session, jwt_verifier: Hermitscale.WorkOSTest.JWTVerifier
 

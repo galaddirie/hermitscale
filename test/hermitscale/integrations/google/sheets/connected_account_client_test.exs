@@ -1,5 +1,5 @@
 defmodule Hermitscale.Integrations.Google.Sheets.ConnectedAccountClientTest do
-  use Hermitscale.DataCase, async: false
+  use ExUnit.Case, async: false
 
   alias Hermitscale.Integrations.{ConnectedAccounts, CredentialRef}
   alias Hermitscale.Integrations.Google.Sheets.Client, as: SheetsClient
@@ -29,14 +29,10 @@ defmodule Hermitscale.Integrations.Google.Sheets.ConnectedAccountClientTest do
     user = user_fixture()
     scope = user_scope_fixture(user)
 
-    account =
-      connected_account_fixture(user, scope.organization, granted_scopes: [@read_scope])
-
     assert {:ok, %CredentialRef{} = reference} =
              ConnectedAccounts.credential_ref(
-               scope.organization.id,
+               {scope.organization.id, scope.user.id},
                "google.oauth",
-               account.id,
                [@read_scope]
              )
 

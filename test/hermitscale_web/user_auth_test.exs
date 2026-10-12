@@ -1,198 +1,157 @@
 defmodule HermitscaleWeb.UserAuthTest do
-  use HermitscaleWeb.ConnCase, async: true
+  use HermitscaleWeb.ConnCase, async: false
 
   alias Hermitscale.WorkOS.Session
+  alias Hermitscale.WorkOSTest.Client
   alias HermitscaleWeb.UserAuth
 
-  import Hermitscale.AccountsFixtures
+  import Hermitscale.WorkOS.SessionFixtures
 
   setup %{conn: conn} do
-    user = user_fixture()
-    local_session = workos_session_fixture(user)
+    start_supervised!({Client, %{}})
+    previous_session_config = Application.get_env(:hermitscale, Hermitscale.WorkOS.Session, [])
+
+    Application.put_env(
+      :hermitscale,
+      Hermitscale.WorkOS.Session,
+      Keyword.put(previous_session_config, :client, Client)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:hermitscale, Hermitscale.WorkOS.Session, previous_session_config)
+    end)
+
+    {:ok, authentication} = Session.create(authentication_fixture())
 
     conn =
       conn
       |> Map.replace!(:secret_key_base, HermitscaleWeb.Endpoint.config(:secret_key_base))
       |> init_test_session(%{})
 
-    %{conn: conn, user: user, local_session: local_session}
+    %{conn: fetch_flash(conn), authentication: authentication}
   end
 
-  describe "put_workos_session/4" do
-    test "renews the cookie session and stores only the opaque handle", %{
-      conn: conn,
-      local_session: local_session
-    } do
-      conn =
-        conn
-        |> put_session(:remove_me, "value")
-        |> UserAuth.put_workos_session(
-          local_session.handle,
-          local_session.session,
-          "/users/settings"
-        )
+  test "login renews Phoenix state and writes a dedicated HttpOnly cookie", %{
+    conn: conn,
+    authentication: authentication
+  } do
+    conn = conn |> put_session(:remove_me, "value") |> UserAuth.put_workos_session(authentication)
 
-      assert get_session(conn, :auth_session_token) == local_session.handle
-      assert get_session(conn, :live_socket_id) == Session.socket_topic(local_session.session)
-      refute get_session(conn, :user_token)
-      refute get_session(conn, :remove_me)
-      assert redirected_to(conn) == "/users/settings"
-    end
+    assert conn.resp_cookies["_hermitscale_workos"].value == authentication.sealed_session
+    assert conn.resp_cookies["_hermitscale_workos"].http_only
+    refute get_session(conn, :remove_me)
+    assert redirected_to(conn) == "/"
   end
 
-  describe "fetch_current_scope_for_user/2" do
-    test "authenticates and hydrates the local organization", %{
-      conn: conn,
-      user: user,
-      local_session: local_session
-    } do
-      conn =
-        conn
-        |> put_session(:auth_session_token, local_session.handle)
-        |> UserAuth.fetch_current_scope_for_user([])
+  test "scope is derived from verified WorkOS identity and organization", %{
+    conn: conn,
+    authentication: authentication
+  } do
+    conn =
+      conn
+      |> put_req_cookie("_hermitscale_workos", authentication.sealed_session)
+      |> UserAuth.fetch_current_scope_for_user([])
 
-      assert conn.assigns.current_scope.user.id == user.id
-      assert conn.assigns.current_scope.organization.personal
-      assert conn.assigns.auth_session.id == local_session.session.id
-    end
-
-    test "clears an invalid opaque handle", %{conn: conn} do
-      conn =
-        conn
-        |> put_session(:auth_session_token, "invalid")
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope == nil
-      refute get_session(conn, :auth_session_token)
-    end
-
-    test "rejects a locally revoked WorkOS session", %{
-      conn: conn,
-      local_session: local_session
-    } do
-      {:ok, _revoked} = Session.revoke(local_session.handle)
-
-      conn =
-        conn
-        |> put_session(:auth_session_token, local_session.handle)
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope == nil
-      refute get_session(conn, :auth_session_token)
-    end
-
-    test "uses the organization fixed on the server-side session", %{conn: conn, user: user} do
-      organization = organization_fixture()
-      organization_membership_fixture(user, organization)
-      local_session = workos_session_fixture(user, org_id: organization.id)
-
-      conn =
-        conn
-        |> put_session(:auth_session_token, local_session.handle)
-        |> UserAuth.fetch_current_scope_for_user([])
-
-      assert conn.assigns.current_scope.organization.id == organization.id
-      refute get_session(conn, :org_id)
-    end
+    assert conn.assigns.current_scope.user.id == "user_workos"
+    assert conn.assigns.current_scope.organization.id == "org_workos"
+    assert conn.assigns.auth_session.id == "session_workos"
+    refute Map.has_key?(conn.resp_cookies, "_hermitscale_workos")
   end
 
-  describe "LiveView on_mount" do
-    test "assigns the verified scope and auth session", %{
-      conn: conn,
-      user: user,
-      local_session: local_session
-    } do
-      session =
-        conn
-        |> put_session(:auth_session_token, local_session.handle)
-        |> get_session()
+  test "invalid credentials are removed", %{conn: conn} do
+    conn =
+      conn
+      |> put_req_cookie("_hermitscale_workos", "invalid")
+      |> UserAuth.fetch_current_scope_for_user([])
 
-      assert {:cont, socket} =
-               UserAuth.on_mount(
-                 :require_authenticated,
-                 %{},
-                 session,
-                 %Phoenix.LiveView.Socket{}
-               )
-
-      assert socket.assigns.current_scope.user.id == user.id
-      assert socket.assigns.auth_session.id == local_session.session.id
-    end
-
-    test "redirects an anonymous protected mount", %{conn: conn} do
-      socket = %Phoenix.LiveView.Socket{
-        endpoint: HermitscaleWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      assert {:halt, halted_socket} =
-               UserAuth.on_mount(:require_authenticated, %{}, get_session(conn), socket)
-
-      assert halted_socket.assigns.current_scope == nil
-    end
-
-    test "requires WorkOS auth_time freshness for sudo mounts", %{conn: conn, user: user} do
-      stale_session =
-        workos_session_fixture(user,
-          authenticated_at: DateTime.add(DateTime.utc_now(:second), -11, :minute)
-        )
-
-      session =
-        conn
-        |> put_session(:auth_session_token, stale_session.handle)
-        |> get_session()
-
-      socket = %Phoenix.LiveView.Socket{
-        endpoint: HermitscaleWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      assert {:halt, _socket} =
-               UserAuth.on_mount(:require_sudo_mode, %{}, session, socket)
-    end
+    assert conn.assigns.current_scope == nil
+    assert conn.resp_cookies["_hermitscale_workos"].max_age == 0
   end
 
-  describe "require_authenticated_user/2" do
-    test "redirects and stores a GET return path", %{conn: conn} do
-      conn =
-        %{conn | path_info: ["users", "settings"], query_string: ""}
-        |> assign(:current_scope, nil)
-        |> fetch_flash()
-        |> UserAuth.require_authenticated_user([])
+  test "refresh rotates the browser cookie while preserving Phoenix state", %{conn: conn} do
+    {:ok, authentication} =
+      Session.create(authentication_fixture(%{"exp" => System.system_time(:second) + 1}))
 
-      assert conn.halted
-      assert redirected_to(conn) == ~p"/users/log-in"
-      assert get_session(conn, :user_return_to) == "/users/settings"
-    end
+    Client.put_response(:authenticate_with_refresh_token, {:ok, authentication_fixture()})
 
-    test "continues for a verified scope", %{conn: conn, user: user} do
-      scope = user_scope_fixture(user)
+    conn =
+      conn
+      |> put_session(:preserve_me, "state")
+      |> put_req_cookie("_hermitscale_workos", authentication.sealed_session)
+      |> UserAuth.fetch_current_scope_for_user([])
 
-      conn =
-        conn
-        |> assign(:current_scope, scope)
-        |> UserAuth.require_authenticated_user([])
-
-      refute conn.halted
-    end
+    assert conn.assigns.current_scope.user.id == "user_workos"
+    refute conn.resp_cookies["_hermitscale_workos"].value == authentication.sealed_session
+    assert get_session(conn, :preserve_me) == "state"
   end
 
-  describe "clear_workos_session/1" do
-    test "disconnects the LiveView topic and clears all session data", %{
-      conn: conn,
-      local_session: local_session
-    } do
-      topic = Session.socket_topic(local_session.session)
-      HermitscaleWeb.Endpoint.subscribe(topic)
+  test "refresh outage fails closed while retaining credentials for a retry", %{conn: conn} do
+    {:ok, authentication} =
+      Session.create(authentication_fixture(%{"exp" => System.system_time(:second) + 1}))
 
-      conn =
-        conn
-        |> put_session(:auth_session_token, local_session.handle)
-        |> put_session(:live_socket_id, topic)
-        |> UserAuth.clear_workos_session()
+    Client.put_response(:authenticate_with_refresh_token, {:error, :unavailable})
 
-      refute get_session(conn, :auth_session_token)
-      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic}
-    end
+    conn =
+      conn
+      |> put_req_cookie("_hermitscale_workos", authentication.sealed_session)
+      |> UserAuth.fetch_current_scope_for_user([])
+
+    assert conn.status == 503
+    assert conn.halted
+    assert conn.assigns.current_scope == nil
+    refute Map.has_key?(conn.resp_cookies, "_hermitscale_workos")
+  end
+
+  test "anonymous requests receive a nil scope", %{conn: conn} do
+    assert UserAuth.fetch_current_scope_for_user(conn, []).assigns.current_scope == nil
+  end
+
+  test "protected controller routes reject guests", %{conn: conn} do
+    conn =
+      conn
+      |> assign(:current_scope, nil)
+      |> fetch_flash()
+      |> UserAuth.require_authenticated_user([])
+
+    assert conn.halted
+    assert redirected_to(conn) == "/auth/sign-in"
+  end
+
+  test "protected controller routes accept a verified scope", %{
+    conn: conn,
+    authentication: authentication
+  } do
+    conn =
+      conn
+      |> assign(:current_scope, authentication.current_scope)
+      |> UserAuth.require_authenticated_user([])
+
+    refute conn.halted
+  end
+
+  test "clear session removes cookie and Phoenix state", %{conn: conn} do
+    conn = conn |> put_session(:workos_oauth_state, "pending") |> UserAuth.clear_workos_session()
+    assert conn.resp_cookies["_hermitscale_workos"].max_age == 0
+    refute get_session(conn, :workos_oauth_state)
+  end
+
+  test "oversized credentials fail cleanly instead of writing an unusable cookie", %{conn: conn} do
+    conn = UserAuth.put_workos_session(conn, %{sealed_session: String.duplicate("x", 3_801)})
+    assert redirected_to(conn) == "/"
+    assert conn.resp_cookies["_hermitscale_workos"].max_age == 0
+  end
+
+  test "a large JWT still fits within the browser cookie limit", %{conn: conn} do
+    authentication_response =
+      authentication_fixture(%{
+        "extra" => :crypto.strong_rand_bytes(1_275) |> Base.url_encode64()
+      })
+
+    assert byte_size(authentication_response["access_token"]) > 1_800
+    {:ok, authentication} = Session.create(authentication_response)
+    conn = UserAuth.put_workos_session(conn, authentication)
+    cookie_headers = Plug.Conn.get_resp_header(conn, "set-cookie")
+    assert Enum.any?(cookie_headers, &String.starts_with?(&1, "_hermitscale_workos="))
+    assert Enum.all?(cookie_headers, &(byte_size(&1) <= 4_096))
   end
 end

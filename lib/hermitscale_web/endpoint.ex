@@ -1,9 +1,8 @@
 defmodule HermitscaleWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :hermitscale
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
+  # OAuth state is encrypted and signed in the Phoenix browser cookie.
+  # The sealed WorkOS session uses a separate HttpOnly cookie.
   @session_options [
     store: :cookie,
     key: "_hermitscale_key",
@@ -48,7 +47,6 @@ defmodule HermitscaleWeb.Endpoint do
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
-    body_reader: {HermitscaleWeb.CacheBodyReader, :read_body, []},
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

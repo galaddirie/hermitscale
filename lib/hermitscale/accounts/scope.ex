@@ -1,61 +1,58 @@
 defmodule Hermitscale.Accounts.Scope do
   @moduledoc """
-  Defines the scope of the caller to be used throughout the app.
+  Caller identity and tenant authority derived from a verified WorkOS session.
 
-  The scope identifies both the authenticated user and their active
-  organization membership. Contexts authorize tenant-owned resources with the
-  organization id; the user remains available for actor-specific audit data.
-
-  It is useful for logging as well as for scoping pubsub subscriptions and
-  broadcasts when a caller subscribes to an interface or performs a particular
-  action.
-
-  The membership is retained as the extension point for role-aware policies.
+  Identity and organization IDs are WorkOS IDs. These values are held in memory;
+  the application does not maintain a second identity or membership database.
   """
-
-  alias Hermitscale.Accounts.{Organization, OrganizationMembership, User}
 
   defstruct user: nil, organization: nil, membership: nil
 
-  @doc """
-  Creates a scope for the given user.
-
-  Returns nil if no user is given.
-  """
-  def for_user(%User{} = user) do
-    %__MODULE__{user: user}
-  end
-
+  @doc "Creates a scope for a WorkOS identity, or nil for an anonymous caller."
+  def for_user(%{id: id} = user) when is_binary(id) and id != "", do: %__MODULE__{user: user}
   def for_user(nil), do: nil
 
-  @doc """
-  Puts the active organization (and the user's membership in it) on the
-  scope. See `HermitscaleWeb.UserAuth.fetch_current_scope_for_user/2` for
-  how the active organization is resolved.
-  """
+  @doc "Adds the tenant and matching membership supplied by the trusted authentication boundary."
   def put_organization(
-        %__MODULE__{user: %User{id: user_id}} = scope,
-        %Organization{id: org_id} = org,
-        %OrganizationMembership{user_id: user_id, org_id: org_id} = membership
-      ) do
-    %{scope | organization: org, membership: membership}
+        %__MODULE__{user: %{id: user_id}} = scope,
+        %{id: org_id} = organization,
+        %{user_id: user_id, org_id: org_id} = membership
+      )
+      when is_binary(org_id) and org_id != "" do
+    %{scope | organization: organization, membership: membership}
   end
 
-  @doc "Returns the active organization id after validating the scope membership."
+  @doc "Builds a scope from verified WorkOS JWT claims and its matching user profile."
+  def from_workos(%{id: user_id} = user, %{"sub" => user_id} = claims) do
+    scope = for_user(user)
+
+    case claims["org_id"] do
+      nil ->
+        scope
+
+      org_id when is_binary(org_id) and org_id != "" ->
+        put_organization(scope, %{id: org_id}, %{
+          user_id: user_id,
+          org_id: org_id,
+          role: claims["role"],
+          permissions: claims["permissions"] || []
+        })
+    end
+  end
+
+  @doc "Returns the WorkOS tenant ID after checking that the scope membership matches."
   def organization_id!(%__MODULE__{
-        user: %User{id: user_id},
-        organization: %Organization{id: org_id},
-        membership: %OrganizationMembership{user_id: user_id, org_id: org_id}
+        user: %{id: user_id},
+        organization: %{id: org_id},
+        membership: %{user_id: user_id, org_id: org_id}
       })
-      when is_binary(org_id),
+      when is_binary(org_id) and org_id != "",
       do: org_id
 
-  @doc """
-  Asserts that the resource belongs to the scope's active organization.
+  def organization_id!(_scope),
+    do: raise(ArgumentError, "scope has no verified organization membership")
 
-  This is a tenancy check, not a role check — any member of the owning
-  organization passes. Role-aware policies belong on `membership.role`.
-  """
+  @doc "Asserts that a resource belongs to the caller's active WorkOS organization."
   def assert_same_org!(%__MODULE__{} = scope, %{org_id: org_id}) do
     true = org_id == organization_id!(scope)
     :ok

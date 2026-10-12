@@ -1,164 +1,142 @@
 defmodule HermitscaleWeb.AuthControllerTest do
   use HermitscaleWeb.ConnCase, async: false
 
-  alias Hermitscale.Accounts
-  alias Hermitscale.Repo
-  alias Hermitscale.WorkOS.{AuthSession, State}
   alias Hermitscale.WorkOSTest.Client
   alias HermitscaleWeb.AuthController
 
-  import Hermitscale.AccountsFixtures
+  import Hermitscale.WorkOS.SessionFixtures
 
   setup do
     start_supervised!({Client, %{}})
+    previous_session_config = Application.get_env(:hermitscale, Hermitscale.WorkOS.Session, [])
+
+    Application.put_env(
+      :hermitscale,
+      Hermitscale.WorkOS.Session,
+      Keyword.put(previous_session_config, :client, Client)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:hermitscale, Hermitscale.WorkOS.Session, previous_session_config)
+    end)
+
     previous = Application.get_env(:hermitscale, AuthController, [])
     Application.put_env(:hermitscale, AuthController, Keyword.put(previous, :client, Client))
-
     on_exit(fn -> Application.put_env(:hermitscale, AuthController, previous) end)
   end
 
-  test "stores the return target server-side and refuses an external redirect", %{conn: conn} do
-    conn = get(conn, ~p"/auth/sign-in?return_to=https%3A%2F%2Fevil.example%2Fsteal")
-
+  test "sign-in binds state to this browser and ignores external return targets", %{conn: conn} do
+    conn = get(conn, ~p"/auth/sign-in?return_to=https%3A%2F%2Fevil.example")
     assert redirected_to(conn) =~ "https://api.workos.com/authorize"
-
-    assert [
-             {:authorization_url, [state, [max_age: nil, screen_hint: nil]]}
-           ] = Client.calls()
-
-    assert {:ok, "/"} = State.consume(state)
+    assert %{"token" => state, "issued_at" => issued_at} = get_session(conn, :workos_oauth_state)
+    assert is_integer(issued_at)
+    assert [{:authorization_url, [^state, []]}] = Client.calls()
   end
 
-  test "callback validates state, provisions by WorkOS user ID, and renews the session", %{
+  test "callback stores only sealed WorkOS credentials and renews the Phoenix session", %{
     conn: conn
   } do
-    assert {:ok, state} = State.issue("/users/settings")
-    now = System.system_time(:second)
-    workos_user_id = "user_callback_123"
-    session_id = "session_callback_123"
+    Client.put_response(:authenticate_with_code, {:ok, authentication_fixture()})
+    sign_in = get(conn, ~p"/auth/sign-in")
+    state = get_session(sign_in, :workos_oauth_state)["token"]
 
-    claims = %{
-      "sub" => workos_user_id,
-      "sid" => session_id,
-      "iat" => now,
-      "auth_time" => now,
-      "exp" => now + 3_600
-    }
-
-    Client.put_response(
-      :authenticate_with_code,
-      {:ok,
-       %{
-         "access_token" => Jason.encode!(claims),
-         "refresh_token" => "refresh-callback-secret",
-         "user" => %{
-           "id" => workos_user_id,
-           "email" => "callback@example.com",
-           "email_verified" => true,
-           "first_name" => "Callback",
-           "last_name" => "User",
-           "created_at" => "2026-07-26T18:00:00.000000Z",
-           "updated_at" => "2026-07-26T18:00:00.000000Z"
-         }
-       }}
-    )
-
-    conn =
-      conn
-      |> init_test_session(%{remove_me: "stale"})
+    callback =
+      sign_in
+      |> recycle()
       |> get(~p"/auth/workos/callback?code=code_123&state=#{state}")
 
-    assert redirected_to(conn) == "/users/settings"
-    assert is_binary(get_session(conn, :auth_session_token))
-    refute get_session(conn, :remove_me)
+    assert redirected_to(callback) == "/"
 
-    user = Accounts.get_user_by_workos_id(workos_user_id)
-    assert user.email == "callback@example.com"
-    assert [%Accounts.Organization{personal: true}] = Accounts.list_user_organizations(user)
+    assert %{value: sealed, http_only: true, same_site: "Lax"} =
+             callback.resp_cookies["_hermitscale_workos"]
 
-    assert %AuthSession{
-             user_id: user_id,
-             workos_session_id: ^session_id,
-             revoked_at: nil
-           } = Repo.one!(AuthSession)
-
-    assert user_id == user.id
+    assert is_binary(sealed)
+    refute sealed =~ "refresh_secret"
+    refute get_session(callback, :workos_oauth_state)
+    refute get_session(callback, :auth_session_token)
+    refute get_session(callback, :workos_session)
+    assert callback.private.plug_session_info == :renew
   end
 
-  test "never links a callback to a different local user by email", %{conn: conn} do
-    existing = user_fixture()
-    assert {:ok, state} = State.issue("/")
-    now = System.system_time(:second)
+  test "callback rejects state from a different browser before exchanging the code", %{conn: conn} do
+    sign_in = get(conn, ~p"/auth/sign-in")
+    state = get_session(sign_in, :workos_oauth_state)["token"]
+    callback = get(build_conn(), ~p"/auth/workos/callback?code=code_123&state=#{state}")
 
-    claims = %{
-      "sub" => "different_workos_user",
-      "sid" => "session_conflict",
-      "iat" => now,
-      "auth_time" => now,
-      "exp" => now + 3_600
-    }
-
-    Client.put_response(
-      :authenticate_with_code,
-      {:ok,
-       %{
-         "access_token" => Jason.encode!(claims),
-         "refresh_token" => "refresh-conflict",
-         "user" => %{
-           "id" => "different_workos_user",
-           "email" => existing.email,
-           "email_verified" => true,
-           "created_at" => "2026-07-26T18:00:00.000000Z",
-           "updated_at" => "2026-07-26T18:00:00.000000Z"
-         }
-       }}
-    )
-
-    conn = get(conn, ~p"/auth/workos/callback?code=code_conflict&state=#{state}")
-
-    assert redirected_to(conn) == "/users/log-in"
-    refute get_session(conn, :auth_session_token)
-    assert Accounts.get_user_by_workos_id("different_workos_user") == nil
-    assert Repo.aggregate(AuthSession, :count) == 0
+    assert redirected_to(callback) == "/"
+    refute Map.has_key?(callback.resp_cookies, "_hermitscale_workos")
+    assert [{:authorization_url, _args}] = Client.calls()
   end
 
-  test "callback state cannot be replayed", %{conn: conn} do
-    assert {:ok, state} = State.issue("/")
-    now = System.system_time(:second)
+  test "callback state is removed after use and cannot be replayed in that browser", %{conn: conn} do
+    Client.put_response(:authenticate_with_code, {:ok, authentication_fixture()})
+    sign_in = get(conn, ~p"/auth/sign-in")
+    state = get_session(sign_in, :workos_oauth_state)["token"]
+    callback = sign_in |> recycle() |> get(~p"/auth/workos/callback?code=code_123&state=#{state}")
+    replay = callback |> recycle() |> get(~p"/auth/workos/callback?code=code_123&state=#{state}")
 
-    claims = %{
-      "sub" => "user_replay",
-      "sid" => "session_replay",
-      "iat" => now,
-      "auth_time" => now,
-      "exp" => now + 3_600
-    }
-
-    Client.put_response(
-      :authenticate_with_code,
-      {:ok,
-       %{
-         "access_token" => Jason.encode!(claims),
-         "refresh_token" => "refresh-replay",
-         "user" => %{
-           "id" => "user_replay",
-           "email" => "replay@example.com",
-           "email_verified" => true,
-           "created_at" => "2026-07-26T18:00:00.000000Z",
-           "updated_at" => "2026-07-26T18:00:00.000000Z"
-         }
-       }}
-    )
-
-    first = get(conn, ~p"/auth/workos/callback?code=code_replay&state=#{state}")
-    assert redirected_to(first) == "/"
-
-    replay = get(recycle(conn), ~p"/auth/workos/callback?code=code_replay&state=#{state}")
-    assert redirected_to(replay) == "/users/log-in"
-    assert Repo.aggregate(AuthSession, :count) == 1
+    assert redirected_to(replay) == "/"
 
     assert Enum.count(Client.calls(), fn {operation, _args} ->
              operation == :authenticate_with_code
            end) == 1
+
+    refute get_session(replay, :workos_oauth_state)
+  end
+
+  test "expired state is rejected and removed", %{conn: conn} do
+    conn =
+      conn
+      |> init_test_session(%{
+        workos_oauth_state: %{
+          "token" => "expired",
+          "issued_at" => System.system_time(:second) - 601
+        }
+      })
+      |> get(~p"/auth/workos/callback?code=code_123&state=expired")
+
+    assert redirected_to(conn) == "/"
+    assert Client.calls() == []
+    refute get_session(conn, :workos_oauth_state)
+  end
+
+  test "incomplete callback clears state without authenticating", %{conn: conn} do
+    sign_in = get(conn, ~p"/auth/sign-in")
+    callback = sign_in |> recycle() |> get(~p"/auth/workos/callback")
+
+    assert redirected_to(callback) == "/"
+    refute get_session(callback, :workos_oauth_state)
+    assert [{:authorization_url, _args}] = Client.calls()
+  end
+
+  test "failed code exchange does not establish a session", %{conn: conn} do
+    Client.put_response(:authenticate_with_code, {:error, :invalid_grant})
+    sign_in = get(conn, ~p"/auth/sign-in")
+    state = get_session(sign_in, :workos_oauth_state)["token"]
+    callback = sign_in |> recycle() |> get(~p"/auth/workos/callback?code=bad&state=#{state}")
+
+    assert redirected_to(callback) == "/"
+    refute Map.has_key?(callback.resp_cookies, "_hermitscale_workos")
+    refute get_session(callback, :workos_oauth_state)
+  end
+
+  test "anonymous logout redirects through authentication", %{conn: conn} do
+    conn = delete(conn, ~p"/users/log-out")
+    assert redirected_to(conn) == "/auth/sign-in"
+    assert Client.calls() == []
+  end
+
+  test "logout clears credentials and returns through WorkOS", %{conn: conn} do
+    {:ok, authentication} = Hermitscale.WorkOS.Session.create(authentication_fixture())
+
+    conn =
+      conn
+      |> put_req_cookie("_hermitscale_workos", authentication.sealed_session)
+      |> delete(~p"/users/log-out")
+
+    assert redirected_to(conn) =~ "https://api.workos.com/user_management/sessions/logout"
+    assert conn.resp_cookies["_hermitscale_workos"].max_age == 0
+    refute get_session(conn, :workos_oauth_state)
+    assert {:revoke_session, ["session_workos"]} in Client.calls()
   end
 end

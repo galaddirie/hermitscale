@@ -63,12 +63,7 @@ defmodule Hermitscale.Integrations.Google.Sheets.Client do
   end
 
   defp immediate_access_token(%CredentialRef{} = ref) do
-    case ConnectedAccounts.fetch_oauth_token(
-           ref.organization_id,
-           ref.provider_id,
-           ref.id,
-           ref.required_scopes
-         ) do
+    case ConnectedAccounts.fetch_oauth_token(ref) do
       {:ok, %{access_token: access_token}} -> {:ok, access_token}
       {:error, _reason} = error -> error
     end

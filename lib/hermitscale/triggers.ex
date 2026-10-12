@@ -87,7 +87,8 @@ defmodule Hermitscale.Triggers do
     Scope.assert_same_org!(scope, graph)
     definition = graph.definition
 
-    with :ok <- Validator.validate(definition),
+    with :ok <- Credentials.authorize(scope, graph),
+         :ok <- Validator.validate(definition),
          {:ok, trigger_nodes} <- trigger_nodes(definition),
          {:ok, attrs_list} <- derive_trigger_attrs(graph, trigger_nodes) do
       existing = Map.new(list_triggers_for_graph(graph.id), &{&1.node_id, &1})
@@ -131,6 +132,12 @@ defmodule Hermitscale.Triggers do
   def deactivate_graph(%Scope{} = scope, %Graph{} = graph) do
     Scope.assert_same_org!(scope, graph)
 
+    with :ok <- Credentials.authorize(scope, graph) do
+      do_deactivate_graph(graph)
+    end
+  end
+
+  defp do_deactivate_graph(graph) do
     result =
       Repo.transaction(fn ->
         Trigger
@@ -149,15 +156,19 @@ defmodule Hermitscale.Triggers do
   end
 
   def enable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
-    scope
-    |> get_trigger!(trigger.id)
-    |> set_status(:enabled, nil)
+    trigger = scope |> get_trigger!(trigger.id) |> Repo.preload(:graph)
+
+    with :ok <- Credentials.authorize(scope, trigger.graph) do
+      set_status(trigger, :enabled, nil)
+    end
   end
 
   def disable_trigger(%Scope{} = scope, %Trigger{} = trigger) do
-    scope
-    |> get_trigger!(trigger.id)
-    |> set_status(:disabled, nil)
+    trigger = scope |> get_trigger!(trigger.id) |> Repo.preload(:graph)
+
+    with :ok <- Credentials.authorize(scope, trigger.graph) do
+      set_status(trigger, :disabled, nil)
+    end
   end
 
   @doc """
@@ -177,7 +188,11 @@ defmodule Hermitscale.Triggers do
   """
   def fire_manual(%Scope{} = scope, %Trigger{} = trigger, payload, opts \\ []) do
     %Trigger{mode: :manual} = trigger = get_trigger!(scope, trigger.id)
-    Dispatcher.fire(trigger, payload, opts)
+    trigger = Repo.preload(trigger, :graph)
+
+    with :ok <- Credentials.authorize(scope, trigger.graph) do
+      Dispatcher.fire(trigger, payload, opts)
+    end
   end
 
   ## Runtime support
@@ -234,7 +249,7 @@ defmodule Hermitscale.Triggers do
     Credentials.resolve_node(
       trigger.graph.definition,
       trigger.node_id,
-      trigger.graph.org_id
+      {trigger.graph.org_id, trigger.graph.created_by_user_id}
     )
   end
 
@@ -346,7 +361,11 @@ defmodule Hermitscale.Triggers do
   defp mode_attrs(_mode, _graph, _module, _params, _config, _existing, _base), do: {:ok, %{}}
 
   defp node_credentials(graph, node_id) do
-    case Credentials.resolve_node(graph.definition, node_id, graph.org_id) do
+    case Credentials.resolve_node(
+           graph.definition,
+           node_id,
+           {graph.org_id, graph.created_by_user_id}
+         ) do
       {:ok, token} -> {:ok, token}
       {:error, reason} -> {:error, {:credentials, node_id, reason}}
     end

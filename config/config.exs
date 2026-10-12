@@ -15,9 +15,8 @@ config :hermitscale, :scopes,
     access_path: [:organization, :id],
     schema_key: :org_id,
     schema_type: :string,
-    schema_table: :organizations,
     test_data_fixture: Hermitscale.AccountsFixtures,
-    test_setup_helper: :register_and_log_in_user
+    test_setup_helper: :log_in_workos_user
   ]
 
 config :hermitscale,
@@ -27,35 +26,12 @@ config :hermitscale,
 config :hermitscale, Oban,
   engine: Oban.Engines.Basic,
   repo: Hermitscale.Repo,
-  queues: [default: 10, triggers: 10, workos: 3],
-  plugins: [
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
-    {Oban.Plugins.Cron,
-     crontab: [
-       {"* * * * *", Hermitscale.WorkOS.EventsConsumer},
-       {"17 3 * * *", Hermitscale.WorkOS.StateReconciler},
-       {"31 3 * * *", Hermitscale.WorkOS.EventRetentionWorker}
-     ]}
-  ]
+  queues: [default: 10, triggers: 10],
+  plugins: [{Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}]
 
 config :hermitscale, Hermitscale.Triggers,
   start_runtime?: true,
   webhook_await_timeout_ms: 30_000
-
-config :hermitscale, Hermitscale.Integrations.ConnectedAccounts,
-  authorization_hosts: [".workos.com"],
-  providers: [
-    %{
-      slug: "google",
-      provider_id: "google.oauth",
-      name: "Google Sheets",
-      description: "Read and append spreadsheet rows from workflows and polling triggers.",
-      scopes: [
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/spreadsheets"
-      ]
-    }
-  ]
 
 config :hermitscale, Hermitscale.WorkOS.Client,
   base_url: "https://api.workos.com",
@@ -63,8 +39,6 @@ config :hermitscale, Hermitscale.WorkOS.Client,
   max_retries: 2
 
 config :hermitscale, Hermitscale.WorkOS.JWT, jwks_cache_ttl_seconds: 300
-
-config :hermitscale, Hermitscale.WorkOS.EventRetentionWorker, raw_event_retention_hours: 24
 
 # Configure the endpoint
 config :hermitscale, HermitscaleWeb.Endpoint,
@@ -120,6 +94,15 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+
+config :phoenix, :filter_parameters, [
+  "password",
+  "code",
+  "state",
+  "access_token",
+  "refresh_token",
+  "workos_session"
+]
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

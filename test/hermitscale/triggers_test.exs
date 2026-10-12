@@ -13,6 +13,30 @@ defmodule Hermitscale.TriggersTest do
     %{scope: user_scope_fixture()}
   end
 
+  describe "creator-owned credentials" do
+    test "another member cannot activate, enable, or fire creator-bound triggers", %{scope: scope} do
+      definition =
+        trigger_graph(manual_trigger_node(), %{
+          "credentials" => %{"providers" => %{"google.oauth" => %{"provider" => "google.oauth"}}}
+        })
+
+      graph = create_graph!(scope, definition)
+      collaborator = organization_scope_fixture(user_fixture(), scope.organization)
+
+      assert {:error, :credential_owner_required} = Triggers.activate_graph(collaborator, graph)
+      assert {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(scope, graph)
+      assert {:error, :credential_owner_required} = Triggers.enable_trigger(collaborator, trigger)
+
+      assert {:error, :credential_owner_required} =
+               Triggers.fire_manual(collaborator, trigger, %{})
+
+      assert {:error, :credential_owner_required} = Triggers.deactivate_graph(collaborator, graph)
+
+      assert {:error, :credential_owner_required} =
+               Triggers.disable_trigger(collaborator, trigger)
+    end
+  end
+
   describe "activation" do
     test "activates a graph and derives one trigger row per trigger node", %{scope: scope} do
       graph = create_graph!(scope, trigger_graph(manual_trigger_node()))

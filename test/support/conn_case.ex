@@ -37,14 +37,14 @@ defmodule HermitscaleWeb.ConnCase do
   end
 
   @doc """
-  Setup helper that registers and logs in users.
+  Setup helper for a verified WorkOS login.
 
-      setup :register_and_log_in_user
+      setup :log_in_workos_user
 
-  It stores an updated connection and a registered user in the
+  It stores an updated connection and a WorkOS user in the
   test context.
   """
-  def register_and_log_in_user(%{conn: conn} = context) do
+  def log_in_workos_user(%{conn: conn} = context) do
     user = Hermitscale.AccountsFixtures.user_fixture()
     scope = Hermitscale.AccountsFixtures.user_scope_fixture(user)
 
@@ -71,10 +71,6 @@ defmodule HermitscaleWeb.ConnCase do
 
     conn
     |> Phoenix.ConnTest.init_test_session(%{})
-    |> Plug.Conn.put_session(:auth_session_token, session.handle)
-    |> Plug.Conn.put_session(
-      :live_socket_id,
-      Hermitscale.WorkOS.Session.socket_topic(session.session)
-    )
+    |> Plug.Test.put_req_cookie("_hermitscale_workos", session.sealed_session)
   end
 end
