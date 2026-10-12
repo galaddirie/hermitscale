@@ -49,6 +49,37 @@ defmodule Hermitscale.WorkflowsFixtures do
     )
   end
 
+  def failing_math_graph do
+    valid_join_graph(%{
+      "nodes" => [
+        %{
+          "id" => "divide",
+          "type" => "math",
+          "version" => 1,
+          "params" => %{"operation" => "divide", "left" => 1, "right" => 0},
+          "policy" => %{"max_retries" => 0}
+        }
+      ],
+      "connections" => []
+    })
+  end
+
+  def completion_probe_graph do
+    valid_join_graph(%{
+      "nodes" => [
+        %{"id" => "probe", "type" => "test.completion_probe", "version" => 1, "params" => %{}}
+      ],
+      "connections" => []
+    })
+  end
+
+  def idle_worker_fixture(run, attrs \\ []) do
+    struct!(
+      Runic.Runner.Worker,
+      Keyword.merge([id: run.id, admission_causes: [], persistence: :saved], attrs)
+    )
+  end
+
   def authoring_probe_graph(attrs \\ %{}) do
     attrs = Map.new(attrs)
 

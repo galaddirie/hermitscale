@@ -10,6 +10,50 @@ defmodule Hermitscale.Workflows.ValidatorTest do
       assert :ok = Validator.validate(valid_join_graph())
     end
 
+    test "valid join slots are independent of connection declaration order" do
+      graph = valid_join_graph()
+      graph = Map.update!(graph, "connections", &Enum.reverse/1)
+
+      assert :ok = Validator.validate(graph)
+      assert Validator.parent_map(graph["connections"])["decide"] == ["inventory", "fraud"]
+    end
+
+    test "returns issues for malformed node types, versions, and params" do
+      for {field, value} <- [
+            {"type", %{}},
+            {"type", ""},
+            {"version", "1"},
+            {"version", 0},
+            {"params", nil},
+            {"params", []}
+          ] do
+        graph = valid_join_graph()
+
+        graph =
+          update_in(graph["nodes"], fn [node | rest] -> [Map.put(node, field, value) | rest] end)
+
+        assert {:error, issues} = Validator.validate(graph)
+        assert Enum.any?(issues, &(&1.path == "$.nodes[0].#{field}")), inspect(issues)
+      end
+    end
+
+    test "validates graph metadata and ambient namespaces" do
+      for {field, value} <- [{"id", nil}, {"name", 123}, {"env", nil}, {"vars", []}] do
+        assert {:error, issues} = Validator.validate(valid_join_graph(%{field => value}))
+        assert Enum.any?(issues, &(&1.path == "$.#{field}")), inspect(issues)
+      end
+    end
+
+    test "rejects null policies before compilation" do
+      graph = valid_join_graph()
+
+      graph =
+        update_in(graph["nodes"], fn [node | rest] -> [Map.put(node, "policy", nil) | rest] end)
+
+      assert {:error, issues} = Validator.validate(graph)
+      assert Enum.any?(issues, &(&1.path == "$.nodes[0].policy" and &1.code == :invalid_type))
+    end
+
     test "returns all structural issues" do
       graph =
         valid_join_graph(%{
@@ -437,6 +481,20 @@ defmodule Hermitscale.Workflows.ValidatorTest do
 
       assert {:error, issues} = Validator.validate(graph)
       assert Enum.any?(issues, &(&1.code == :cycle))
+    end
+  end
+
+  describe "topo_order/1" do
+    test "returns issues for a connection to a missing node" do
+      graph = valid_join_graph(%{"connections" => [%{"from" => "validate", "to" => "missing"}]})
+
+      assert {:error, issues} = Validator.topo_order(graph)
+      assert Enum.any?(issues, &(&1.code == :missing_node))
+    end
+
+    test "returns shape issues for malformed external graphs" do
+      assert {:error, [%Validator.Issue{path: "$", code: :invalid_type}]} =
+               Validator.topo_order(nil)
     end
   end
 

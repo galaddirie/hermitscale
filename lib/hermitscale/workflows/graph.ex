@@ -12,9 +12,7 @@ defmodule Hermitscale.Workflows.Graph do
     :schema_version,
     :name,
     :definition,
-    :status,
-    :validation_issues,
-    :validated_at
+    :status
   ]
 
   @primary_key {:id, :string, autogenerate: false}
@@ -49,7 +47,7 @@ defmodule Hermitscale.Workflows.Graph do
   end
 
   @doc false
-  def update_changeset(graph, attrs, _opts \\ []) do
+  def update_changeset(graph, attrs) do
     graph
     |> cast(attrs, @editable_fields)
     |> validate_authoring()

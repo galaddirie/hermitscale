@@ -21,8 +21,6 @@ defmodule Hermitscale.WorkOS.JWT do
          :ok <- validate_claims(claims, opts) do
       {:ok, claims}
     end
-  rescue
-    _exception -> {:error, :invalid_access_token}
   end
 
   @doc """
@@ -75,6 +73,9 @@ defmodule Hermitscale.WorkOS.JWT do
           with {:ok, refreshed} <- cached_jwks(true) do
             find_key(refreshed, kid)
           end
+
+        {:error, :invalid_jwks} = error ->
+          error
       end
     end
   end
@@ -99,7 +100,7 @@ defmodule Hermitscale.WorkOS.JWT do
     client = config()[:client] || Client
 
     with {:ok, %{"keys" => keys} = jwks} <- client.jwks(),
-         true <- is_list(keys) do
+         true <- is_list(keys) and Enum.all?(keys, &valid_key_id?/1) do
       :persistent_term.put(@cache_key, %{
         fetched_at: System.system_time(:second),
         jwks: jwks
@@ -115,10 +116,37 @@ defmodule Hermitscale.WorkOS.JWT do
 
   defp find_key(%{"keys" => keys}, kid) do
     case Enum.find(keys, &(&1["kid"] == kid)) do
-      nil -> {:error, :unknown_signing_key}
-      key -> {:ok, JOSE.JWK.from_map(key)}
+      nil ->
+        {:error, :unknown_signing_key}
+
+      key ->
+        case valid_public_key?(key) do
+          true -> {:ok, key |> Map.take(~w(kty n e)) |> JOSE.JWK.from_map()}
+          false -> {:error, :invalid_jwks}
+        end
     end
   end
+
+  defp valid_key_id?(%{"kid" => kid}) when is_binary(kid) and kid != "", do: true
+  defp valid_key_id?(_key), do: false
+
+  defp valid_public_key?(%{"kty" => "RSA", "kid" => kid, "n" => modulus, "e" => exponent} = key)
+       when is_binary(kid) and kid != "" do
+    key["use"] in [nil, "sig"] and key["alg"] in [nil, "RS256"] and
+      positive_base64_integer?(modulus) and positive_base64_integer?(exponent)
+  end
+
+  defp valid_public_key?(_key), do: false
+
+  defp positive_base64_integer?(value) when is_binary(value) do
+    case Base.url_decode64(value, padding: false) do
+      {:ok, bytes} when byte_size(bytes) > 0 -> :binary.decode_unsigned(bytes) > 0
+      {:ok, ""} -> false
+      :error -> false
+    end
+  end
+
+  defp positive_base64_integer?(_value), do: false
 
   defp verify_signature(key, access_token) do
     case JOSE.JWT.verify_strict(key, @allowed_algorithms, access_token) do

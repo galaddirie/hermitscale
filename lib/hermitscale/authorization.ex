@@ -49,8 +49,20 @@ defmodule Hermitscale.Authorization do
          true <- Enum.all?(permissions, &(authorize(scope, &1) == :ok)) do
       {:ok, scope}
     else
-      {:error, reason} when reason in [:unavailable, :rate_limited] -> {:error, reason}
-      _ -> {:error, :execution_actor_ineligible}
+      {:error, reason} = error when reason in [:unavailable, :rate_limited, :invalid_response] ->
+        error
+
+      {:error, _reason} ->
+        {:error, :execution_actor_ineligible}
+
+      nil ->
+        {:error, :execution_actor_ineligible}
+
+      %{} ->
+        {:error, :execution_actor_ineligible}
+
+      false ->
+        {:error, :execution_actor_ineligible}
     end
   end
 

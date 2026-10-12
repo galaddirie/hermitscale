@@ -24,6 +24,49 @@ defmodule Hermitscale.Integrations.Google.Sheets.ClientTest do
                  plug: {Req.Test, __MODULE__}
                )
     end
+
+    test "accepts an empty sheet and JSON scalar cell values" do
+      for body <- [
+            %{"range" => "Sheet1!A:B"},
+            %{"values" => []},
+            %{"values" => [["sku", "qty"], ["ABC", 2, 1.5, true, false, nil, ""]]}
+          ] do
+        Req.Test.expect(__MODULE__, &Req.Test.json(&1, body))
+
+        assert {:ok, ^body} =
+                 Client.read_rows(
+                   Hermitscale.WorkflowsFixtures.credential_reference_fixture(),
+                   "sheet_123",
+                   "Sheet1!A:B",
+                   plug: {Req.Test, __MODULE__}
+                 )
+      end
+    end
+
+    test "malformed successful responses return a dependency error without reflecting content" do
+      for body <- [
+            "opaque-provider-secret",
+            [],
+            nil,
+            false,
+            %{"values" => nil},
+            %{"values" => "opaque-provider-secret"},
+            %{"values" => ["opaque-provider-secret"]},
+            %{"values" => [["sku"], false]},
+            %{"values" => [[%{"secret" => "opaque-provider-secret"}]]},
+            %{"values" => [[["nested"]]]}
+          ] do
+        Req.Test.expect(__MODULE__, &Req.Test.json(&1, body))
+
+        assert {:error, :invalid_google_sheets_response} =
+                 Client.read_rows(
+                   Hermitscale.WorkflowsFixtures.credential_reference_fixture(),
+                   "sheet_123",
+                   "Sheet1!A:B",
+                   plug: {Req.Test, __MODULE__}
+                 )
+      end
+    end
   end
 
   describe "append_row/5" do

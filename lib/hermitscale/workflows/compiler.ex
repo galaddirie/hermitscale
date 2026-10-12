@@ -5,7 +5,7 @@ defmodule Hermitscale.Workflows.Compiler do
 
   require Runic
 
-  alias Hermitscale.Workflows.{Catalog, Expr, Policy, Validator}
+  alias Hermitscale.Workflows.{Catalog, Expr, Policy, Topology, Validator}
   alias Hermitscale.Workflows.Nodes.Params
   alias Runic.Workflow
 
@@ -40,8 +40,8 @@ defmodule Hermitscale.Workflows.Compiler do
       end)
 
     specs = Map.new(modules, fn {id, module} -> {id, module.__catalog_node__()} end)
-    main_parents = Validator.parent_map(graph["connections"] || [])
-    children = child_map(graph["connections"] || [])
+    main_parents = Topology.parent_map(Map.fetch!(graph, "connections"))
+    children = Topology.child_map(Map.fetch!(graph, "connections"))
 
     # Reduce reducers run under Runic's fan-in coordinator, which calls them as
     # `reducer/2` (no `context/1`). The ambient namespaces come from the graph
@@ -228,7 +228,7 @@ defmodule Hermitscale.Workflows.Compiler do
     spec = Map.fetch!(compile_context.specs, id)
 
     Params.cast!(
-      node["params"] || %{},
+      Map.get(node, "params", %{}),
       spec.params_schema,
       spec.expr_fields,
       spec.predicate_fields
@@ -244,12 +244,6 @@ defmodule Hermitscale.Workflows.Compiler do
   end
 
   defp kind_for(id, compile_context), do: Map.fetch!(compile_context.specs, id).kind
-
-  defp child_map(connections) do
-    connections
-    |> Enum.group_by(& &1["from"])
-    |> Map.new(fn {from, edges} -> {from, Enum.map(edges, & &1["to"])} end)
-  end
 
   defp base_workflow(graph) do
     graph

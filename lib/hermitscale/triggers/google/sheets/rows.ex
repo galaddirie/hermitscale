@@ -96,7 +96,7 @@ defmodule Hermitscale.Triggers.Google.Sheets.Rows do
   end
 
   defp row_key(values_map, row_number, params) do
-    with column when is_binary(column) <- params[:primary_key_column],
+    with column when is_binary(column) <- Map.get(params, :primary_key_column),
          value when value not in [nil, ""] <- Map.get(values_map, column) do
       "pk:#{value}"
     else

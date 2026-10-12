@@ -22,7 +22,7 @@ defmodule Hermitscale.Workflows.Policy do
 
   @doc """
   Translates a string- or atom-keyed policy map into Runic's atom form,
-  raising on unknown keys or enum values.
+  raising on unknown keys or invalid values.
   """
   def normalize(policy) when is_map(policy) do
     Map.new(policy, fn {key, value} ->
@@ -30,7 +30,12 @@ defmodule Hermitscale.Workflows.Policy do
     end)
   end
 
-  defp normalize_pair(key, value) when key in @integer_keys, do: {key, value}
+  defp normalize_pair(key, value)
+       when key in @integer_keys and is_integer(value) and value >= 0,
+       do: {key, value}
+
+  defp normalize_pair(key, _value) when key in @integer_keys,
+    do: raise(ArgumentError, "#{key} must be a non-negative integer")
 
   defp normalize_pair(key, value),
     do: {key, Map.fetch!(Map.fetch!(@enums, key), to_string(value))}

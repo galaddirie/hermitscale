@@ -6,7 +6,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   generate a compile-time-validated `spec/0` and catalog marker.
   """
 
-  @type kind :: :step | :join | :map | :reduce | :rule
+  @type kind :: :step | :join | :map | :reduce | :rule | :trigger
   @type spec :: %{
           required(:id) => String.t(),
           required(:version) => pos_integer(),
@@ -20,7 +20,14 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
           required(:default_policy) => map(),
           required(:deprecated) => boolean()
         }
-  @type ctx :: %{required(:name) => String.t(), required(:inputs) => [String.t()]}
+  @type ctx :: %{
+          required(:name) => String.t(),
+          optional(:parents) => [String.t()],
+          optional(:main_count) => non_neg_integer(),
+          optional(:ref_ids) => [String.t()],
+          optional(:ambient) => map(),
+          optional(:map) => String.t()
+        }
 
   @callback spec() :: spec()
   @callback build(params :: map(), ctx :: ctx()) :: term()
@@ -30,6 +37,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   @optional_callbacks validate_params: 1
 
   @kinds ~w(step join map reduce rule)a
+  @options ~w(id version kind inputs outputs params expr predicate requires default_policy deprecated)a
 
   defmacro __using__(opts) do
     # Evaluate compile-time options so integration macros can pass module attrs
@@ -57,6 +65,8 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
   @doc false
   def __compile_spec__!(opts, module) do
     assert!(keyword?(opts), module, "options must be a keyword list")
+    assert!(Keyword.keys(opts) -- @options == [], module, "unknown node options")
+    assert!(unique?(Keyword.keys(opts)), module, "node options must be unique")
 
     id = require_opt!(opts, :id, module)
     version = require_opt!(opts, :version, module)
@@ -70,16 +80,32 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
     default_policy = Keyword.get(opts, :default_policy, %{})
     deprecated = Keyword.get(opts, :deprecated, false)
 
-    assert!(is_binary(id), module, "id must be a string")
+    assert!(is_binary(id) and id != "", module, "id must be a non-empty string")
     assert!(is_integer(version) and version > 0, module, "version must be a positive integer")
     assert!(kind in @kinds, module, "invalid kind #{inspect(kind)}")
     assert!(ports?(inputs), module, "inputs must be a non-empty list of atoms")
     assert!(ports?(outputs), module, "outputs must be a non-empty list of atoms")
+    assert!(unique?(inputs), module, "inputs must be unique")
+    assert!(unique?(outputs), module, "outputs must be unique")
     assert!(ports_or_empty?(expr_fields), module, "expr must be a list of atoms")
     assert!(ports_or_empty?(predicate_fields), module, "predicate must be a list of atoms")
     assert!(keyword?(requires), module, "requires must be a keyword list")
     assert!(is_map(default_policy), module, "default_policy must be a map")
     assert!(is_boolean(deprecated), module, "deprecated must be a boolean")
+
+    params_schema = NimbleOptions.new!(params).schema
+
+    assert!(
+      expr_fields -- Keyword.keys(params_schema) == [],
+      module,
+      "expr fields must name declared params"
+    )
+
+    assert!(
+      predicate_fields -- expr_fields == [],
+      module,
+      "predicate fields must be expression fields"
+    )
 
     default_policy = Hermitscale.Workflows.Policy.normalize(default_policy)
 
@@ -89,7 +115,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
       kind: kind,
       inputs: inputs,
       outputs: outputs,
-      params_schema: NimbleOptions.new!(params).schema,
+      params_schema: params_schema,
       expr_fields: expr_fields,
       predicate_fields: predicate_fields,
       requires: requires,
@@ -253,6 +279,7 @@ defmodule Hermitscale.Workflows.Nodes.Behaviour do
 
   defp ports?(list), do: is_list(list) and list != [] and Enum.all?(list, &is_atom/1)
   defp ports_or_empty?(list), do: is_list(list) and Enum.all?(list, &is_atom/1)
+  defp unique?(list), do: length(Enum.uniq(list)) == length(list)
 
   defp deps_ast(requires) do
     {:%{}, [],

@@ -11,12 +11,18 @@ defmodule Hermitscale.Integrations.Google.Sheets.Client do
   Reads values from a spreadsheet range.
   """
   def read_rows(credentials, spreadsheet_id, range, opts \\ []) do
-    request(
-      :get,
-      credentials,
-      "/#{path_segment(spreadsheet_id)}/values/#{path_segment(range)}",
-      opts
-    )
+    with {:ok, body} <-
+           request(
+             :get,
+             credentials,
+             "/#{path_segment(spreadsheet_id)}/values/#{path_segment(range)}",
+             opts
+           ) do
+      case valid_read_response?(body) do
+        true -> {:ok, body}
+        false -> {:error, :invalid_google_sheets_response}
+      end
+    end
   end
 
   @doc """
@@ -47,6 +53,23 @@ defmodule Hermitscale.Integrations.Google.Sheets.Client do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp valid_read_response?(body) when is_map(body) do
+    case Map.get(body, "values", []) do
+      rows when is_list(rows) -> Enum.all?(rows, &valid_row?/1)
+      _values -> false
+    end
+  end
+
+  defp valid_read_response?(_body), do: false
+
+  defp valid_row?(row) when is_list(row) do
+    Enum.all?(row, fn value ->
+      is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value)
+    end)
+  end
+
+  defp valid_row?(_row), do: false
 
   defp path_segment(value) when is_binary(value) do
     URI.encode(value, &URI.char_unreserved?/1)

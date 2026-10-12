@@ -23,6 +23,23 @@ defmodule Hermitscale.Workflows.ExprTest do
       assert Expr.resolve!(Expr.compile!("{{ $json.count | to_number }}"), context) == 7
     end
 
+    test "resolves dynamic access through Solid instead of a literal fast path" do
+      context = %{"json" => %{"selected" => "email", "email" => "person@example.test"}}
+
+      assert {:expr, nil, %Solid.Template{}} =
+               compiled = Expr.compile!("{{ $json[$json.selected] }}")
+
+      assert Expr.resolve!(compiled, context) == "person@example.test"
+    end
+
+    test "tuple accesses outside the available range resolve to nil" do
+      context = %{"json" => {"first", "second"}}
+
+      assert Expr.resolve!(Expr.compile!("{{ $json[1] }}"), context) == "second"
+      assert Expr.resolve!(Expr.compile!("{{ $json[2] }}"), context) == nil
+      assert Expr.resolve!(Expr.compile!("{{ $json[-1] }}"), context) == nil
+    end
+
     test "push appends one value to a native list" do
       context = %{"acc" => [20, 40], "json" => 60}
 

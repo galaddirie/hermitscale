@@ -6,7 +6,8 @@ defmodule Hermitscale.Triggers.Dispatcher do
   through `fire/3`, which applies, in order:
 
     1. Idempotency: a firing row keyed by `{trigger_id, idempotency_key}`;
-       a duplicate key means the event was already handled and dedupes.
+       completed events dedupe, failed attempts can retry, and unresolved
+       reservations return `:firing_in_progress`.
     2. Admission: the trigger's `max_concurrent_runs` config, if set, bounds
        concurrently running runs for the graph (over-limit firings are
        recorded as `:rejected`).
@@ -19,6 +20,7 @@ defmodule Hermitscale.Triggers.Dispatcher do
   alias Hermitscale.Authorization
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.Repo
+  alias Hermitscale.Triggers
   alias Hermitscale.Triggers.{Firing, Trigger}
   alias Hermitscale.Workflows
   alias Hermitscale.Workflows.Run
@@ -28,6 +30,10 @@ defmodule Hermitscale.Triggers.Dispatcher do
           | {:ok, :deduped}
           | {:error, :disabled}
           | {:error, :rejected}
+          | {:error, :firing_in_progress}
+          | {:error,
+             :execution_actor_ineligible | :unavailable | :rate_limited | :invalid_response}
+          | {:error, {:connection_not_ready, String.t(), term()}}
           | {:error, {:start_run, term()}}
 
   @doc """
@@ -42,9 +48,7 @@ defmodule Hermitscale.Triggers.Dispatcher do
   """
   @spec fire(Trigger.t() | struct(), map(), keyword()) :: result()
   def fire(%Trigger{} = trigger, payload, opts \\ []) do
-    trigger = Hermitscale.Triggers.get_trigger!(trigger.id) |> Repo.preload(:graph)
-
-    with :ok <- ensure_enabled(trigger),
+    with {:ok, trigger} <- load_enabled(trigger.id),
          {:ok, scope, context} <- execution_identity(trigger, opts),
          {:ok, firing} <- insert_firing(trigger, opts) do
       case admit(trigger) do
@@ -61,6 +65,14 @@ defmodule Hermitscale.Triggers.Dispatcher do
     end
   end
 
+  defp load_enabled(id) do
+    case Triggers.get_trigger(id) do
+      %Trigger{status: :enabled} = trigger -> {:ok, Repo.preload(trigger, :graph)}
+      %Trigger{} -> {:error, :disabled}
+      nil -> {:error, :disabled}
+    end
+  end
+
   defp execution_identity(%Trigger{mode: :manual} = trigger, opts) do
     case Keyword.get(opts, :scope) do
       %Scope{} = scope ->
@@ -74,17 +86,14 @@ defmodule Hermitscale.Triggers.Dispatcher do
     end
   end
 
-  defp execution_identity(trigger, _opts), do: Hermitscale.Triggers.execution_scope(trigger)
-
-  defp ensure_enabled(%Trigger{status: :enabled}), do: :ok
-  defp ensure_enabled(%Trigger{}), do: {:error, :disabled}
+  defp execution_identity(trigger, _opts), do: Triggers.execution_scope(trigger)
 
   defp insert_firing(trigger, opts) do
     now = DateTime.utc_now(:second)
 
     attrs = %{
       trigger_id: trigger.id,
-      idempotency_key: Keyword.get(opts, :idempotency_key) || Ecto.UUID.generate(),
+      idempotency_key: Keyword.get_lazy(opts, :idempotency_key, &Ecto.UUID.generate/0),
       outcome: :dispatched,
       fired_at: now
     }
@@ -115,10 +124,27 @@ defmodule Hermitscale.Triggers.Dispatcher do
       |> where([firing], firing.idempotency_key == ^key and firing.outcome == :failed)
 
     case Repo.update_all(query, set: [outcome: :dispatched, error: nil, fired_at: now]) do
-      {1, _returning} -> {:ok, Repo.get_by!(Firing, trigger_id: trigger_id, idempotency_key: key)}
-      {0, _returning} -> {:error, :duplicate}
+      {1, _returning} ->
+        {:ok, Repo.get_by!(Firing, trigger_id: trigger_id, idempotency_key: key)}
+
+      {0, _returning} ->
+        trigger_id
+        |> existing_firing(key)
+        |> duplicate_result()
     end
   end
+
+  defp existing_firing(trigger_id, key),
+    do: Repo.get_by!(Firing, trigger_id: trigger_id, idempotency_key: key)
+
+  # :dispatched is also the reservation state. Without a linked run, an
+  # interrupted or concurrent attempt has not established successful delivery.
+  defp duplicate_result(%Firing{outcome: :dispatched, run_id: nil}),
+    do: {:error, :firing_in_progress}
+
+  defp duplicate_result(%Firing{outcome: :dispatched}), do: {:error, :duplicate}
+  defp duplicate_result(%Firing{outcome: :rejected}), do: {:error, :duplicate}
+  defp duplicate_result(%Firing{outcome: :failed}), do: {:error, :firing_in_progress}
 
   defp admit(%Trigger{config: config, workflow_graph_id: graph_id}) do
     case config["max_concurrent_runs"] do
@@ -150,8 +176,9 @@ defmodule Hermitscale.Triggers.Dispatcher do
         conclude(firing, %{run_id: run.id})
         {:ok, run}
 
-      {:error, {:connection_not_ready, _node, reason}} = error ->
-        Hermitscale.Triggers.mark_errored(trigger, reason)
+      {:error, {:connection_not_ready, _node, reason}} = error
+      when reason in [:needs_reauthorization, :account_not_found, :insufficient_scopes] ->
+        {:ok, _trigger} = Triggers.mark_errored(trigger, reason)
         conclude(firing, %{outcome: :failed, error: %{"reason" => "connection_repair_required"}})
         error
 

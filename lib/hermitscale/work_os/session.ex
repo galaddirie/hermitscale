@@ -144,7 +144,15 @@ defmodule Hermitscale.WorkOS.Session do
          true <- claims["org_id"] == payload.organization_id do
       {:ok, claims}
     else
-      _other -> {:error, :invalid_session}
+      {:error, reason} = error
+      when reason in [:unavailable, :rate_limited, :invalid_jwks, :invalid_response] ->
+        error
+
+      {:error, _reason} ->
+        {:error, :invalid_session}
+
+      false ->
+        {:error, :invalid_session}
     end
   end
 
@@ -169,8 +177,12 @@ defmodule Hermitscale.WorkOS.Session do
          {:ok, claims} <- verify_payload(replacement, false) do
       {:ok, replacement, claims}
     else
-      {:error, reason} when reason in [:unavailable, :rate_limited] -> {:error, :unavailable}
-      _other -> {:error, :invalid_session}
+      {:error, reason} = error
+      when reason in [:unavailable, :rate_limited, :invalid_jwks, :invalid_response] ->
+        error
+
+      {:error, _reason} ->
+        {:error, :invalid_session}
     end
   end
 

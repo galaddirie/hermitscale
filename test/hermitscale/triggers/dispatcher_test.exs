@@ -105,6 +105,35 @@ defmodule Hermitscale.Triggers.DispatcherTest do
     assert Repo.aggregate(Firing, :count) == 1
   end
 
+  test "an unresolved firing remains in progress rather than claiming successful deduplication",
+       %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
+    firing = unresolved_firing_fixture(trigger, "interrupted")
+
+    assert {:error, :firing_in_progress} =
+             Dispatcher.fire(trigger, %{}, scope: scope, idempotency_key: "interrupted")
+
+    assert Repo.get!(Firing, firing.id).run_id == nil
+    assert Repo.aggregate(Run, :count) == 0
+  end
+
+  test "a trigger deleted after loading cannot fire", %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, manual_trigger_node())
+    Repo.delete!(trigger)
+    assert {:error, :disabled} = Dispatcher.fire(trigger, %{}, scope: scope)
+  end
+
+  test "execution_scope reloads persisted actor and status rather than trusting a supplied snapshot",
+       %{scope: scope} do
+    {_graph, trigger} = activate_trigger_graph!(scope, webhook_trigger_node())
+    forged = %{trigger | execution_actor_user_id: "user_forged"}
+    assert {:ok, actor_scope, _context} = Triggers.execution_scope(forged)
+    assert actor_scope.user.id == trigger.execution_actor_user_id
+
+    {:ok, _disabled} = Triggers.disable_trigger(scope, trigger)
+    assert {:error, :disabled} = Triggers.execution_scope(trigger)
+  end
+
   test "rejects firings over the max_concurrent_runs limit", %{scope: scope} do
     {graph, trigger} =
       activate_trigger_graph!(scope, manual_trigger_node(%{"max_concurrent_runs" => 1}))

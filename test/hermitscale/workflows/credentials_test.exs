@@ -104,5 +104,22 @@ defmodule Hermitscale.Workflows.CredentialsTest do
       assert [%{provider: "test.credentials", scopes: ["scope:a"], nodes: ["probe"]}] =
                Credentials.requirements(graph)
     end
+
+    test "selection and requirement collection preserve graph node order", %{
+      scope: scope,
+      graph: graph
+    } do
+      [node] = graph["nodes"]
+
+      graph =
+        Map.put(graph, "nodes", [
+          node,
+          Map.put(node, "id", "second"),
+          Map.put(node, "id", "third")
+        ])
+
+      assert {:ok, ^graph} = Credentials.select_accounts(scope, graph)
+      assert [%{nodes: ["probe", "second", "third"]}] = Credentials.requirements(graph)
+    end
   end
 end

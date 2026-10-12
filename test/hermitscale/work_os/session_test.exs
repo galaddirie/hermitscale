@@ -5,6 +5,7 @@ defmodule Hermitscale.WorkOS.SessionTest do
   alias Hermitscale.WorkOSTest.{Client, JWTVerifier}
 
   import Hermitscale.WorkOS.SessionFixtures
+  import Hermitscale.WorkOS.JWTFixtures
 
   setup do
     start_supervised!({Client, %{}})
@@ -115,6 +116,54 @@ defmodule Hermitscale.WorkOS.SessionTest do
       assert {:error, :unavailable} = Session.authenticate(created.sealed_session)
       Client.put_response(:authenticate_with_refresh_token, {:error, :invalid_grant})
       assert {:error, :invalid_session} = Session.authenticate(created.sealed_session)
+    end
+
+    test "preserves signing-key outages while authenticating and refreshing" do
+      alias Hermitscale.WorkOS.JWT
+      {private_key, public_key} = rsa_key_fixture("session_outage")
+      previous_jwt = Application.get_env(:hermitscale, JWT)
+
+      Application.put_env(:hermitscale, JWT,
+        issuer: "https://api.workos.test",
+        client_id: "client_123",
+        client: Client
+      )
+
+      Application.put_env(:hermitscale, Session, client: Client, jwt_verifier: JWT)
+
+      on_exit(fn ->
+        JWT.clear_cache()
+        Application.put_env(:hermitscale, JWT, previous_jwt)
+      end)
+
+      now = System.system_time(:second)
+
+      authentication = %{
+        "access_token" => sign_fixture(private_key, claims_fixture(now), "session_outage"),
+        "refresh_token" => "refresh_secret",
+        "user" => %{"id" => "user_123"}
+      }
+
+      JWT.clear_cache()
+      Client.put_response(:jwks, {:ok, %{"keys" => [public_key]}})
+      {:ok, created} = Session.create(authentication)
+
+      for reason <- [:unavailable, :rate_limited, :invalid_jwks, :invalid_response] do
+        JWT.clear_cache()
+        Client.put_response(:jwks, {:error, reason})
+        assert {:error, ^reason} = Session.authenticate(created.sealed_session)
+        assert {:error, ^reason} = Session.refresh_claims(created.sealed_session)
+      end
+    end
+
+    test "preserves refresh dependency errors without invalidating the session" do
+      {:ok, created} =
+        Session.create(authentication_fixture(%{"exp" => System.system_time(:second) + 10}))
+
+      for reason <- [:rate_limited, :invalid_response] do
+        Client.put_response(:authenticate_with_refresh_token, {:error, reason})
+        assert {:error, ^reason} = Session.authenticate(created.sealed_session)
+      end
     end
   end
 

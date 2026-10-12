@@ -62,7 +62,9 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChangeTest do
     stub_values([["id", "name"], ["1", "ada"], ["2", "grace"]])
     assert {:ok, [event], cursor} = RowChange.V1.poll(params(), cursor, @ctx)
 
-    assert "row_added:row:3:" <> hash = event.key
+    prefix = "row_added:row:3:#{cursor["epoch"]}:1:"
+    assert String.starts_with?(event.key, prefix)
+    hash = String.replace_prefix(event.key, prefix, "")
     assert byte_size(hash) == 16
     assert event.payload["change_type"] == "row_added"
     assert event.payload["row_number"] == 3
@@ -71,6 +73,59 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChangeTest do
 
     # Nothing new on the next poll: same snapshot, no events.
     assert {:ok, [], _cursor} = RowChange.V1.poll(params(), cursor, @ctx)
+  end
+
+  test "repeated transitions have distinct identities while replaying a cursor keeps the identity" do
+    stub_values([["id", "name"], ["1", "ada"]])
+    {:ok, first_cursor} = RowChange.V1.init_cursor(params(), @ctx)
+
+    stub_values([["id", "name"], ["1", "grace"]])
+    assert {:ok, [first], second_cursor} = RowChange.V1.poll(params(), first_cursor, @ctx)
+    assert {:ok, [replay], ^second_cursor} = RowChange.V1.poll(params(), first_cursor, @ctx)
+    assert first.key == replay.key
+
+    stub_values([["id", "name"], ["1", "ada"]])
+    assert {:ok, [_back], third_cursor} = RowChange.V1.poll(params(), second_cursor, @ctx)
+    stub_values([["id", "name"], ["1", "grace"]])
+    assert {:ok, [repeated], _cursor} = RowChange.V1.poll(params(), third_cursor, @ctx)
+    refute first.key == repeated.key
+  end
+
+  test "a cursor without generation is migrated on the next successful poll" do
+    stub_values([["id", "name"], ["1", "ada"]])
+    {:ok, cursor} = RowChange.V1.init_cursor(params(), @ctx)
+
+    assert {:ok, [], %{"generation" => 1}} =
+             RowChange.V1.poll(params(), Map.delete(cursor, "generation"), @ctx)
+  end
+
+  test "reinitializing a source gives repeated changes a fresh event identity" do
+    stub_values([["id", "name"], ["1", "ada"]])
+    {:ok, first_cursor} = RowChange.V1.init_cursor(params(), @ctx)
+    stub_values([["id", "name"], ["1", "grace"]])
+    {:ok, [first], _cursor} = RowChange.V1.poll(params(), first_cursor, @ctx)
+
+    stub_values([["id", "name"], ["1", "ada"]])
+    {:ok, reset_cursor} = RowChange.V1.init_cursor(params(), @ctx)
+    stub_values([["id", "name"], ["1", "grace"]])
+    {:ok, [after_reset], _cursor} = RowChange.V1.poll(params(), reset_cursor, @ctx)
+
+    refute after_reset.key == first.key
+    assert {:ok, [replay], _cursor} = RowChange.V1.poll(params(), reset_cursor, @ctx)
+    assert replay.key == after_reset.key
+  end
+
+  test "legacy cursors keep their migration identity stable across retries" do
+    stub_values([["id", "name"], ["1", "ada"]])
+    {:ok, cursor} = RowChange.V1.init_cursor(params(), @ctx)
+    legacy_cursor = Map.drop(cursor, ["generation", "epoch"])
+    stub_values([["id", "name"], ["1", "grace"]])
+
+    assert {:ok, [first], %{"epoch" => "legacy"} = migrated} =
+             RowChange.V1.poll(params(), legacy_cursor, @ctx)
+
+    assert {:ok, [replay], ^migrated} = RowChange.V1.poll(params(), legacy_cursor, @ctx)
+    assert first.key == replay.key
   end
 
   test "a changed cell fires row_updated" do

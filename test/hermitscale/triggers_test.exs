@@ -158,6 +158,25 @@ defmodule Hermitscale.TriggersTest do
       assert kept.webhook_token == trigger.webhook_token
     end
 
+    test "deactivation reloads a graph whose supplied status is stale", %{scope: scope} do
+      draft = create_graph!(scope, trigger_graph(webhook_trigger_node()))
+      {:ok, %{triggers: [trigger]}} = Triggers.activate_graph(scope, draft)
+
+      assert {:ok, %{status: :draft}} = Triggers.deactivate_graph(scope, draft)
+      assert Workflows.get_graph!(scope, draft.id).status == :draft
+      assert Repo.get!(Trigger, trigger.id).status == :disabled
+    end
+
+    test "a forged organization on a supplied foreign graph cannot deactivate it", %{scope: scope} do
+      other_scope = organization_scope_fixture(scope.user, organization_fixture())
+      {graph, trigger} = activate_trigger_graph!(other_scope, webhook_trigger_node())
+      forged = %{graph | org_id: scope.organization.id}
+
+      assert_raise Ecto.NoResultsError, fn -> Triggers.deactivate_graph(scope, forged) end
+      assert Workflows.get_graph!(other_scope, graph.id).status == :active
+      assert Repo.get!(Trigger, trigger.id).status == :enabled
+    end
+
     test "validator rejects connections into a trigger node" do
       definition =
         trigger_graph(manual_trigger_node(), %{

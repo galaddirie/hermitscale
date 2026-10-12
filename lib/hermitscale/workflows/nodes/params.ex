@@ -49,8 +49,13 @@ defmodule Hermitscale.Workflows.Nodes.Params do
     predicate_fields = MapSet.new(predicate_fields)
     present_expr_fields = present_expr_fields(raw, schema, expr_fields)
 
+    dynamic_expr_fields =
+      present_expr_fields
+      |> Enum.filter(&expression_tree?(Map.fetch!(raw, Atom.to_string(&1))))
+      |> MapSet.new()
+
     schema_for_validation =
-      Enum.reject(schema, fn {field, _opts} -> MapSet.member?(present_expr_fields, field) end)
+      Enum.reject(schema, fn {field, _opts} -> MapSet.member?(dynamic_expr_fields, field) end)
 
     options =
       for {field, _opts} <- schema_for_validation,
@@ -122,4 +127,13 @@ defmodule Hermitscale.Workflows.Nodes.Params do
       end
     end)
   end
+
+  defp expression_tree?(value) when is_binary(value),
+    do: String.contains?(value, ["{{", "{%"])
+
+  defp expression_tree?(value) when is_map(value),
+    do: value |> Map.values() |> Enum.any?(&expression_tree?/1)
+
+  defp expression_tree?(value) when is_list(value), do: Enum.any?(value, &expression_tree?/1)
+  defp expression_tree?(_value), do: false
 end

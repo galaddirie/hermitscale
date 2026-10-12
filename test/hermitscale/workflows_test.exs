@@ -129,6 +129,34 @@ defmodule Hermitscale.WorkflowsTest do
       assert %{definition: ["is not a valid workflow graph"]} = errors_on(changeset)
       assert [_issue | _] = Ecto.Changeset.get_field(changeset, :validation_issues)
     end
+
+    test "updates metadata without replacing the saved definition", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+      assert {:ok, updated} = Workflows.update_graph(scope, graph, %{"name" => "Renamed"})
+      assert updated.definition == graph.definition
+      assert updated.name == "Renamed"
+    end
+
+    test "rejects an explicit null definition without changing the graph", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+
+      assert {:error, changeset} = Workflows.update_graph(scope, graph, %{definition: nil})
+      assert %{definition: ["can't be blank"]} = errors_on(changeset)
+      assert Workflows.get_graph!(scope, graph.id) == graph
+    end
+
+    test "authoring cannot replace server-owned validation metadata", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+
+      changeset =
+        Workflows.change_graph(scope, graph, %{
+          validation_issues: [%{"message" => "forged"}],
+          validated_at: DateTime.add(graph.validated_at, 60, :second)
+        })
+
+      assert Ecto.Changeset.get_field(changeset, :validation_issues) == graph.validation_issues
+      assert Ecto.Changeset.get_field(changeset, :validated_at) == graph.validated_at
+    end
   end
 
   describe "PostgresStore" do
@@ -141,9 +169,111 @@ defmodule Hermitscale.WorkflowsTest do
       assert {:ok, []} = PostgresStore.stream("run_store_test", state)
       assert PostgresStore.exists?("run_store_test", state)
     end
+
+    test "appends ordered events and replaces checkpoints atomically" do
+      {:ok, state} = PostgresStore.init_store(repo: Repo)
+      id = "run_store_sequence"
+
+      assert {:error, :not_found} = PostgresStore.load(id, state)
+      assert {:ok, 2} = PostgresStore.append(id, [:first, :second], state)
+      assert {:ok, 3} = PostgresStore.append(id, [:third], state)
+      assert {:ok, [:first, :second, :third]} = PostgresStore.stream(id, state)
+      assert Repo.get!(Run, id).last_event_sequence == 3
+
+      assert :ok = PostgresStore.checkpoint(id, [:checkpoint], state)
+      assert {:ok, 2} = PostgresStore.append(id, [:after_checkpoint], state)
+      assert {:ok, [:checkpoint, :after_checkpoint]} = PostgresStore.load(id, state)
+      assert Repo.get!(Run, id).last_event_sequence == 2
+
+      assert :ok = PostgresStore.delete(id, state)
+      assert :ok = PostgresStore.delete(id, state)
+      refute PostgresStore.exists?(id, state)
+      assert {:error, :not_found} = PostgresStore.load(id, state)
+    end
   end
 
   describe "start_run/4" do
+    test "inline admission can leave an asynchronous component running", %{scope: scope} do
+      assert {:ok, graph} =
+               Workflows.create_graph(scope, graph_attrs(definition: completion_probe_graph()))
+
+      assert {:ok, %Run{status: :running} = run} =
+               Workflows.start_run(scope, graph, %{"result" => "ready"},
+                 executor: :inline,
+                 scheduler_policies: [
+                   {{:name, ~r/^probe$/}, %{executor: Runic.Runner.Executor.Task}}
+                 ],
+                 run_context: %{"probe" => %{observer: self()}}
+               )
+
+      on_exit(fn -> Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false) end)
+      assert_receive {:workflow_node_waiting, task}, 1_000
+      assert :ok = Workflows.subscribe_run(scope, run.id)
+      send(task, :release)
+      assert_receive {:run_complete, id}, 1_000
+      assert id == run.id
+      assert Workflows.get_run!(scope, run.id).status == :complete
+    end
+
+    test "completion uses the admitted graph after an author edits the stored graph", %{
+      scope: scope
+    } do
+      assert {:ok, graph} =
+               Workflows.create_graph(scope, graph_attrs(definition: completion_probe_graph()))
+
+      input = %{"result" => "original"}
+
+      assert {:ok, run} =
+               Workflows.start_run(scope, graph, input,
+                 run_context: %{"probe" => %{observer: self()}}
+               )
+
+      on_exit(fn -> Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false) end)
+      assert_receive {:workflow_node_waiting, task}, 1_000
+
+      assert {:ok, _updated} =
+               Workflows.update_graph(scope, graph, %{definition: valid_join_graph()})
+
+      assert :ok = Workflows.subscribe_run(scope, run.id)
+      send(task, :release)
+      assert_receive {:run_complete, id}, 1_000
+      assert id == run.id
+      assert Workflows.get_run!(scope, run.id).output == %{"value" => %{"probe" => [input]}}
+    end
+
+    test "idle persistence failure remains a failed durable outcome", %{scope: scope} do
+      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
+      assert {:ok, run} = Workflows.create_run(scope, graph, %{status: :running})
+      assert :ok = Workflows.subscribe_run(scope, run.id)
+
+      # A store can return arbitrary dependency details, including secrets.
+      worker = idle_worker_fixture(run, persistence: {:error, "sensitive dependency detail"})
+
+      assert {:ok, %Run{status: :failed} = failed} = Workflows.record_run_idle(worker, [])
+      assert failed.output == nil
+      assert failed.error == %{"reason" => "workflow_persistence_failed"}
+      assert failed.completed_at
+      assert_receive {:run_failed, id}
+      assert id == run.id
+      refute_receive {:run_complete, _id}
+    end
+
+    test "records exhausted node failures as failed runs", %{scope: scope} do
+      assert {:ok, graph} =
+               Workflows.create_graph(scope, graph_attrs(definition: failing_math_graph()))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %Run{status: :failed} = run} =
+                 Workflows.start_run(scope, graph, %{}, executor: :inline)
+
+        stored = Workflows.get_run!(scope, run.id)
+        assert stored.status == :failed
+        assert stored.completed_at
+        assert stored.output == nil
+        assert stored.error == %{"reason" => "workflow_execution_failed"}
+      end)
+    end
+
     test "resume preserves actor and account snapshots while authorizing its requester", %{
       scope: scope
     } do

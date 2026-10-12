@@ -8,7 +8,10 @@ defmodule Hermitscale.Triggers.CounterPollProbe.V1 do
     requires: [credentials: [provider: "test.credentials"]],
     params: [
       poll_interval_ms: [type: :pos_integer, default: 60_000],
-      behavior: [type: {:in, ~w(emit emit_credentials quiet fail)}, default: "emit"]
+      behavior: [
+        type: {:in, ~w(emit emit_credentials quiet fail crash invalid batch)},
+        default: "emit"
+      ]
     ]
 
   @impl true
@@ -16,6 +19,16 @@ defmodule Hermitscale.Triggers.CounterPollProbe.V1 do
 
   @impl true
   def poll(%{behavior: "fail"}, _cursor, _ctx), do: {:error, :probe_failure}
+
+  def poll(%{behavior: "crash"}, _cursor, _ctx), do: raise("poll callback bug")
+  def poll(%{behavior: "invalid"}, _cursor, _ctx), do: :invalid_result
+
+  def poll(%{behavior: "batch"}, %{"count" => count}, _ctx) do
+    events =
+      for tick <- (count + 1)..(count + 2), do: %{payload: %{"tick" => tick}, key: "tick-#{tick}"}
+
+    {:ok, events, %{"count" => count + 2}}
+  end
 
   def poll(%{behavior: "quiet"}, cursor, _ctx), do: {:ok, [], cursor}
 

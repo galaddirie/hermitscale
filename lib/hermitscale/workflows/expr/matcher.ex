@@ -45,12 +45,11 @@ defmodule Hermitscale.Workflows.Expr.Matcher do
     |> match(keys)
   end
 
-  def match(data, [key | keys]) when is_tuple(data) and is_integer(key) do
+  def match(data, [key | keys])
+      when is_tuple(data) and is_integer(key) and key >= 0 and key < tuple_size(data) do
     data
     |> elem(key)
     |> match(keys)
-  rescue
-    ArgumentError -> {:error, :not_found}
   end
 
   def match(nil, _keys), do: {:error, :not_found}

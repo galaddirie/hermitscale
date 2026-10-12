@@ -31,11 +31,11 @@ defmodule Hermitscale.Accounts do
           {:error, reason} when reason in [:conflict, :unprocessable, :unavailable] ->
             Client.adapter(__MODULE__).get_organization_by_external_id(external_id)
 
-          error ->
+          {:error, _reason} = error ->
             error
         end
 
-      error ->
+      {:error, _reason} = error ->
         error
     end
   end
@@ -46,37 +46,58 @@ defmodule Hermitscale.Accounts do
   defp workspace_name(_user), do: "My workspace"
 
   defp ensure_owner_membership(user_id, org_id) do
+    with {:ok, membership} <- owner_membership(user_id, org_id) do
+      case membership do
+        %{"status" => "active"} -> :ok
+        nil -> create_owner_membership(user_id, org_id)
+        %{} -> {:error, :membership_inactive}
+      end
+    end
+  end
+
+  defp owner_membership(user_id, org_id) do
     with {:ok, %{"data" => memberships}} <-
            Client.adapter(__MODULE__).list_memberships(user_id, org_id) do
-      case Enum.find(memberships, &(&1["user_id"] == user_id and &1["organization_id"] == org_id)) do
-        %{"status" => "active"} ->
-          :ok
+      {:ok,
+       Enum.find(memberships, &(&1["user_id"] == user_id and &1["organization_id"] == org_id))}
+    end
+  end
 
-        nil ->
-          case Client.adapter(__MODULE__).create_membership(user_id, org_id, "admin") do
-            {:ok, _membership} -> :ok
-            {:error, :conflict} -> ensure_owner_membership(user_id, org_id)
-            error -> error
-          end
+  defp create_owner_membership(user_id, org_id) do
+    case Client.adapter(__MODULE__).create_membership(user_id, org_id, "admin") do
+      {:ok, _membership} -> :ok
+      {:error, :conflict} -> resolve_membership_conflict(user_id, org_id)
+      {:error, _reason} = error -> error
+    end
+  end
 
-        _ ->
-          {:error, :membership_inactive}
+  defp resolve_membership_conflict(user_id, org_id) do
+    with {:ok, membership} <- owner_membership(user_id, org_id) do
+      case membership do
+        %{"status" => "active"} -> :ok
+        nil -> {:error, :conflict}
+        %{} -> {:error, :membership_inactive}
       end
     end
   end
 
   @doc "Lists ordinary workspaces where the caller has active membership."
   def list_organizations(%Scope{user: %{id: user_id}}) do
-    with {:ok, %{"data" => memberships}} <- Client.adapter(__MODULE__).list_memberships(user_id) do
-      memberships
-      |> Enum.filter(&(&1["user_id"] == user_id and &1["status"] == "active"))
-      |> Enum.reduce_while({:ok, []}, fn membership, {:ok, orgs} ->
-        case Client.adapter(__MODULE__).get_organization(membership["organization_id"]) do
-          {:ok, org} -> {:cont, {:ok, orgs ++ [org]}}
-          error -> {:halt, error}
-        end
-      end)
+    with {:ok, %{"data" => memberships}} <- Client.adapter(__MODULE__).list_memberships(user_id),
+         {:ok, organizations} <- fetch_organizations(memberships, user_id) do
+      {:ok, Enum.reverse(organizations)}
     end
+  end
+
+  defp fetch_organizations(memberships, user_id) do
+    memberships
+    |> Enum.filter(&(&1["user_id"] == user_id and &1["status"] == "active"))
+    |> Enum.reduce_while({:ok, []}, fn membership, {:ok, organizations} ->
+      case Client.adapter(__MODULE__).get_organization(membership["organization_id"]) do
+        {:ok, organization} -> {:cont, {:ok, [organization | organizations]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   @doc "Invites a member with Runner as the default, using the same rules for every organization."

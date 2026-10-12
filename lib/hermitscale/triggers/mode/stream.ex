@@ -25,6 +25,7 @@ defmodule Hermitscale.Triggers.Mode.Stream do
               | {:noreply, state()}
               | {:reconnect, reason :: term(), state()}
               | {:stop, reason :: term()}
+              | {:error, reason :: term()}
   @callback terminate_stream(reason :: term(), state()) :: :ok
 
   @optional_callbacks terminate_stream: 2

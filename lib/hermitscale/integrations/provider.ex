@@ -99,9 +99,8 @@ defmodule Hermitscale.Integrations.Provider do
   Returns the declared network domains for a provider.
   """
   def network_domains(provider_id) when is_binary(provider_id) do
-    provider_id
-    |> fetch!()
-    |> apply(:network_domains, [])
+    module = fetch!(provider_id)
+    module.network_domains()
   end
 
   defp provider?(module) do

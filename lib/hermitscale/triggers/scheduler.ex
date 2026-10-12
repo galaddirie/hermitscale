@@ -13,6 +13,8 @@ defmodule Hermitscale.Triggers.Scheduler do
 
   use GenServer
 
+  require Logger
+
   import Ecto.Query
 
   alias Hermitscale.Repo
@@ -45,7 +47,11 @@ defmodule Hermitscale.Triggers.Scheduler do
 
   @impl true
   def handle_info(:tick, state) do
-    run_tick()
+    case run_tick() do
+      fired when is_integer(fired) -> :ok
+      {:error, _reason} -> Logger.error("Trigger scheduler transaction failed")
+    end
+
     schedule_tick(state)
     {:noreply, state}
   end
@@ -53,7 +59,7 @@ defmodule Hermitscale.Triggers.Scheduler do
   defp run_tick do
     now = DateTime.utc_now(:second)
 
-    {:ok, fired} =
+    result =
       Repo.transaction(fn ->
         due =
           Trigger
@@ -63,12 +69,18 @@ defmodule Hermitscale.Triggers.Scheduler do
           |> Repo.all()
 
         Enum.each(due, fn trigger ->
-          %{
-            trigger_id: trigger.id,
-            scheduled_for: DateTime.to_iso8601(trigger.next_fire_at)
-          }
-          |> FireWorker.new()
-          |> Oban.insert!()
+          result =
+            %{
+              trigger_id: trigger.id,
+              scheduled_for: DateTime.to_iso8601(trigger.next_fire_at)
+            }
+            |> FireWorker.new()
+            |> Oban.insert()
+
+          case result do
+            {:ok, _job} -> :ok
+            {:error, changeset} -> Repo.rollback({:enqueue, trigger.id, changeset})
+          end
 
           Triggers.advance_next_fire_at(trigger, now)
         end)
@@ -76,7 +88,10 @@ defmodule Hermitscale.Triggers.Scheduler do
         length(due)
       end)
 
-    fired
+    case result do
+      {:ok, fired} -> fired
+      {:error, _reason} = error -> error
+    end
   end
 
   defp schedule_tick(state), do: Process.send_after(self(), :tick, state.tick_ms)

@@ -32,22 +32,26 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
   defp provider_accounts(_provider), do: []
 
   @doc "Validates a canonical graph selection without accepting graph-supplied authority."
-  def validate_selection(
-        %{"provider" => provider, "account_id" => account_id} = selection,
-        expected
-      )
-      when is_binary(provider) and is_binary(account_id) and account_id != "" do
+  def validate_selection(selection, expected) do
+    with {:ok, _descriptor} <- selection_descriptor(selection, expected), do: :ok
+  end
+
+  defp selection_descriptor(
+         %{"provider" => provider, "account_id" => account_id} = selection,
+         expected
+       )
+       when is_binary(provider) and is_binary(account_id) and account_id != "" do
     with true <- Enum.sort(Map.keys(selection)) == ["account_id", "provider"],
          true <- is_nil(expected) or expected == provider,
-         {:ok, _descriptor} <- Provider.descriptor(provider) do
-      :ok
+         {:ok, descriptor} <- Provider.descriptor(provider) do
+      {:ok, descriptor}
     else
       false -> {:error, :invalid_connection}
-      error -> error
+      {:error, _reason} = error -> error
     end
   end
 
-  def validate_selection(_selection, _expected), do: {:error, :invalid_connection}
+  defp selection_descriptor(_selection, _expected), do: {:error, :invalid_connection}
 
   @doc "Constructs a validated non-secret reference after checking the account's current readiness."
   def credential_ref(
@@ -56,9 +60,9 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
         scopes
       )
       when is_list(scopes) do
-    with :ok <- validate_selection(selection, nil),
+    with {:ok, descriptor} <- selection_descriptor(selection, nil),
          {:ok, accounts} <- list_for_org(context.organization_id),
-         {:ok, _account} <- ready_account(accounts, selection, scopes) do
+         {:ok, _account} <- ready_account(accounts, selection, scopes, descriptor) do
       {:ok,
        %CredentialRef{
          execution_context: context,
@@ -73,8 +77,9 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
 
   @doc "Chooses the only compatible account; several matches require an explicit choice."
   def select(%Scope{} = scope, provider, scopes) do
-    with {:ok, accounts} <- list(scope) do
-      case Enum.filter(accounts, &ready?(&1, provider, scopes)) do
+    with {:ok, descriptor} <- Provider.descriptor(provider),
+         {:ok, accounts} <- list(scope) do
+      case Enum.filter(accounts, &ready?(&1, provider, scopes, descriptor)) do
         [account] -> {:ok, %{"provider" => provider, "account_id" => account["id"]}}
         [] -> {:error, :connection_setup_required}
         _ -> {:error, :account_selection_required}
@@ -82,7 +87,7 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
     end
   end
 
-  defp ready_account(accounts, selection, scopes) do
+  defp ready_account(accounts, selection, scopes, descriptor) do
     case Enum.find(
            accounts,
            &(&1["id"] == selection["account_id"] and &1["provider"] == selection["provider"])
@@ -94,22 +99,18 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
         {:error, :needs_reauthorization}
 
       account ->
-        case ready?(account, selection["provider"], scopes) do
+        case ready?(account, selection["provider"], scopes, descriptor) do
           true -> {:ok, account}
           false -> {:error, :insufficient_scopes}
         end
     end
   end
 
-  defp ready?(account, provider, scopes) do
-    with {:ok, descriptor} <- Provider.descriptor(provider) do
-      account["provider"] == provider and account["state"] == "connected" and
-        account["auth_method"] in descriptor.auth_methods and
-        (account["auth_method"] == "api_key" or
-           Enum.all?(scopes, &(&1 in (account["scopes"] || []))))
-    else
-      _ -> false
-    end
+  defp ready?(account, provider, scopes, descriptor) do
+    account["provider"] == provider and account["state"] == "connected" and
+      account["auth_method"] in descriptor.auth_methods and
+      (account["auth_method"] == "api_key" or
+         Enum.all?(scopes, &(&1 in (account["scopes"] || []))))
   end
 
   @doc "Vends immediately before an effect, observing membership, rotation and consent changes."
@@ -118,8 +119,9 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
     selection = %{"provider" => ref.provider_id, "account_id" => ref.account_id}
 
     with {:ok, _scope} <- Authorization.execution_scope(context),
-         {:ok, _validated_ref} <- credential_ref(context, selection, ref.required_scopes),
          {:ok, descriptor} <- Provider.descriptor(ref.provider_id),
+         {:ok, accounts} <- list_for_org(context.organization_id),
+         {:ok, _account} <- ready_account(accounts, selection, ref.required_scopes, descriptor),
          {:ok, credential} <-
            Client.adapter(__MODULE__).vend_credentials(
              descriptor.slug,
@@ -159,7 +161,7 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
       )
     else
       false -> {:error, :api_key_required}
-      error -> error
+      {:error, _reason} = error -> error
     end
   end
 
@@ -177,11 +179,11 @@ defmodule Hermitscale.Integrations.ConnectedAccounts do
              secret
            ) do
         {:ok, _account} -> {:ok, :connected}
-        error -> error
+        {:error, _reason} = error -> error
       end
     else
       false -> {:error, :unsupported_auth_method}
-      error -> error
+      {:error, _reason} = error -> error
     end
   end
 

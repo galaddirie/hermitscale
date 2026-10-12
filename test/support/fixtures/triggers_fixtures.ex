@@ -6,6 +6,17 @@ defmodule Hermitscale.TriggersFixtures do
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.{Triggers, Workflows}
 
+  def unresolved_firing_fixture(trigger, key) do
+    %Hermitscale.Triggers.Firing{}
+    |> Hermitscale.Triggers.Firing.changeset(%{
+      trigger_id: trigger.id,
+      idempotency_key: key,
+      outcome: :dispatched,
+      fired_at: DateTime.utc_now(:second)
+    })
+    |> Hermitscale.Repo.insert!()
+  end
+
   def trigger_graph(trigger_node, attrs \\ %{}) do
     attrs = Map.new(attrs)
     trigger_id = trigger_node["id"]

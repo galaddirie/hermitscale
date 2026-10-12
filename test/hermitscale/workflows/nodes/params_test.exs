@@ -42,6 +42,18 @@ defmodule Hermitscale.Workflows.Nodes.ParamsTest do
 
       assert Exception.message(error) =~ "unknown expression filter"
     end
+
+    test "validates literal values in expressionable fields against their schema" do
+      schema = NimbleOptions.new!(count: [type: :non_neg_integer, required: true]).schema
+
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Params.cast(%{"count" => "invalid"}, schema, [:count])
+
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Params.cast(%{"count" => -1}, schema, [:count])
+
+      assert {:ok, %{count: {:literal, 2}}} = Params.cast(%{"count" => 2}, schema, [:count])
+    end
   end
 
   describe "cast!/2" do

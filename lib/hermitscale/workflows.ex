@@ -29,21 +29,10 @@ defmodule Hermitscale.Workflows do
 
   def create_graph(%Scope{} = scope, attrs) do
     changeset = Graph.create_changeset(%Graph{}, attrs, scope)
-    definition = get_definition(attrs)
 
     with :ok <- Authorization.authorize(scope, "workflows:edit"),
-         :ok <- Validator.validate(definition),
-         {:ok, definition} <- Credentials.select_accounts(scope, definition),
-         changeset <- Ecto.Changeset.put_change(changeset, :definition, definition),
-         :ok <- Validator.validate(definition),
-         changeset <- put_validation_success(changeset) do
+         {:ok, changeset} <- prepare_graph(changeset, scope) do
       Repo.insert(changeset)
-    else
-      {:error, issues} when is_list(issues) ->
-        {:error, Graph.put_validation_issues(changeset, issues)}
-
-      {:error, _reason} = error ->
-        error
     end
   end
 
@@ -51,16 +40,24 @@ defmodule Hermitscale.Workflows do
     Scope.assert_same_org!(scope, graph)
 
     graph = get_graph!(scope, graph.id)
-    changeset = Graph.update_changeset(graph, attrs, scope: scope)
-    definition = get_definition(attrs) || graph.definition
+    changeset = Graph.update_changeset(graph, attrs)
 
     with :ok <- Authorization.authorize(scope, "workflows:edit"),
-         :ok <- Validator.validate(definition),
-         {:ok, definition} <- Credentials.select_accounts(scope, definition),
-         changeset <- Ecto.Changeset.put_change(changeset, :definition, definition),
-         :ok <- Validator.validate(definition),
-         changeset <- put_validation_success(changeset) do
+         {:ok, changeset} <- prepare_graph(changeset, scope) do
       Repo.update(changeset)
+    end
+  end
+
+  defp prepare_graph(changeset, scope) do
+    definition = Ecto.Changeset.get_field(changeset, :definition)
+
+    with :ok <- Validator.validate(definition),
+         {:ok, definition} <- Credentials.select_accounts(scope, definition),
+         :ok <- Validator.validate(definition) do
+      {:ok,
+       changeset
+       |> Ecto.Changeset.put_change(:definition, definition)
+       |> put_validation_success()}
     else
       {:error, issues} when is_list(issues) ->
         {:error, Graph.put_validation_issues(changeset, issues)}
@@ -74,7 +71,7 @@ defmodule Hermitscale.Workflows do
     Scope.assert_same_org!(scope, graph)
 
     with :ok <- Authorization.authorize(scope, "workflows:edit") do
-      Graph.update_changeset(get_graph!(scope, graph.id), attrs, scope: scope)
+      Graph.update_changeset(get_graph!(scope, graph.id), attrs)
     end
   end
 
@@ -149,7 +146,7 @@ defmodule Hermitscale.Workflows do
       )
     else
       false -> {:error, :invalid_execution_identity}
-      error -> error
+      {:error, _reason} = error -> error
     end
   end
 
@@ -181,10 +178,10 @@ defmodule Hermitscale.Workflows do
              @runner,
              run.id,
              workflow,
-             runner_opts(opts)
+             runner_opts(opts, graph.definition)
            ),
          :ok <- Runic.Runner.run(@runner, run.id, input, run_opts(opts, run_context)) do
-      {:ok, maybe_mark_inline_complete(run, opts)}
+      run_result(run, opts)
     end
   end
 
@@ -197,18 +194,23 @@ defmodule Hermitscale.Workflows do
   end
 
   defp do_resume_run(%Run{} = run, opts) do
-    run = Repo.preload(run, :graph)
+    run
+    |> Repo.preload(:graph)
+    |> resume_with_graph(opts)
+  end
 
+  defp resume_with_graph(%Run{graph: nil}, _opts), do: {:error, :missing_graph}
+
+  defp resume_with_graph(%Run{graph: %Graph{} = graph} = run, opts) do
     context = %ExecutionContext{
-      organization_id: run.graph.org_id,
+      organization_id: graph.org_id,
       actor_user_id: run.execution_actor_user_id,
       required_permissions: resume_permissions(run)
     }
 
-    definition = Credentials.with_selections(run.graph.definition, run.account_selections)
+    definition = Credentials.with_selections(graph.definition, run.account_selections)
 
     with {:ok, _actor_scope} <- Authorization.execution_scope(context),
-         %Graph{} = graph <- run.graph,
          {:ok, base_workflow} <- Compiler.compile(graph.definition),
          {:ok, run_context} <-
            Credentials.resolve_run_context(
@@ -226,11 +228,8 @@ defmodule Hermitscale.Workflows do
         @runner,
         run.id,
         workflow,
-        Keyword.merge(runner_opts(opts), resumed: true)
+        Keyword.merge(runner_opts(opts, graph.definition), resumed: true)
       )
-    else
-      nil -> {:error, :missing_graph}
-      error -> error
     end
   end
 
@@ -256,22 +255,75 @@ defmodule Hermitscale.Workflows do
 
   def mark_run_complete(run_id, %Workflow{} = workflow) do
     run = run_id |> get_run_for_system!() |> Repo.preload(:graph)
-    output = terminal_outputs(workflow, run.graph.definition)
+    complete_run(run, workflow, terminal_ids(run.graph.definition))
+  end
+
+  defp complete_run(run, workflow, terminal_ids) do
+    output = Map.new(terminal_ids, &{&1, Workflow.raw_productions(workflow, &1)})
     now = DateTime.utc_now(:second)
 
-    result =
-      run
-      |> Run.changeset(%{status: :complete, output: json_payload(output), completed_at: now})
-      |> Repo.update()
+    update_run_result(run, %{
+      status: :complete,
+      output: json_payload(output),
+      error: nil,
+      completed_at: now
+    })
+  end
+
+  @doc false
+  def record_run_idle(
+        %Runic.Runner.Worker{
+          id: id,
+          workflow: workflow,
+          admission_causes: [],
+          persistence: :saved
+        },
+        terminal_ids
+      ) do
+    id |> get_run_for_system!() |> complete_run(workflow, terminal_ids)
+  end
+
+  def record_run_idle(
+        %Runic.Runner.Worker{
+          id: id,
+          admission_causes: [_cause | _causes]
+        },
+        _terminal_ids
+      ) do
+    mark_run_failed(id, "workflow_execution_failed")
+  end
+
+  # Runic retains the pending events, but a successful checkpoint retry does
+  # not call on_idle again. Record the failed durable outcome explicitly.
+  def record_run_idle(%Runic.Runner.Worker{id: id, persistence: {:error, _reason}}, _terminal_ids) do
+    mark_run_failed(id, "workflow_persistence_failed")
+  end
+
+  defp mark_run_failed(id, reason) do
+    id
+    |> get_run_for_system!()
+    |> update_run_result(%{
+      status: :failed,
+      output: nil,
+      error: %{"reason" => reason},
+      completed_at: DateTime.utc_now(:second)
+    })
+  end
+
+  defp update_run_result(run, attrs) do
+    result = run |> Run.changeset(attrs) |> Repo.update()
 
     with {:ok, run} <- result do
-      Phoenix.PubSub.broadcast(Hermitscale.PubSub, run_topic(run.id), {:run_complete, run.id})
+      :ok = Phoenix.PubSub.broadcast(Hermitscale.PubSub, run_topic(run.id), run_notification(run))
       {:ok, run}
     end
   end
 
+  defp run_notification(%Run{status: :complete, id: id}), do: {:run_complete, id}
+  defp run_notification(%Run{status: :failed, id: id}), do: {:run_failed, id}
+
   @doc """
-  Subscribes the caller to completion events for a run (`{:run_complete, id}`).
+  Subscribes the caller to `{:run_complete, id}` or `{:run_failed, id}` events.
   """
   def subscribe_run(%Scope{} = scope, run_id) do
     _run = get_run!(scope, run_id)
@@ -288,16 +340,20 @@ defmodule Hermitscale.Workflows do
   # A run's result is the output of its terminal nodes — the graph nodes nothing
   # else consumes. Keyed by node id so multi-output graphs round-trip cleanly,
   # and so intermediate facts and map fan-out plumbing stay out of the result.
-  defp terminal_outputs(workflow, definition) do
-    consumed = MapSet.new(definition["connections"] || [], & &1["from"])
+  defp terminal_ids(definition) do
+    consumed = MapSet.new(Map.fetch!(definition, "connections"), &Map.fetch!(&1, "from"))
 
-    definition["nodes"]
-    |> Enum.map(& &1["id"])
+    definition
+    |> Map.fetch!("nodes")
+    |> Enum.map(&Map.fetch!(&1, "id"))
     |> Enum.reject(&MapSet.member?(consumed, &1))
-    |> Map.new(fn id -> {id, Workflow.raw_productions(workflow, id)} end)
   end
 
-  defp runner_opts(opts) do
+  defp runner_opts(opts, definition) do
+    # Capture only the admitted terminal IDs. An author can edit the graph
+    # while it runs; completion must still describe that original computation.
+    terminal_ids = terminal_ids(definition)
+
     opts
     |> Keyword.take([
       :checkpoint_strategy,
@@ -307,7 +363,7 @@ defmodule Hermitscale.Workflows do
       :executor,
       :executor_opts
     ])
-    |> Keyword.put_new(:on_complete, {__MODULE__, :mark_run_complete, []})
+    |> Keyword.put(:hooks, on_idle: &__MODULE__.record_run_idle(&1, terminal_ids))
   end
 
   defp run_opts(opts, run_context) do
@@ -316,19 +372,20 @@ defmodule Hermitscale.Workflows do
     |> Keyword.put(:run_context, run_context)
   end
 
-  defp maybe_mark_inline_complete(%Run{} = run, opts) do
+  defp run_result(%Run{} = run, opts) do
     case Keyword.get(opts, :executor) do
       :inline ->
-        with {:ok, workflow} <- Runic.Runner.get_workflow(@runner, run.id),
-             false <- Workflow.is_runnable?(workflow),
-             {:ok, run} <- mark_run_complete(run.id, workflow) do
-          run
+        with {:ok, _workflow} <- Runic.Runner.get_workflow(@runner, run.id),
+             {:ok, %{status: :saved}} <- Runic.Runner.persistence_status(@runner, run.id) do
+          {:ok, get_run_for_system!(run.id)}
         else
-          _other -> run
+          {:ok, %{status: {:error, reason}}} -> {:error, reason}
+          {:ok, %{status: :pending}} -> {:ok, get_run_for_system!(run.id)}
+          {:error, _reason} = error -> error
         end
 
       _other ->
-        run
+        {:ok, run}
     end
   end
 
@@ -337,10 +394,6 @@ defmodule Hermitscale.Workflows do
     |> Ecto.Changeset.put_change(:validation_issues, [])
     |> Ecto.Changeset.put_change(:validated_at, DateTime.utc_now(:second))
   end
-
-  defp get_definition(%{"definition" => definition}), do: definition
-  defp get_definition(%{definition: definition}), do: definition
-  defp get_definition(_attrs), do: nil
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn

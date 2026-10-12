@@ -74,12 +74,7 @@ defmodule Hermitscale.Workflows.PostgresStore do
   end
 
   @impl true
-  def stream(workflow_id, state) do
-    case load(workflow_id, state) do
-      {:ok, events} -> {:ok, events}
-      {:error, :not_found} -> {:error, :not_found}
-    end
-  end
+  def stream(workflow_id, state), do: load(workflow_id, state)
 
   @impl true
   def delete(workflow_id, %{repo: repo}) do
@@ -121,7 +116,9 @@ defmodule Hermitscale.Workflows.PostgresStore do
       nil ->
         %Run{}
         |> Run.changeset(%{id: id, status: :running, last_event_sequence: 0})
-        |> repo.insert!()
+        |> repo.insert!(on_conflict: :nothing, conflict_target: :id)
+
+        repo.one!(query)
     end
   end
 

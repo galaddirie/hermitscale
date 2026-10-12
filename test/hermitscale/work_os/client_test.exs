@@ -2,6 +2,7 @@ defmodule Hermitscale.WorkOS.ClientTest do
   use ExUnit.Case, async: false
 
   alias Hermitscale.WorkOS.Client
+  import Hermitscale.WorkOS.ClientFixtures
 
   setup {Req.Test, :set_req_test_from_context}
   setup {Req.Test, :verify_on_exit!}
@@ -134,6 +135,135 @@ defmodule Hermitscale.WorkOS.ClientTest do
 
       assert to_string(reason) == code
       refute inspect(reason) =~ "opaque-secret"
+    end
+  end
+
+  test "malformed successful resource responses return dependency errors" do
+    calls = [
+      {fn -> Client.authenticate_with_code("code") end, %{"access_token" => "access"}},
+      {fn -> Client.authenticate_with_code("code") end,
+       %{
+         "access_token" => "access",
+         "refresh_token" => "refresh",
+         "user" => %{"id" => "user_123", "email" => false}
+       }},
+      {fn -> Client.authenticate_with_refresh_token("refresh", "org_123") end, %{}},
+      {fn -> Client.get_organization("org_123") end, %{}},
+      {fn -> Client.get_organization_by_external_id("personal:user_123") end, %{"id" => false}},
+      {fn -> Client.create_organization(%{"name" => "Workspace"}) end, %{"id" => ""}},
+      {fn -> Client.get_membership("om_123") end, %{"id" => "om_123"}},
+      {fn -> Client.create_membership("user_123", "org_123", "admin") end, []},
+      {fn -> Client.update_membership("om_123", "admin") end, %{}},
+      {fn -> Client.get_role("admin") end, %{"permissions" => false}},
+      {fn -> Client.list_org_providers("org_123") end,
+       %{"data" => [%{"slug" => "google", "connected_accounts" => false}]}},
+      {fn ->
+         Client.authorize_connection("google", "user_123", "org_123", "https://example.test")
+       end, %{"url" => false}}
+    ]
+
+    for {call, body} <- calls do
+      Req.Test.expect(__MODULE__, &Req.Test.json(&1, body))
+      assert {:error, :invalid_response} = call.()
+    end
+  end
+
+  test "valid resource responses retain their WorkOS fields" do
+    calls = [
+      {fn -> Client.authenticate_with_code("code") end,
+       %{
+         "access_token" => "access",
+         "refresh_token" => "refresh",
+         "user" => %{"id" => "user_123"}
+       }},
+      {fn -> Client.get_organization("org_123") end, %{"id" => "org_123", "name" => "Workspace"}},
+      {fn -> Client.get_membership("om_123") end, membership_fixture("om_123")},
+      {fn -> Client.get_role("admin") end, %{"permissions" => ["workflows:run"]}},
+      {fn -> Client.list_org_providers("org_123") end, %{"data" => [provider_fixture()]}},
+      {fn ->
+         Client.authorize_connection("google", "user_123", "org_123", "https://example.test")
+       end, %{"url" => "https://api.workos.test/authorize"}}
+    ]
+
+    for {call, body} <- calls do
+      Req.Test.expect(__MODULE__, &Req.Test.json(&1, body))
+      assert {:ok, ^body} = call.()
+    end
+  end
+
+  test "membership pagination retains page order and rejects malformed or repeated cursors" do
+    Req.Test.expect(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{
+        "data" => [membership_fixture("om_first")],
+        "list_metadata" => %{"after" => "next"}
+      })
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      conn = Plug.Conn.fetch_query_params(conn)
+      assert conn.query_params["after"] == "next"
+
+      Req.Test.json(conn, %{
+        "data" => [membership_fixture("om_second")],
+        "list_metadata" => %{"after" => nil}
+      })
+    end)
+
+    assert {:ok, %{"data" => [%{"id" => "om_first"}, %{"id" => "om_second"}]}} =
+             Client.list_memberships("user_123")
+
+    for page <- [
+          %{"data" => false},
+          %{"data" => [false]},
+          %{"data" => [], "list_metadata" => false},
+          %{"data" => [], "list_metadata" => %{"after" => 42}},
+          %{"data" => [], "list_metadata" => %{"after" => ""}}
+        ] do
+      Req.Test.expect(__MODULE__, &Req.Test.json(&1, page))
+      assert {:error, :invalid_response} = Client.list_memberships("user_123")
+    end
+
+    attempts = start_supervised!({Agent, fn -> 0 end}, id: :pagination_attempts)
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      count = Agent.get_and_update(attempts, fn count -> {count, count + 1} end)
+
+      page =
+        if count < 2,
+          do: %{"data" => [], "list_metadata" => %{"after" => "repeated"}},
+          else: %{"data" => []}
+
+      Req.Test.json(conn, page)
+    end)
+
+    assert {:error, :invalid_response} = Client.list_memberships("user_123")
+    assert Agent.get(attempts, & &1) == 2
+  end
+
+  test "invalid optional credential expiry and scopes cannot become usable credentials" do
+    for overrides <- [
+          %{"expires_at" => false},
+          %{"expires_at" => "not-a-date"},
+          %{"scopes" => false},
+          %{"missing_scopes" => false},
+          %{"scopes" => [false]}
+        ] do
+      Req.Test.expect(__MODULE__, &Req.Test.json(&1, credential_fixture(overrides)))
+
+      assert {:error, :invalid_credential_response} =
+               Client.vend_credentials("google", "user_123", "org_123", "data_123")
+    end
+
+    for expiry <- [nil, DateTime.utc_now(:second) |> DateTime.add(300) |> DateTime.to_iso8601()] do
+      Req.Test.expect(
+        __MODULE__,
+        &Req.Test.json(&1, credential_fixture(%{"expires_at" => expiry}))
+      )
+
+      assert {:ok, %{expires_at: parsed}} =
+               Client.vend_credentials("google", "user_123", "org_123", "data_123")
+
+      assert is_nil(parsed) or match?(%DateTime{}, parsed)
     end
   end
 end

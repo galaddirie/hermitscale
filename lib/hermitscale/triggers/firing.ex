@@ -3,8 +3,9 @@ defmodule Hermitscale.Triggers.Firing do
   Audit record for one trigger firing attempt.
 
   The `{trigger_id, idempotency_key}` unique index is the dedupe mechanism for
-  webhook redeliveries, overlapping polls, and scheduler restarts: a duplicate
-  firing fails to insert and is dropped before it can dispatch a run.
+  webhook redeliveries, overlapping polls, and scheduler restarts. Completed
+  attempts dedupe; failed attempts may retry. A dispatched row without its run
+  link remains unresolved rather than being reported as successfully handled.
   """
 
   use Ecto.Schema

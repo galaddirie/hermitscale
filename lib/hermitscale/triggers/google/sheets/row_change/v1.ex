@@ -6,8 +6,8 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
   snapshots the sheet into the cursor (`init_cursor/2`), and every poll diffs
   the current rows against it — see `Hermitscale.Triggers.Google.Sheets.Rows`
   for identity and hashing semantics. Each event's idempotency key is
-  `change_type + row key + content hash`, so replayed polls dedupe at the
-  dispatcher.
+  `change_type + row key + cursor epoch + generation + content hash`. Replaying the
+  same cursor dedupes while later transitions to a previous value still fire.
   """
 
   use Hermitscale.Triggers.Behaviour,
@@ -49,10 +49,10 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
   @impl true
   def validate_params(params) do
     cond do
-      params[:poll_interval_ms] < @min_poll_interval_ms ->
+      params.poll_interval_ms < @min_poll_interval_ms ->
         {:error, "poll_interval_ms must be at least #{@min_poll_interval_ms}"}
 
-      params[:first_data_row] <= params[:header_row] ->
+      params.first_data_row <= params.header_row ->
         {:error, "first_data_row must be greater than header_row"}
 
       true ->
@@ -63,20 +63,27 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
   @impl true
   def init_cursor(params, ctx) do
     with {:ok, snapshots} <- read_rows(params, ctx) do
-      {:ok, %{"rows" => Rows.index(snapshots)}}
+      {:ok,
+       %{"rows" => Rows.index(snapshots), "epoch" => Ecto.UUID.generate(), "generation" => 0}}
     end
   end
 
   @impl true
   def poll(params, cursor, ctx) do
     with {:ok, snapshots} <- read_rows(params, ctx) do
+      # Persisted cursors created before generations were introduced start at
+      # zero; the next successful batch upgrades them without resetting rows.
+      generation = Map.get(cursor, "generation", 0) + 1
+      epoch = Map.get(cursor, "epoch", "legacy")
+
       events =
         snapshots
-        |> Rows.diff(cursor["rows"] || %{})
+        |> Rows.diff(Map.get(cursor, "rows", %{}))
         |> Enum.filter(&selected?(&1, params.event))
-        |> Enum.map(&to_event(&1, params))
+        |> Enum.map(&to_event(&1, params, epoch, generation))
 
-      {:ok, events, %{"rows" => Rows.index(snapshots)}}
+      {:ok, events,
+       %{"rows" => Rows.index(snapshots), "epoch" => epoch, "generation" => generation}}
     end
   end
 
@@ -84,7 +91,7 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
 
   defp read_rows(params, %{credentials: credentials}) do
     with {:ok, body} <- Client.read_rows(credentials, params.spreadsheet_id, range(params)) do
-      {:ok, Rows.parse(body["values"] || [], params)}
+      {:ok, Rows.parse(Map.get(body, "values", []), params)}
     end
   end
 
@@ -97,11 +104,11 @@ defmodule Hermitscale.Triggers.Google.Sheets.RowChange.V1 do
   defp selected?({:updated, _snapshot}, event),
     do: event in ["row_updated", "row_added_or_updated"]
 
-  defp to_event({change, snapshot}, params) do
+  defp to_event({change, snapshot}, params, epoch, generation) do
     change_type = "row_#{change}"
 
     %{
-      key: "#{change_type}:#{snapshot.key}:#{snapshot.hash}",
+      key: "#{change_type}:#{snapshot.key}:#{epoch}:#{generation}:#{snapshot.hash}",
       payload: %{
         "spreadsheet_id" => params.spreadsheet_id,
         "sheet" => params.sheet,

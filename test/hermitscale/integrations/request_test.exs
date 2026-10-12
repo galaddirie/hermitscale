@@ -69,9 +69,84 @@ defmodule Hermitscale.Integrations.RequestTest do
       end)
 
       assert {:ok, %{status: 200}} =
-               Request.request(:get, "https://test.local", ref, plug: {Req.Test, __MODULE__})
+               Request.request(:get, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: 0
+               )
 
       assert Enum.count(Client.calls(), fn {op, _} -> op == :vend_credentials end) == 2
+    end
+
+    test "safe transient retries have a bounded budget", %{ref: ref} do
+      Req.Test.expect(__MODULE__, 3, fn conn -> Plug.Conn.send_resp(conn, 503, "busy") end)
+
+      assert {:ok, %{status: 503}} =
+               Request.request(:get, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: 0
+               )
+
+      assert Enum.count(Client.calls(), fn {op, _} -> op == :vend_credentials end) == 3
+    end
+
+    test "uses Retry-After and replaces the previous authentication method", %{ref: ref} do
+      Req.Test.expect(__MODULE__, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer access_123"]
+
+        Client.put_response(
+          :vend_credentials,
+          {:ok, %{auth_method: "api_key", value: "rotated_key", scopes: [], missing_scopes: []}}
+        )
+
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "0")
+        |> Plug.Conn.send_resp(429, "busy")
+      end)
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "authorization") == []
+        assert Plug.Conn.get_req_header(conn, "x-api-key") == ["rotated_key"]
+        Req.Test.json(conn, %{"ok" => true})
+      end)
+
+      assert {:ok, %{status: 200}} =
+               Request.request(:get, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: fn _attempt -> flunk("Retry-After must determine the delay") end
+               )
+    end
+
+    test "writes and permanent transport failures are not retried", %{ref: ref} do
+      Req.Test.expect(__MODULE__, fn conn -> Plug.Conn.send_resp(conn, 503, "busy") end)
+
+      assert {:ok, %{status: 503}} =
+               Request.request(:post, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: 0
+               )
+
+      Req.Test.expect(__MODULE__, &Req.Test.transport_error(&1, :protocol_not_negotiated))
+
+      assert {:error, :provider_unavailable} =
+               Request.request(:get, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: 0
+               )
+
+      assert Enum.count(Client.calls(), fn {op, _} -> op == :vend_credentials end) == 2
+    end
+
+    test "a failed credential refresh stops retries before another provider request", %{ref: ref} do
+      Req.Test.expect(__MODULE__, fn conn ->
+        Client.put_response(:vend_credentials, {:error, :rate_limited})
+        Plug.Conn.send_resp(conn, 503, "busy")
+      end)
+
+      assert {:error, :rate_limited} =
+               Request.request(:get, "https://test.local", ref,
+                 plug: {Req.Test, __MODULE__},
+                 retry_delay: 0
+               )
     end
 
     test "API keys use the descriptor's header and graph options cannot replace auth", %{ref: ref} do

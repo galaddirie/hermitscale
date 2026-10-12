@@ -177,6 +177,8 @@ defmodule Hermitscale.Integrations.ConnectedAccountsTest do
                  %{"provider" => "undeployed", "account_id" => "data_test"},
                  nil
                )
+
+      assert {:error, :unknown_provider} = ConnectedAccounts.select(scope, "undeployed", [])
     end
   end
 end

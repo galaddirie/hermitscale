@@ -3,17 +3,10 @@ defmodule Hermitscale.Workflows.Validator do
   Validates stored workflow graph JSON before it is compiled into Runic structs.
   """
 
-  alias Hermitscale.Workflows.{Catalog, Expr, Policy}
+  alias Hermitscale.Workflows.{Catalog, Expr, Policy, Topology}
   alias Hermitscale.Workflows.Nodes.Params
 
-  defmodule Issue do
-    @moduledoc """
-    Structured validation issue returned to editors and forms.
-    """
-
-    @enforce_keys [:path, :code, :message]
-    defstruct [:path, :code, :message, severity: :error]
-  end
+  alias Hermitscale.Workflows.Validator.{Issue, MapRegions}
 
   @node_id_pattern ~r/^[A-Za-z][A-Za-z0-9_:-]*$/
   @max_nodes 100
@@ -39,14 +32,14 @@ defmodule Hermitscale.Workflows.Validator do
     if base_issues == [] do
       catalog = Catalog.index()
       nodes = node_specs(graph)
-      connections = graph["connections"] || []
+      connections = Map.fetch!(graph, "connections")
       nodes_by_id = Map.new(nodes, &{&1["id"], &1})
       connection_issues = connection_issues(connections, nodes_by_id)
-      cycle_issues = cycle_issues(graph)
+      cycle_issues = if connection_issues == [], do: cycle_issues(graph), else: []
 
       region_issues =
         case {connection_issues, cycle_issues} do
-          {[], []} -> map_region_issues(nodes, catalog, connections)
+          {[], []} -> MapRegions.issues(nodes, catalog, connections)
           _issues -> []
         end
 
@@ -70,39 +63,22 @@ defmodule Hermitscale.Workflows.Validator do
   Topologically sorts node ids or returns validation issues.
   """
   def topo_order(graph) do
-    nodes = node_specs(graph)
-    connections = graph["connections"] || []
-    ids = Enum.map(nodes, & &1["id"])
-    parents = parent_map(connections)
-    children = child_map(connections)
-    incoming_counts = Map.new(ids, &{&1, length(Map.get(parents, &1, []))})
+    with [] <- graph_shape_issues(graph),
+         nodes_by_id = Map.new(node_specs(graph), &{&1["id"], &1}),
+         [] <- connection_issues(Map.fetch!(graph, "connections"), nodes_by_id) do
+      case Topology.order(graph) do
+        {:ok, sorted} ->
+          {:ok, sorted}
 
-    queue =
-      ids
-      |> Enum.filter(&(Map.fetch!(incoming_counts, &1) == 0))
-      |> :queue.from_list()
-
-    sorted = do_topo(queue, incoming_counts, children, [])
-
-    if length(sorted) == length(ids) do
-      {:ok, sorted}
+        {:error, :cycle} ->
+          {:error, [Issue.new("$.connections", :cycle, "workflow graph must be acyclic")]}
+      end
     else
-      {:error, [issue("$.connections", :cycle, "workflow graph must be acyclic")]}
+      issues when is_list(issues) -> {:error, issues}
     end
   end
 
-  def parent_map(connections) do
-    connections
-    |> Enum.group_by(& &1["to"])
-    |> Map.new(fn {to, edges} ->
-      ordered =
-        edges
-        |> Enum.sort_by(&Map.get(&1, "to_input", 0))
-        |> Enum.map(& &1["from"])
-
-      {to, ordered}
-    end)
-  end
+  defdelegate parent_map(connections), to: Topology
 
   def node_specs(graph) when is_map(graph) do
     Map.get(graph, "nodes") || []
@@ -111,7 +87,7 @@ defmodule Hermitscale.Workflows.Validator do
   defp credential_issues(graph, nodes) do
     graph_issues =
       case Map.has_key?(graph, "credentials") do
-        true -> [issue("$.credentials", :legacy_credentials, "use node connection objects")]
+        true -> [Issue.new("$.credentials", :legacy_credentials, "use node connection objects")]
         false -> []
       end
 
@@ -121,8 +97,11 @@ defmodule Hermitscale.Workflows.Validator do
 
       legacy =
         case Map.has_key?(node, "credentials") do
-          true -> [issue(path <> ".credentials", :legacy_credentials, "use a connection object")]
-          false -> []
+          true ->
+            [Issue.new(path <> ".credentials", :legacy_credentials, "use a connection object")]
+
+          false ->
+            []
         end
 
       selection =
@@ -151,7 +130,7 @@ defmodule Hermitscale.Workflows.Validator do
 
               {:error, _reason} ->
                 [
-                  issue(
+                  Issue.new(
                     path <> ".connection",
                     :invalid_connection,
                     "select an account from the node's deployed integration"
@@ -172,17 +151,22 @@ defmodule Hermitscale.Workflows.Validator do
     |> require_field(graph, "nodes", "$.nodes")
     |> require_field(graph, "connections", "$.connections")
     |> validate_schema_version(graph)
+    |> validate_string_field(graph, "id", "$.id")
+    |> validate_string_field(graph, "name", "$.name")
+    |> validate_object_field(graph, "env", "$.env")
+    |> validate_object_field(graph, "vars", "$.vars")
     |> validate_nodes_shape(graph)
     |> validate_connections_shape(graph)
   end
 
-  defp graph_shape_issues(_graph), do: [issue("$", :invalid_type, "graph must be a JSON object")]
+  defp graph_shape_issues(_graph),
+    do: [Issue.new("$", :invalid_type, "graph must be a JSON object")]
 
   defp require_field(issues, graph, key, path) do
     if Map.has_key?(graph, key) do
       issues
     else
-      [issue(path, :required, "#{key} is required") | issues]
+      [Issue.new(path, :required, "#{key} is required") | issues]
     end
   end
 
@@ -190,7 +174,7 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_schema_version(issues, %{"schema_version" => version}) do
     [
-      issue(
+      Issue.new(
         "$.schema_version",
         :unsupported_schema_version,
         "unsupported schema version #{inspect(version)}"
@@ -201,13 +185,54 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_schema_version(issues, _graph), do: issues
 
+  defp validate_string_field(issues, data, key, path) do
+    case Map.fetch(data, key) do
+      {:ok, value} when is_binary(value) and byte_size(value) > 0 ->
+        issues
+
+      {:ok, _value} ->
+        [Issue.new(path, :invalid_type, "#{key} must be a non-empty string") | issues]
+
+      :error ->
+        issues
+    end
+  end
+
+  defp validate_object_field(issues, data, key, path) do
+    case Map.fetch(data, key) do
+      {:ok, value} when is_map(value) -> issues
+      {:ok, _value} -> [Issue.new(path, :invalid_type, "#{key} must be an object") | issues]
+      :error -> issues
+    end
+  end
+
+  defp validate_node_version(issues, node, index) do
+    case Map.fetch(node, "version") do
+      {:ok, version} when is_integer(version) and version > 0 ->
+        issues
+
+      {:ok, _version} ->
+        [
+          Issue.new(
+            "$.nodes[#{index}].version",
+            :invalid_type,
+            "version must be a positive integer"
+          )
+          | issues
+        ]
+
+      :error ->
+        issues
+    end
+  end
+
   defp validate_nodes_shape(issues, graph) do
     case fetch_nodes(graph) do
       {:ok, nodes} when is_list(nodes) ->
         validate_nodes_list(issues, nodes)
 
       {:ok, _nodes} ->
-        [issue("$.nodes", :invalid_type, "nodes must be a list") | issues]
+        [Issue.new("$.nodes", :invalid_type, "nodes must be a list") | issues]
 
       :error ->
         issues
@@ -221,7 +246,7 @@ defmodule Hermitscale.Workflows.Validator do
     issues =
       if length(nodes) > @max_nodes do
         [
-          issue(
+          Issue.new(
             "$.nodes",
             :too_many_nodes,
             "workflow graphs are limited to #{@max_nodes} nodes"
@@ -239,9 +264,12 @@ defmodule Hermitscale.Workflows.Validator do
         |> require_field(node, "id", "$.nodes[#{index}].id")
         |> require_field(node, "type", "$.nodes[#{index}].type")
         |> require_field(node, "version", "$.nodes[#{index}].version")
+        |> validate_string_field(node, "type", "$.nodes[#{index}].type")
+        |> validate_node_version(node, index)
+        |> validate_object_field(node, "params", "$.nodes[#{index}].params")
 
       {_node, index}, acc ->
-        [issue("$.nodes[#{index}]", :invalid_type, "node must be an object") | acc]
+        [Issue.new("$.nodes[#{index}]", :invalid_type, "node must be an object") | acc]
     end)
   end
 
@@ -255,12 +283,15 @@ defmodule Hermitscale.Workflows.Validator do
         |> require_field(connection, "to", "$.connections[#{index}].to")
 
       {_connection, index}, acc ->
-        [issue("$.connections[#{index}]", :invalid_type, "connection must be an object") | acc]
+        [
+          Issue.new("$.connections[#{index}]", :invalid_type, "connection must be an object")
+          | acc
+        ]
     end)
   end
 
   defp validate_connections_shape(issues, %{"connections" => _connections}) do
-    [issue("$.connections", :invalid_type, "connections must be a list") | issues]
+    [Issue.new("$.connections", :invalid_type, "connections must be a list") | issues]
   end
 
   defp validate_connections_shape(issues, _graph), do: issues
@@ -272,7 +303,7 @@ defmodule Hermitscale.Workflows.Validator do
     |> Enum.flat_map(fn
       {id, count} when count > 1 ->
         [
-          issue(
+          Issue.new(
             "$.nodes",
             :duplicate_node_id,
             "node id #{inspect(id)} is duplicated"
@@ -296,7 +327,7 @@ defmodule Hermitscale.Workflows.Validator do
            %{kind: :trigger} <- module.__catalog_node__(),
            true <- MapSet.member?(inbound, id) do
         [
-          issue(
+          Issue.new(
             "$.nodes[#{index}]",
             :trigger_with_inputs,
             "trigger node #{inspect(id)} cannot have incoming connections"
@@ -324,7 +355,7 @@ defmodule Hermitscale.Workflows.Validator do
       issues
     else
       [
-        issue(
+        Issue.new(
           "$.nodes[#{index}].id",
           :invalid_node_id,
           "node id must start with a letter and contain only letters, digits, _, :, or -"
@@ -335,7 +366,7 @@ defmodule Hermitscale.Workflows.Validator do
   end
 
   defp validate_node_id(issues, %{"id" => _id}, index) do
-    [issue("$.nodes[#{index}].id", :invalid_type, "node id must be a string") | issues]
+    [Issue.new("$.nodes[#{index}].id", :invalid_type, "node id must be a string") | issues]
   end
 
   defp validate_node_id(issues, _node, _index), do: issues
@@ -353,7 +384,7 @@ defmodule Hermitscale.Workflows.Validator do
 
       {:error, :not_found} ->
         [
-          issue(
+          Issue.new(
             "$.nodes[#{index}]",
             :unknown_catalog_node,
             "catalog node #{type}@#{version} is not deployed"
@@ -396,7 +427,7 @@ defmodule Hermitscale.Workflows.Validator do
 
         if spec.deprecated do
           [
-            issue(
+            Issue.new(
               "$.nodes[#{index}]",
               :deprecated_catalog_node,
               "catalog node #{type}@#{version} is deprecated",
@@ -420,26 +451,26 @@ defmodule Hermitscale.Workflows.Validator do
       params
       |> Map.keys()
       |> Enum.reject(&MapSet.member?(allowed, &1))
-      |> Enum.map(&issue("#{path}.#{&1}", :unknown_param, "unknown param #{inspect(&1)}"))
+      |> Enum.map(&Issue.new("#{path}.#{&1}", :unknown_param, "unknown param #{inspect(&1)}"))
 
     case Params.cast(params, spec.params_schema, spec.expr_fields, spec.predicate_fields) do
       {:ok, normalized} ->
         unknown_issues ++ validate_node_params_callback(module, normalized, path)
 
       {:error, error} ->
-        [issue(path, :invalid_params, Exception.message(error)) | unknown_issues]
+        [Issue.new(path, :invalid_params, Exception.message(error)) | unknown_issues]
     end
   end
 
   defp params_issues(_params, _module, _spec, path) do
-    [issue(path, :invalid_type, "params must be an object")]
+    [Issue.new(path, :invalid_type, "params must be an object")]
   end
 
   defp validate_node_params_callback(module, params, path) do
     if function_exported?(module, :validate_params, 1) do
       case module.validate_params(params) do
         :ok -> []
-        {:error, message} when is_binary(message) -> [issue(path, :invalid_params, message)]
+        {:error, message} when is_binary(message) -> [Issue.new(path, :invalid_params, message)]
       end
     else
       []
@@ -447,7 +478,7 @@ defmodule Hermitscale.Workflows.Validator do
   end
 
   defp expression_reference_issues(nodes, catalog, connections, nodes_by_id) do
-    ancestors = ancestor_map(nodes, connections)
+    ancestors = Topology.ancestor_map(nodes, connections)
 
     nodes
     |> Enum.with_index()
@@ -477,7 +508,7 @@ defmodule Hermitscale.Workflows.Validator do
       cond do
         spec.kind == :reduce and refs != [] ->
           [
-            issue(
+            Issue.new(
               "$.nodes[#{index}].params",
               :node_ref_unsupported_in_reduce,
               "reduce nodes cannot reference other nodes via $node[...] (got #{inspect(refs)})"
@@ -498,7 +529,7 @@ defmodule Hermitscale.Workflows.Validator do
     cond do
       not Map.has_key?(nodes_by_id, ref) ->
         [
-          issue(
+          Issue.new(
             "$.nodes[#{index}].params",
             :missing_expression_node,
             "expression references missing node #{inspect(ref)}"
@@ -507,7 +538,7 @@ defmodule Hermitscale.Workflows.Validator do
 
       not MapSet.member?(Map.get(ancestors, id, MapSet.new()), ref) ->
         [
-          issue(
+          Issue.new(
             "$.nodes[#{index}].params",
             :non_upstream_expression_node,
             "expression references node #{inspect(ref)} which is not upstream of #{inspect(id)}"
@@ -536,7 +567,7 @@ defmodule Hermitscale.Workflows.Validator do
           issues
         else
           [
-            issue(
+            Issue.new(
               "$.connections[#{index}].#{field}",
               :missing_node,
               "connection references missing node #{inspect(id)}"
@@ -547,7 +578,11 @@ defmodule Hermitscale.Workflows.Validator do
 
       {:ok, _id} ->
         [
-          issue("$.connections[#{index}].#{field}", :invalid_type, "#{field} must be a string")
+          Issue.new(
+            "$.connections[#{index}].#{field}",
+            :invalid_type,
+            "#{field} must be a string"
+          )
           | issues
         ]
 
@@ -563,7 +598,7 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_to_input(issues, %{"to_input" => _value}, index) do
     [
-      issue(
+      Issue.new(
         "$.connections[#{index}].to_input",
         :invalid_type,
         "to_input must be a non-negative integer"
@@ -574,340 +609,6 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_to_input(issues, _connection, _index), do: issues
 
-  defp map_region_issues(nodes, catalog, connections) do
-    specs = catalog_specs_by_id(nodes, catalog)
-    indexes = node_indexes(nodes)
-    parents = parent_map(connections)
-    children = child_map(connections)
-    map_ids = ids_by_kind(specs, :map)
-    reduce_ids = ids_by_kind(specs, :reduce)
-    body_ids = map_body_ids(map_ids, specs, children)
-    reduce_owners = map_reduce_owners(map_ids, specs, children)
-
-    map_ids
-    |> Enum.flat_map(&validate_map_region(&1, specs, parents, children, indexes, nodes, catalog))
-    |> Kernel.++(
-      Enum.flat_map(reduce_ids, &validate_reduce_owner(&1, reduce_owners, parents, indexes))
-    )
-    |> Kernel.++(map_region_reference_issues(nodes, catalog, body_ids, indexes))
-  end
-
-  defp catalog_specs_by_id(nodes, catalog) do
-    Enum.reduce(nodes, %{}, fn
-      %{"id" => id, "type" => type, "version" => version}, acc
-      when is_binary(id) and is_binary(type) and is_integer(version) ->
-        case Catalog.fetch(catalog, type, version) do
-          {:ok, module} -> Map.put(acc, id, module.__catalog_node__())
-          {:error, :not_found} -> acc
-        end
-
-      _node, acc ->
-        acc
-    end)
-  end
-
-  defp node_indexes(nodes) do
-    nodes
-    |> Enum.with_index()
-    |> Map.new(fn {node, index} -> {node["id"], index} end)
-  end
-
-  defp ids_by_kind(specs, kind) do
-    specs
-    |> Enum.filter(fn {_id, spec} -> spec.kind == kind end)
-    |> Enum.map(&elem(&1, 0))
-  end
-
-  defp validate_map_region(map_id, specs, parents, children, indexes, nodes, catalog) do
-    case Map.get(children, map_id, []) do
-      [] ->
-        []
-
-      [child] ->
-        validate_map_region_node(
-          child,
-          specs,
-          parents,
-          children,
-          indexes,
-          nodes,
-          catalog,
-          MapSet.new([map_id])
-        )
-
-      region_children ->
-        [
-          issue(
-            node_path(indexes, map_id),
-            :map_region_branch,
-            "map regions must be linear before reduce; #{inspect(map_id)} has #{length(region_children)} downstream connections"
-          )
-        ]
-    end
-  end
-
-  defp validate_map_region_node(id, specs, parents, children, indexes, nodes, catalog, seen) do
-    if MapSet.member?(seen, id) do
-      []
-    else
-      seen = MapSet.put(seen, id)
-      parent_issues = validate_region_parent_count(id, parents, indexes)
-
-      kind_issues =
-        case node_kind(id, specs) do
-          :reduce ->
-            []
-
-          :step ->
-            region_step_reference_issues(id, nodes, catalog, indexes) ++
-              validate_map_region_children(
-                id,
-                specs,
-                parents,
-                children,
-                indexes,
-                nodes,
-                catalog,
-                seen
-              )
-
-          kind ->
-            [
-              issue(
-                node_path(indexes, id),
-                :unsupported_map_region_node,
-                "map regions can contain only step nodes before reduce, got #{inspect(kind)} for #{inspect(id)}"
-              )
-            ]
-        end
-
-      parent_issues ++ kind_issues
-    end
-  end
-
-  defp validate_map_region_children(id, specs, parents, children, indexes, nodes, catalog, seen) do
-    case Map.get(children, id, []) do
-      [] ->
-        []
-
-      [child] ->
-        validate_map_region_node(child, specs, parents, children, indexes, nodes, catalog, seen)
-
-      region_children ->
-        [
-          issue(
-            node_path(indexes, id),
-            :map_region_branch,
-            "map regions must be linear before reduce; #{inspect(id)} has #{length(region_children)} downstream connections"
-          )
-        ]
-    end
-  end
-
-  defp validate_region_parent_count(id, parents, indexes) do
-    case Map.get(parents, id, []) do
-      [_parent] ->
-        []
-
-      region_parents ->
-        [
-          issue(
-            node_path(indexes, id),
-            :map_region_parent_count,
-            "map region node #{inspect(id)} must have exactly one structural parent, got #{length(region_parents)}"
-          )
-        ]
-    end
-  end
-
-  defp validate_reduce_owner(id, reduce_owners, parents, indexes) do
-    parent_issues =
-      case Map.get(parents, id, []) do
-        [_parent] ->
-          []
-
-        reduce_parents ->
-          [
-            issue(
-              node_path(indexes, id),
-              :reduce_parent_count,
-              "reduce node #{inspect(id)} must have exactly one structural parent, got #{length(reduce_parents)}"
-            )
-          ]
-      end
-
-    owner_issues =
-      case Map.get(reduce_owners, id, []) do
-        [_map] ->
-          []
-
-        [] ->
-          [
-            issue(
-              node_path(indexes, id),
-              :reduce_without_map,
-              "reduce node #{inspect(id)} must close exactly one upstream map region"
-            )
-          ]
-
-        maps ->
-          [
-            issue(
-              node_path(indexes, id),
-              :reduce_ambiguous_map,
-              "reduce node #{inspect(id)} has multiple upstream map regions: #{inspect(maps)}"
-            )
-          ]
-      end
-
-    parent_issues ++ owner_issues
-  end
-
-  defp map_reduce_owners(map_ids, specs, children) do
-    map_ids
-    |> Enum.flat_map(fn map_id ->
-      case map_reduce_id(map_id, specs, children) do
-        nil -> []
-        reduce_id -> [{reduce_id, map_id}]
-      end
-    end)
-    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-  end
-
-  defp map_reduce_id(map_id, specs, children) do
-    case Map.get(children, map_id, []) do
-      [child] -> collect_map_reduce_id(child, specs, children, MapSet.new([map_id]))
-      _other -> nil
-    end
-  end
-
-  defp collect_map_reduce_id(id, specs, children, seen) do
-    cond do
-      MapSet.member?(seen, id) ->
-        nil
-
-      node_kind(id, specs) == :reduce ->
-        id
-
-      node_kind(id, specs) == :step ->
-        case Map.get(children, id, []) do
-          [child] -> collect_map_reduce_id(child, specs, children, MapSet.put(seen, id))
-          _other -> nil
-        end
-
-      true ->
-        nil
-    end
-  end
-
-  defp map_body_ids(map_ids, specs, children) do
-    map_ids
-    |> Enum.flat_map(&collect_map_body_ids(&1, specs, children))
-    |> MapSet.new()
-  end
-
-  defp collect_map_body_ids(map_id, specs, children) do
-    case Map.get(children, map_id, []) do
-      [child] -> collect_map_body_node_ids(child, specs, children, [], MapSet.new([map_id]))
-      _other -> []
-    end
-  end
-
-  defp collect_map_body_node_ids(id, specs, children, ids, seen) do
-    cond do
-      MapSet.member?(seen, id) ->
-        ids
-
-      node_kind(id, specs) == :step ->
-        case Map.get(children, id, []) do
-          [child] ->
-            collect_map_body_node_ids(child, specs, children, [id | ids], MapSet.put(seen, id))
-
-          _other ->
-            [id | ids]
-        end
-
-      true ->
-        ids
-    end
-  end
-
-  defp region_step_reference_issues(id, nodes, catalog, indexes) do
-    node = Enum.find(nodes, &(&1["id"] == id))
-
-    case node_expression_refs(node, catalog) do
-      [] ->
-        []
-
-      refs ->
-        [
-          issue(
-            "#{node_path(indexes, id)}.params",
-            :node_ref_unsupported_in_map_region,
-            "step #{inspect(id)} is inside a map region and cannot reference $node values (got #{inspect(refs)})"
-          )
-        ]
-    end
-  end
-
-  defp map_region_reference_issues(nodes, catalog, body_ids, indexes) do
-    Enum.flat_map(nodes, fn node ->
-      id = node["id"]
-
-      if MapSet.member?(body_ids, id) do
-        []
-      else
-        refs = Enum.filter(node_expression_refs(node, catalog), &MapSet.member?(body_ids, &1))
-
-        case refs do
-          [] ->
-            []
-
-          _refs ->
-            [
-              issue(
-                "#{node_path(indexes, id)}.params",
-                :map_region_node_ref,
-                "nodes outside a map region cannot reference per-item region nodes via $node (got #{inspect(refs)})"
-              )
-            ]
-        end
-      end
-    end)
-  end
-
-  defp node_expression_refs(%{"type" => type, "version" => version} = node, catalog) do
-    with {:ok, module} <- Catalog.fetch(catalog, type, version),
-         spec <- module.__catalog_node__(),
-         {:ok, params} <-
-           Params.cast(
-             Map.get(node, "params", %{}),
-             spec.params_schema,
-             spec.expr_fields,
-             spec.predicate_fields
-           ) do
-      Expr.node_references(params)
-    else
-      _other -> []
-    end
-  end
-
-  defp node_expression_refs(_node, _catalog), do: []
-
-  defp node_kind(id, specs) do
-    case Map.fetch(specs, id) do
-      {:ok, spec} -> spec.kind
-      :error -> nil
-    end
-  end
-
-  defp node_path(indexes, id) do
-    case Map.fetch(indexes, id) do
-      {:ok, index} -> "$.nodes[#{index}]"
-      :error -> "$.nodes"
-    end
-  end
-
   defp arity_issues(nodes, catalog, connections) do
     incoming = Enum.group_by(connections, & &1["to"])
 
@@ -916,7 +617,7 @@ defmodule Hermitscale.Workflows.Validator do
       with {:ok, module} <- Catalog.fetch(catalog, node["type"], node["version"]),
            %{kind: :join, inputs: inputs} <- module.__catalog_node__() do
         edges = Map.get(incoming, node["id"], [])
-        slots = Enum.map(edges, &Map.get(&1, "to_input", 0))
+        slots = edges |> Enum.map(&Map.get(&1, "to_input", 0)) |> Enum.sort()
         expected_slots = Enum.to_list(0..(length(inputs) - 1)//1)
 
         []
@@ -932,7 +633,7 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_join_count(issues, index, count, expected) do
     [
-      issue(
+      Issue.new(
         "$.nodes[#{index}]",
         :join_arity,
         "join expects #{expected} inputs but has #{count} incoming connections"
@@ -947,7 +648,7 @@ defmodule Hermitscale.Workflows.Validator do
 
   defp validate_join_slots(issues, index, slots, expected_slots) do
     [
-      issue(
+      Issue.new(
         "$.nodes[#{index}]",
         :join_input_slots,
         "join input slots must be contiguous and unique: expected #{inspect(expected_slots)}, got #{inspect(slots)}"
@@ -962,11 +663,8 @@ defmodule Hermitscale.Workflows.Validator do
       {%{"policy" => policy}, index} when is_map(policy) ->
         validate_policy(policy, index)
 
-      {%{"policy" => nil}, _index} ->
-        []
-
       {%{"policy" => _policy}, index} ->
-        [issue("$.nodes[#{index}].policy", :invalid_type, "policy must be an object")]
+        [Issue.new("$.nodes[#{index}].policy", :invalid_type, "policy must be an object")]
 
       {_node, _index} ->
         []
@@ -981,7 +679,7 @@ defmodule Hermitscale.Workflows.Validator do
       |> Map.keys()
       |> Enum.reject(&MapSet.member?(known_keys, &1))
       |> Enum.map(
-        &issue(
+        &Issue.new(
           "$.nodes[#{index}].policy.#{&1}",
           :unknown_policy,
           "unknown policy key #{inspect(&1)}"
@@ -996,7 +694,7 @@ defmodule Hermitscale.Workflows.Validator do
               []
             else
               [
-                issue(
+                Issue.new(
                   "$.nodes[#{index}].policy.#{key}",
                   :invalid_policy,
                   "#{key} must be one of #{Enum.join(values, ", ")}, got #{inspect(value)}"
@@ -1017,7 +715,7 @@ defmodule Hermitscale.Workflows.Validator do
 
           {:ok, value} ->
             [
-              issue(
+              Issue.new(
                 "$.nodes[#{index}].policy.#{key}",
                 :invalid_policy,
                 "#{key} must be a non-negative integer, got #{inspect(value)}"
@@ -1037,61 +735,5 @@ defmodule Hermitscale.Workflows.Validator do
       {:ok, _order} -> []
       {:error, issues} -> issues
     end
-  end
-
-  defp child_map(connections) do
-    connections
-    |> Enum.group_by(& &1["from"])
-    |> Map.new(fn {from, edges} -> {from, Enum.map(edges, & &1["to"])} end)
-  end
-
-  defp ancestor_map(nodes, connections) do
-    parents = parent_map(connections)
-
-    nodes
-    |> Enum.map(& &1["id"])
-    |> Map.new(fn id -> {id, collect_ancestors(id, parents, MapSet.new())} end)
-  end
-
-  defp collect_ancestors(id, parents, seen) do
-    parents
-    |> Map.get(id, [])
-    |> Enum.reduce(seen, fn parent, seen ->
-      if MapSet.member?(seen, parent) do
-        seen
-      else
-        collect_ancestors(parent, parents, MapSet.put(seen, parent))
-      end
-    end)
-  end
-
-  defp do_topo(queue, incoming_counts, children, sorted) do
-    case :queue.out(queue) do
-      {{:value, id}, queue} ->
-        {queue, incoming_counts} =
-          children
-          |> Map.get(id, [])
-          |> Enum.reduce({queue, incoming_counts}, fn child, {queue, incoming_counts} ->
-            case Map.fetch(incoming_counts, child) do
-              {:ok, current_count} ->
-                count = current_count - 1
-                incoming_counts = Map.put(incoming_counts, child, count)
-                queue = if count == 0, do: :queue.in(child, queue), else: queue
-                {queue, incoming_counts}
-
-              :error ->
-                {queue, incoming_counts}
-            end
-          end)
-
-        do_topo(queue, incoming_counts, children, [id | sorted])
-
-      {:empty, _queue} ->
-        Enum.reverse(sorted)
-    end
-  end
-
-  defp issue(path, code, message, severity \\ :error) do
-    %Issue{path: path, code: code, message: message, severity: severity}
   end
 end

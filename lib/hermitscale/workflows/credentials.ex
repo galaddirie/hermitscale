@@ -37,12 +37,11 @@ defmodule Hermitscale.Workflows.Credentials do
   end
 
   @doc "Returns the catalog credential requirement for a node."
-  def requirement(%{"type" => type, "version" => version} = node)
+  def requirement(%{"type" => type, "version" => version})
       when is_binary(type) and is_integer(version) do
-    with {:ok, module} <- Catalog.fetch(node["type"], node["version"]) do
-      Keyword.get(module.__catalog_node__().requires, :credentials)
-    else
-      _ -> nil
+    case Catalog.fetch(type, version) do
+      {:ok, module} -> Keyword.get(module.__catalog_node__().requires, :credentials)
+      {:error, :not_found} -> nil
     end
   end
 
@@ -70,7 +69,7 @@ defmodule Hermitscale.Workflows.Credentials do
                 provider,
                 %{provider: provider, scopes: scopes, nodes: [node["id"]]},
                 fn r ->
-                  %{r | scopes: Enum.uniq(r.scopes ++ scopes), nodes: r.nodes ++ [node["id"]]}
+                  %{r | scopes: Enum.uniq(r.scopes ++ scopes), nodes: [node["id"] | r.nodes]}
                 end
               )
           end
@@ -80,6 +79,7 @@ defmodule Hermitscale.Workflows.Credentials do
       end
     end)
     |> Map.values()
+    |> Enum.map(&%{&1 | nodes: Enum.reverse(&1.nodes)})
     |> Enum.sort_by(& &1.provider)
   end
 
@@ -88,13 +88,13 @@ defmodule Hermitscale.Workflows.Credentials do
     graph["nodes"]
     |> Enum.reduce_while({:ok, []}, fn node, {:ok, nodes} ->
       case select_node(scope, node) do
-        {:ok, selected} -> {:cont, {:ok, nodes ++ [selected]}}
-        error -> {:halt, error}
+        {:ok, selected} -> {:cont, {:ok, [selected | nodes]}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
-      {:ok, nodes} -> {:ok, Map.put(graph, "nodes", nodes)}
-      error -> error
+      {:ok, nodes} -> {:ok, Map.put(graph, "nodes", Enum.reverse(nodes))}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -109,7 +109,7 @@ defmodule Hermitscale.Workflows.Credentials do
             case ConnectedAccounts.select(scope, provider, Keyword.get(requirement, :scopes, [])) do
               {:ok, selection} -> {:ok, Map.put(node, "connection", selection)}
               {:error, :connection_setup_required} -> {:ok, node}
-              error -> error
+              {:error, _reason} = error -> error
             end
         end
 
@@ -152,7 +152,7 @@ defmodule Hermitscale.Workflows.Credentials do
         {:ok, reference} ->
           {:cont, {:ok, Map.put(acc, node["id"], %{credentials: reference})}}
 
-        error ->
+        {:error, _reason} = error ->
           {:halt, error}
       end
     end)

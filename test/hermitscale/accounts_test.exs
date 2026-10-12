@@ -43,6 +43,56 @@ defmodule Hermitscale.AccountsTest do
       assert {:error, :invalid_role} = Accounts.invite(scope, "custom@example.test", "custom")
     end
 
+    test "membership conflicts check the winner once and stop if membership is absent", %{
+      scope: scope
+    } do
+      attempts = start_supervised!({Agent, fn -> 0 end}, id: :membership_attempts)
+      Client.put_response(:list_memberships, {:ok, %{"data" => []}})
+
+      Client.put_response(:create_membership, fn _user, _org, _role ->
+        Agent.get_and_update(attempts, fn count ->
+          {if(count == 0, do: {:error, :conflict}, else: {:error, :unexpected_retry}), count + 1}
+        end)
+      end)
+
+      assert {:error, :conflict} = Accounts.ensure_personal_organization(scope.user)
+      assert Enum.count(Client.calls(), fn {op, _} -> op == :list_memberships end) == 2
+      assert Enum.count(Client.calls(), fn {op, _} -> op == :create_membership end) == 1
+    end
+
+    test "membership conflicts accept the concurrently created active membership", %{scope: scope} do
+      attempts = start_supervised!({Agent, fn -> 0 end}, id: :membership_lookup)
+
+      Client.put_response(:list_memberships, fn user_id, org_id ->
+        Agent.get_and_update(attempts, fn count ->
+          membership = %{"user_id" => user_id, "organization_id" => org_id, "status" => "active"}
+          data = if count == 0, do: [], else: [membership]
+          {{:ok, %{"data" => data}}, count + 1}
+        end)
+      end)
+
+      Client.put_response(:create_membership, {:error, :conflict})
+
+      assert {:ok, _org} = Accounts.ensure_personal_organization(scope.user)
+      assert Enum.count(Client.calls(), fn {op, _} -> op == :create_membership end) == 1
+    end
+
+    test "workspace discovery preserves membership order and stops on lookup failure", %{
+      scope: scope
+    } do
+      memberships =
+        for org <- ["org_first", "org_second"],
+            do: %{"user_id" => scope.user.id, "organization_id" => org, "status" => "active"}
+
+      Client.put_response(:list_memberships, {:ok, %{"data" => memberships}})
+
+      assert {:ok, [%{"id" => "org_first"}, %{"id" => "org_second"}]} =
+               Accounts.list_organizations(scope)
+
+      Client.put_response(:get_organization, {:error, :unavailable})
+      assert {:error, :unavailable} = Accounts.list_organizations(scope)
+    end
+
     test "only members with management permission can invite, remove or assign roles", %{
       scope: scope
     } do

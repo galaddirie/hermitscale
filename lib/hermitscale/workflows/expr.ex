@@ -8,18 +8,8 @@ defmodule Hermitscale.Workflows.Expr do
   inside Liquid regions.
   """
 
-  alias Hermitscale.Workflows.Expr.{Filters, Matcher}
+  alias Hermitscale.Workflows.Expr.{CompileError, Filters, Matcher, RenderError}
   alias Solid.{AccessLiteral, AccessVariable, Context, Filter, Object, Template, Text, Variable}
-
-  defmodule CompileError do
-    @moduledoc false
-    defexception [:message]
-  end
-
-  defmodule RenderError do
-    @moduledoc false
-    defexception [:message, :errors]
-  end
 
   @type compiled ::
           {:literal, term()}
@@ -76,7 +66,7 @@ defmodule Hermitscale.Workflows.Expr do
     end)
     |> case do
       {:ok, compiled} -> {:ok, Enum.reverse(compiled)}
-      error -> error
+      {:error, _error} = error -> error
     end
   end
 
@@ -312,8 +302,9 @@ defmodule Hermitscale.Workflows.Expr do
   defp blank_text?(_part), do: false
 
   defp fast_path(%Object{argument: %Variable{} = variable, filters: []}) do
-    with {:ok, accesses} <- literal_access_path(variable.accesses) do
-      [variable.identifier | accesses]
+    case literal_access_path(variable.accesses) do
+      {:ok, accesses} -> [variable.identifier | accesses]
+      :error -> nil
     end
   end
 

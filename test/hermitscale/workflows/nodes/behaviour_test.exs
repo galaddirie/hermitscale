@@ -64,6 +64,45 @@ defmodule Hermitscale.Workflows.Nodes.BehaviourTest do
         )
       end
     end
+
+    test "rejects expression declarations that do not name schema params" do
+      assert_raise ArgumentError, ~r/expr fields must name declared params/, fn ->
+        compile_node!(id: "test.bad_expr", version: 1, kind: :step, expr: [:missing])
+      end
+    end
+
+    test "rejects predicates that are not expression fields" do
+      assert_raise ArgumentError, ~r/predicate fields must be expression fields/, fn ->
+        compile_node!(
+          id: "test.bad_predicate",
+          version: 1,
+          kind: :step,
+          params: [condition: [type: :boolean]],
+          predicate: [:condition]
+        )
+      end
+    end
+
+    test "rejects unknown declaration options and duplicate ports" do
+      assert_raise ArgumentError, ~r/unknown node options/, fn ->
+        compile_node!(id: "test.bad_option", version: 1, kind: :step, exprs: [:value])
+      end
+
+      assert_raise ArgumentError, ~r/inputs must be unique/, fn ->
+        compile_node!(id: "test.duplicate_port", version: 1, kind: :join, inputs: [:main, :main])
+      end
+    end
+
+    test "rejects invalid integer default policy values" do
+      assert_raise ArgumentError, ~r/max_retries must be a non-negative integer/, fn ->
+        compile_node!(
+          id: "test.bad_retry",
+          version: 1,
+          kind: :step,
+          default_policy: %{max_retries: -1}
+        )
+      end
+    end
   end
 
   defp compile_node!(opts) do

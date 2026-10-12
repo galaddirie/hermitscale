@@ -207,14 +207,38 @@ defmodule Hermitscale.WorkOS.Client do
   def get_role(slug),
     do: request(:get_role, :get, "/authorization/roles/#{path_segment(slug)}", [])
 
-  defp list_all(operation, path, params, acc \\ []) do
-    with {:ok, %{"data" => data} = page} <- request(operation, :get, path, params: params) do
-      case get_in(page, ["list_metadata", "after"]) do
-        nil -> {:ok, %{"data" => acc ++ data}}
-        cursor -> list_all(operation, path, Map.put(params, "after", cursor), acc ++ data)
+  defp list_all(operation, path, params, pages \\ [], seen \\ MapSet.new()) do
+    with {:ok, %{"data" => data} = page} <- request(operation, :get, path, params: params),
+         {:ok, cursor} <- pagination_cursor(page) do
+      pages = [data | pages]
+
+      cond do
+        is_nil(cursor) ->
+          {:ok, %{"data" => pages |> Enum.reverse() |> List.flatten()}}
+
+        MapSet.member?(seen, cursor) ->
+          {:error, :invalid_response}
+
+        true ->
+          list_all(
+            operation,
+            path,
+            Map.put(params, "after", cursor),
+            pages,
+            MapSet.put(seen, cursor)
+          )
       end
     end
   end
+
+  defp pagination_cursor(%{"list_metadata" => %{"after" => cursor}})
+       when is_nil(cursor) or (is_binary(cursor) and cursor != ""),
+       do: {:ok, cursor}
+
+  defp pagination_cursor(%{"list_metadata" => metadata}) when not is_nil(metadata),
+    do: {:error, :invalid_response}
+
+  defp pagination_cursor(_page), do: {:ok, nil}
 
   @doc """
   Revokes one WorkOS AuthKit session.
@@ -262,6 +286,7 @@ defmodule Hermitscale.WorkOS.Client do
           request_opts
           |> Req.request()
           |> normalize_response()
+          |> validate_response(operation)
 
         {result, %{operation: operation, result: result_class(result)}}
       end
@@ -324,6 +349,99 @@ defmodule Hermitscale.WorkOS.Client do
 
   defp normalize_response({:error, _reason}), do: {:error, :unavailable}
 
+  defp validate_response({:ok, body}, operation) do
+    case valid_response?(operation, body) do
+      true -> {:ok, body}
+      false -> {:error, :invalid_response}
+    end
+  end
+
+  defp validate_response({:error, _reason} = error, _operation), do: error
+
+  defp valid_response?(operation, %{
+         "access_token" => access,
+         "refresh_token" => refresh,
+         "user" => %{"id" => id} = user
+       })
+       when operation in [:authenticate_code, :refresh_session],
+       do:
+         required_string?(access) and required_string?(refresh) and required_string?(id) and
+           Enum.all?(~w(email first_name last_name), &optional_string?(user[&1]))
+
+  defp valid_response?(:jwks, %{"keys" => keys}), do: is_list(keys)
+
+  defp valid_response?(operation, %{"id" => id})
+       when operation in [
+              :get_organization,
+              :get_organization_by_external_id,
+              :create_organization
+            ],
+       do: required_string?(id)
+
+  defp valid_response?(operation, body)
+       when operation in [:get_membership, :create_membership, :update_membership],
+       do: valid_membership?(body)
+
+  defp valid_response?(:list_memberships, %{"data" => data}) when is_list(data),
+    do: Enum.all?(data, &valid_membership?/1)
+
+  defp valid_response?(:get_role, %{"permissions" => permissions}), do: string_list?(permissions)
+
+  defp valid_response?(:list_org_providers, %{"data" => data}) when is_list(data),
+    do: Enum.all?(data, &valid_provider?/1)
+
+  defp valid_response?(:authorize_connection, %{"url" => url}), do: required_string?(url)
+
+  defp valid_response?(operation, body)
+       when operation in [
+              :vend_credentials,
+              :rotate_api_key,
+              :disconnect_account,
+              :remove_membership,
+              :invite_member,
+              :revoke_session
+            ],
+       do: is_map(body)
+
+  defp valid_response?(_operation, _body), do: false
+
+  defp valid_membership?(
+         %{"id" => id, "user_id" => user, "organization_id" => org, "status" => status} =
+           membership
+       ) do
+    Enum.all?([id, user, org, status], &required_string?/1) and valid_role?(membership["role"])
+  end
+
+  defp valid_membership?(_membership), do: false
+  defp valid_role?(nil), do: true
+  defp valid_role?(%{"slug" => slug}), do: required_string?(slug)
+  defp valid_role?(_role), do: false
+
+  defp valid_provider?(%{"slug" => slug, "connected_accounts" => accounts})
+       when is_list(accounts),
+       do: required_string?(slug) and Enum.all?(accounts, &valid_account?/1)
+
+  defp valid_provider?(%{"slug" => slug, "connected_account" => account}),
+    do: required_string?(slug) and (is_nil(account) or valid_account?(account))
+
+  defp valid_provider?(%{"slug" => slug} = provider),
+    do: required_string?(slug) and is_nil(provider["connected_accounts"])
+
+  defp valid_provider?(_provider), do: false
+
+  defp valid_account?(%{"id" => id, "state" => state, "auth_method" => method} = account) do
+    Enum.all?([id, state, method], &required_string?/1) and
+      optional_string?(account["organization_id"]) and optional_string?(account["user_id"]) and
+      (is_nil(account["scopes"]) or string_list?(account["scopes"]))
+  end
+
+  defp valid_account?(_account), do: false
+  defp required_string?(value), do: is_binary(value) and value != ""
+  defp optional_string?(nil), do: true
+  defp optional_string?(value), do: required_string?(value)
+  defp string_list?(values) when is_list(values), do: Enum.all?(values, &is_binary/1)
+  defp string_list?(_values), do: false
+
   defp normalize_credential(%{"active" => false, "error" => code}), do: credential_error(code)
 
   defp normalize_credential(%{
@@ -331,22 +449,17 @@ defmodule Hermitscale.WorkOS.Client do
          "credential" => %{"auth_method" => method, "value" => value} = credential
        })
        when method in ["oauth", "api_key"] and is_binary(value) and value != "" do
-    scopes = credential["scopes"] || []
-    missing = credential["missing_scopes"] || []
-
-    case is_list(scopes) and is_list(missing) and Enum.all?(scopes ++ missing, &is_binary/1) do
-      true ->
-        {:ok,
-         %{
-           auth_method: method,
-           value: value,
-           expires_at: parse_optional_datetime(credential["expires_at"]),
-           scopes: scopes,
-           missing_scopes: missing
-         }}
-
-      false ->
-        {:error, :invalid_credential_response}
+    with {:ok, scopes} <- optional_scopes(credential["scopes"]),
+         {:ok, missing} <- optional_scopes(credential["missing_scopes"]),
+         {:ok, expires_at} <- parse_optional_datetime(credential["expires_at"]) do
+      {:ok,
+       %{
+         auth_method: method,
+         value: value,
+         expires_at: expires_at,
+         scopes: scopes,
+         missing_scopes: missing
+       }}
     end
   end
 
@@ -363,14 +476,25 @@ defmodule Hermitscale.WorkOS.Client do
 
   defp credential_error(_code), do: {:error, :invalid_credential_response}
 
-  defp parse_optional_datetime(nil), do: nil
+  defp optional_scopes(nil), do: {:ok, []}
+
+  defp optional_scopes(scopes) do
+    case string_list?(scopes) do
+      true -> {:ok, scopes}
+      false -> {:error, :invalid_credential_response}
+    end
+  end
+
+  defp parse_optional_datetime(nil), do: {:ok, nil}
 
   defp parse_optional_datetime(value) when is_binary(value) do
     case DateTime.from_iso8601(value) do
-      {:ok, parsed, _offset} -> parsed
-      {:error, _reason} -> nil
+      {:ok, parsed, _offset} -> {:ok, parsed}
+      {:error, _reason} -> {:error, :invalid_credential_response}
     end
   end
+
+  defp parse_optional_datetime(_value), do: {:error, :invalid_credential_response}
 
   defp put_request_metadata(body, metadata) do
     body
