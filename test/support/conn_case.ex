@@ -35,42 +35,4 @@ defmodule HermitscaleWeb.ConnCase do
     Hermitscale.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
-
-  @doc """
-  Setup helper for a verified WorkOS login.
-
-      setup :log_in_workos_user
-
-  It stores an updated connection and a WorkOS user in the
-  test context.
-  """
-  def log_in_workos_user(%{conn: conn} = context) do
-    user = Hermitscale.AccountsFixtures.user_fixture()
-    scope = Hermitscale.AccountsFixtures.user_scope_fixture(user)
-
-    opts =
-      context
-      |> Map.take([:token_authenticated_at])
-      |> Enum.into([])
-      |> Keyword.put(:org_id, scope.organization.id)
-
-    %{conn: log_in_user(conn, user, opts), user: user, scope: scope}
-  end
-
-  @doc """
-  Logs the given `user` into the `conn`.
-
-  It returns an updated `conn`.
-  """
-  def log_in_user(conn, user, opts \\ []) do
-    session =
-      Hermitscale.AccountsFixtures.workos_session_fixture(user,
-        org_id: opts[:org_id],
-        authenticated_at: opts[:token_authenticated_at] || DateTime.utc_now(:second)
-      )
-
-    conn
-    |> Phoenix.ConnTest.init_test_session(%{})
-    |> Plug.Test.put_req_cookie("_hermitscale_workos", session.sealed_session)
-  end
 end

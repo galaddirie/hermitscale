@@ -27,36 +27,30 @@ and the compiled-expression representation compatible when resuming runs.
 
 ## Authentication and scopes
 
-WorkOS owns users, organizations, memberships, authentication, and provider OAuth
+WorkOS owns users, organizations, memberships, authentication, and provider
 credentials. Hermitscale has no local identity, session, connected-account, or
 WorkOS synchronization tables. `Hermitscale.Accounts.Scope` carries verified
-WorkOS user and organization IDs in memory; workflow queries still require the
-scope as their first argument.
+WorkOS user and organization IDs in memory; workflow queries require the scope
+as their first argument.
 
-The web layer starts with a public welcome page. `/auth/sign-in` redirects to
-Hosted AuthKit, `/auth/workos/callback` exchanges the code and verifies the access
-JWT, and `DELETE /users/log-out` revokes the WorkOS session. Browser credentials
-are held in an encrypted, HttpOnly cookie. JWT signature, issuer, client, subject,
-session, expiration, and organization continuity are checked before granting a
-scope. Expiring tokens refresh through WorkOS. An identity without an organization
-can sign in but cannot access organization-owned workflows.
+The web layer is the stock Phoenix 1.8.8 scaffold, with its generated starter
+page, layouts, components, browser/API pipelines, and development tools. Browser
+authentication, workspace switching, and workflow screens are deferred until the
+backend is ready. There are no application sign-in, callback, or logout routes.
 
-Set `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, and `WORKOS_REDIRECT_URI` for AuthKit;
-the redirect URI must match the callback registered in WorkOS. Production also
-requires the usual `DATABASE_URL`, `SECRET_KEY_BASE`, and `PHX_HOST` settings.
-WorkOS webhook and token-encryption-key settings are no longer needed: browser
-session encryption derives from Phoenix's `SECRET_KEY_BASE`.
+Backend authentication and organization APIs remain available through
+`Hermitscale.WorkOS.Session` and `Hermitscale.Accounts`. Session verification,
+refresh, tenant switching, and personal-organization provisioning are tested
+independently of the web layer. Configure WorkOS roles and Pipes providers
+manually; the credential contract and permission matrix are documented in
+[the node authoring guide](docs/node-authoring-kit.md#8-credentials).
 
-Without an event mirror, remote revocation and permission changes take effect at
-WorkOS token refresh, bounded by the access JWT lifetime. Concurrent requests near
-expiry may race refresh-token rotation and require signing in again; there is no
-local session lock or synchronization worker.
-
-Workflow credentials store a provider reference. Token vending uses the graph's
-WorkOS creator and organization IDs through Pipes immediately before the provider
-request. Only the creator may edit, run, or resume workflows bound to their credentials;
-other members can use workflows without credential bindings within the organization. Legacy local
-connected-account references require rebinding.
+Each credentialed workflow node selects an organization-owned account through a
+canonical `connection` object. Permitted members use the same saved account;
+execution uses the verified caller or the actor recorded on an automation.
+Provider requests validate current membership, permissions, scopes, and allowed
+destinations before vending credential material. Runs preserve actor provenance
+and account selections for resume. Legacy credential binding formats are rejected.
 
 The removal migration preserves workflow records, replaces known local identity
 IDs with their WorkOS mappings, cancels pending identity-sync jobs, and drops the
