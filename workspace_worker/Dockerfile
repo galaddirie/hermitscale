@@ -40,7 +40,7 @@ RUN install -m 0755 /usr/bin/node /opt/hermitscale/bin/node \
     && install -d -m 0755 -o hermitcoder -g hermitcoder /workspace \
     && install -d -m 0700 -o hermitcoder -g hermitcoder /workspace/.codex /home/hermitcoder \
     && install -d -m 0700 -o hermitapp -g hermitapp /home/hermitapp \
-    && install -d -m 2770 -o hermitapp -g hermitapp /workspace/data /workspace/preview-data
+    && install -d -m 2770 -o hermitapp -g hermitapp /workspace/data
 USER hermitworker
 ENV HOME=/home/hermitworker \
     SHELL=/bin/bash \

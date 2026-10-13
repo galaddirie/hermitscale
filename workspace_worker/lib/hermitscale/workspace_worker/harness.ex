@@ -12,7 +12,6 @@ defmodule Hermitscale.WorkspaceWorker.Harness do
       cwd: Keyword.fetch!(config, :cwd),
       acp_path: Keyword.fetch!(config, :acp_path),
       env: env,
-      model: Map.fetch!(env, "HERMITSCALE_MODEL"),
       env_mode: :replace,
       turn_runtime_timeout_ms: timeout,
       approval_timeout_ms: min(timeout, 300_000),
@@ -89,56 +88,47 @@ defmodule Hermitscale.WorkspaceWorker.Harness do
     persist_provider_session(handle)
     result = apply(handle.session_api, :close, [handle.session_id])
 
-    if Keyword.get(handle.config, :verify_process_groups, true) do
-      Enum.each(handle.groups, fn pid ->
-        System.cmd(
-          "sudo",
-          ["-n", "/opt/hermitscale/bin/sandbox-launch", "signal", "KILL", "#{pid}"],
-          stderr_to_stdout: true
-        )
-      end)
-    end
+    Enum.each(handle.groups, fn pid ->
+      System.cmd(
+        "sudo",
+        ["-n", "/opt/hermitscale/bin/sandbox-launch", "signal", "KILL", "#{pid}"],
+        stderr_to_stdout: true
+      )
+    end)
 
     result
   end
 
-  def verify_termination(handle) do
-    case Keyword.get(handle.config, :verify_process_groups, true) do
-      false -> {:ok, %{groups: []}}
-      true -> verify_groups(handle.groups)
-    end
-  end
+  def verify_termination(handle), do: verify_groups(handle.groups)
 
   def cleanup_failed_start(config) do
-    case Keyword.get(config, :verify_process_groups, true) do
-      false ->
-        {:ok, %{groups: []}}
+    processes = processes(config)
 
-      true ->
-        processes = apply(Jido.Harness.Process, :list, [[]])
+    Enum.each(processes, fn process ->
+      if process.state in [:starting, :running, :stopping],
+        do:
+          apply(Keyword.get(config, :process_api, Jido.Harness.Process), :kill, [
+            process.process_id
+          ])
+    end)
 
-        Enum.each(processes, fn process ->
-          if process.state in [:starting, :running, :stopping],
-            do: apply(Jido.Harness.Process, :kill, [process.process_id])
-        end)
+    groups =
+      (Enum.map(processes, & &1.os_pid) ++ recorded_groups(config))
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
 
-        groups =
-          (Enum.map(processes, & &1.os_pid) ++ recorded_groups(config))
-          |> Enum.filter(&is_integer/1)
-          |> Enum.uniq()
-
-        Enum.each(groups, fn pid ->
-          System.cmd(
-            "sudo",
-            ["-n", "/opt/hermitscale/bin/sandbox-launch", "signal", "KILL", "#{pid}"],
-            stderr_to_stdout: true
-          )
-        end)
-
-        persist_groups(config, groups)
-        verify_groups(groups)
-    end
+    Enum.each(groups, &signal_group(&1))
+    persist_groups(config, groups)
+    verify_groups(groups)
   end
+
+  defp signal_group(pid),
+    do:
+      System.cmd(
+        "sudo",
+        ["-n", "/opt/hermitscale/bin/sandbox-launch", "signal", "KILL", "#{pid}"],
+        stderr_to_stdout: true
+      )
 
   def recover_termination(config) do
     case Keyword.fetch(config, :lease_file) do
@@ -256,24 +246,16 @@ defmodule Hermitscale.WorkspaceWorker.Harness do
     end
   end
 
-  defp process_ids(config) do
-    case Keyword.get(config, :verify_process_groups, true) do
-      false -> []
-      true -> apply(Jido.Harness.Process, :list, [[]]) |> Enum.map(& &1.process_id)
-    end
-  end
+  defp processes(config),
+    do: apply(Keyword.get(config, :process_api, Jido.Harness.Process), :list, [[]])
+
+  defp process_ids(config), do: processes(config) |> Enum.map(& &1.process_id)
 
   defp process_groups(config, previous) do
-    case Keyword.get(config, :verify_process_groups, true) do
-      false ->
-        []
-
-      true ->
-        apply(Jido.Harness.Process, :list, [[]])
-        |> Enum.reject(&(&1.process_id in previous))
-        |> Enum.map(& &1.os_pid)
-        |> Enum.filter(&is_integer/1)
-    end
+    processes(config)
+    |> Enum.reject(&(&1.process_id in previous))
+    |> Enum.map(& &1.os_pid)
+    |> Enum.filter(&is_integer/1)
   end
 
   defp recorded_groups(config) do

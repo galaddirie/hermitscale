@@ -2,7 +2,7 @@
 
 Date: October 12, 2026. Scope: simplifying the proposed [Agents and Apps design](../agent-apps-design.md). This note checks current first-party source; it does not install dependencies or claim runtime qualification. It complements the earlier [Jido assessment](2026-10-12-jido-agents-apps-assessment.md) with a concrete reuse topology.
 
-Status: Historical package assessment. References to support or research agents are hypothetical composition examples, not implemented platform domains. The [current design](../agent-apps-design.md) and [implementation](../agent-apps-implementation.md) define the shipped scope.
+Status: Historical package assessment, not a current implementation plan. The host Jido coordinator, Shell/VFS wrappers, separate workflow-operation ledger, billing gateway, artifact publication and hosting registries were removed during scope cleanup. Ordinary Runic nodes reuse persisted agent turns. Hypothetical support/research tasks are authored workflow examples. Use the [current design](../agent-apps-design.md) and [operations](../agent-apps-operations.md) for supported behavior.
 
 ## Recommendation
 

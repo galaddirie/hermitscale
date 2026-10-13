@@ -10,7 +10,6 @@ defmodule Hermitscale.Workspaces.Workspace do
     field :created_by_user_id, :string
     field :owner_key, :string
     field :sprite_name, :string
-    field :recipe, :string, default: "codex-v1"
     field :repository, :string
     field :base_sha, :string
 
@@ -27,10 +26,9 @@ defmodule Hermitscale.Workspaces.Workspace do
 
   def creation_changeset(workspace, attrs) do
     workspace
-    |> cast(attrs, [:recipe, :repository, :base_sha])
-    |> validate_required([:id, :org_id, :created_by_user_id, :owner_key, :sprite_name, :recipe])
+    |> cast(attrs, [:repository, :base_sha])
+    |> validate_required([:id, :org_id, :created_by_user_id, :owner_key, :sprite_name])
     |> validate_length(:owner_key, min: 1, max: 255)
-    |> validate_length(:recipe, min: 1, max: 255)
     |> validate_length(:repository, max: 2048)
     |> validate_format(:base_sha, ~r/\A[0-9a-f]{40,64}\z/)
     |> unique_constraint([:org_id, :owner_key])

@@ -23,6 +23,23 @@ defmodule Hermitscale.Agents.ConversationsTest do
        }}
     )
 
+    Hermitscale.ProductFixtures.configure_product_fixture(Hermitscale.Agents.Runtime,
+      adapter: Hermitscale.AgentsRuntimeFake
+    )
+
+    Hermitscale.ProductFixtures.configure_product_fixture(
+      :workspace_management_adapter,
+      Hermitscale.AgentsRuntimeFake
+    )
+
+    start_supervised!(
+      {Hermitscale.AgentsRuntimeFake,
+       outcomes: [
+         %{status: :interrupted, worker_state: %{}},
+         %{status: :interrupted, worker_state: %{}}
+       ]}
+    )
+
     %{scope: scope, session: agent_session_fixture(scope)}
   end
 
@@ -146,15 +163,14 @@ defmodule Hermitscale.Agents.ConversationsTest do
     assert is_nil(turn.result)
   end
 
-  test "invalid budget/input rolls back admission and dispatch together", %{
+  test "invalid input rolls back admission and dispatch together", %{
     scope: scope,
     session: session
   } do
     assert {:error, changeset} =
              Agents.submit_turn(scope, session.id, %{
                instructions: "",
-               operation_key: "valid-key",
-               budget_cents: -1
+               operation_key: "valid-key"
              })
 
     assert "can't be blank" in errors_on(changeset).instructions
@@ -173,7 +189,7 @@ defmodule Hermitscale.Agents.ConversationsTest do
     assert first.admission_sequence < second.admission_sequence
     assert {:error, :waiting_for_previous_turn} = Agents.reconcile_turn(scope, second.id)
 
-    assert {:ok, %{status: :interrupted, error: %{"reason" => "sprites_token_missing"}}} =
+    assert {:ok, %{status: :interrupted}} =
              Agents.reconcile_turn(scope, first.id)
 
     assert {:ok, %{status: :interrupted}} = Agents.reconcile_turn(scope, second.id)

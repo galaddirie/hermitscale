@@ -2,7 +2,7 @@ defmodule HermitscaleWeb.WorkflowLive do
   use HermitscaleWeb, :live_view
   alias Ecto.Changeset
   alias Hermitscale.{Authorization, Workflows}
-  alias Hermitscale.Workflows.{Catalog, ExternalOperations}
+  alias Hermitscale.Workflows.Catalog
 
   @impl true
   def mount(_params, _session, socket) do
@@ -58,8 +58,7 @@ defmodule HermitscaleWeb.WorkflowLive do
      |> stream(:connection_rows, [])
      |> stream(:issues, [])
      |> stream_configure(:runs, dom_id: &run_dom_id/1)
-     |> stream(:runs, [])
-     |> stream(:operations, [])}
+     |> stream(:runs, [])}
   end
 
   @impl true
@@ -303,8 +302,7 @@ defmodule HermitscaleWeb.WorkflowLive do
          {:ok, input} <- json_value(attrs["input"]),
          {:ok, run} <-
            Workflows.start_run(socket.assigns.current_scope, socket.assigns.graph, input,
-             run_id: Ecto.UUID.generate(),
-             executor: :queued
+             run_id: Ecto.UUID.generate()
            ) do
       {:noreply,
        socket
@@ -351,9 +349,6 @@ defmodule HermitscaleWeb.WorkflowLive do
     socket
     |> assign(:run, run)
     |> stream_insert(:runs, run)
-    |> stream(:operations, ExternalOperations.list(socket.assigns.current_scope, run.id),
-      reset: true
-    )
   end
 
   defp load_recorded_run(socket, nil), do: clear_run(socket)
@@ -383,7 +378,7 @@ defmodule HermitscaleWeb.WorkflowLive do
 
   defp clear_run(socket) do
     if socket.assigns.run_timer, do: Process.cancel_timer(socket.assigns.run_timer)
-    socket |> assign(run: nil, run_timer: nil) |> stream(:operations, [], reset: true)
+    assign(socket, run: nil, run_timer: nil)
   end
 
   defp run_dom_id(run), do: "runs-" <> Base.url_encode64(run.id, padding: false)
@@ -900,7 +895,7 @@ defmodule HermitscaleWeb.WorkflowLive do
                     label="Input (JSON)"
                     rows="4"
                   /><p class="mb-4 text-xs leading-6 text-base-content/55">
-                    Runs use the saved definition. Coding, publication and deployment follow their configured budgets and actor permissions.
+                    Runs use the saved definition. Coding and app actions follow the acting member’s permissions.
                   </p><button
                     id="start-workflow-run"
                     class="btn btn-primary btn-sm w-full"
@@ -912,7 +907,7 @@ defmodule HermitscaleWeb.WorkflowLive do
             <section class="mt-8 rounded-2xl border border-base-300 p-6">
               <h2 class="text-lg font-semibold">Recorded runs</h2>
               <p class="mt-2 text-sm text-base-content/55">
-                Open a run to inspect its saved status, results and external operations.
+                Open a run to inspect its saved status and results.
               </p>
               <div id="workflow-runs" phx-update="stream" class="mt-5 space-y-2">
                 <p id="workflow-runs-empty" class="hidden text-sm text-base-content/50 only:block">
@@ -947,20 +942,7 @@ defmodule HermitscaleWeb.WorkflowLive do
                   id="resume-workflow-run"
                   phx-click="resume_run"
                   class="btn btn-outline btn-xs"
-                >Reconcile run</button>
-              </div><div id="workflow-run-operations" phx-update="stream" class="mt-5 space-y-3">
-                <article
-                  :for={{id, operation} <- @streams.operations}
-                  id={id}
-                  class="rounded-xl bg-base-200/60 p-4"
-                >
-                  <div class="flex items-center justify-between text-xs">
-                    <span class="font-semibold">{operation.node_id} · {operation.node_type}</span><span>{operation.status}</span>
-                  </div><pre
-                    :if={operation.resource != %{}}
-                    class="mt-3 overflow-auto whitespace-pre-wrap text-xs"
-                  >{Jason.encode!(operation.resource, pretty: true)}</pre>
-                </article>
+                >Resume run</button>
               </div><pre
                 :if={@run.output}
                 id="workflow-run-output"

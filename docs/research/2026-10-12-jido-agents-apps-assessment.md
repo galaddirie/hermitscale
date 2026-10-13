@@ -2,18 +2,18 @@
 
 Date: October 12, 2026. Scope: the proposed [Agents and Apps design](../agent-apps-design.md), not an implementation or dependency change. Research used official documentation, Context7 for discovery, and directly fetched official source. Runtime conclusions below were checked against **Jido v2.4.0**; mutable ecosystem sources need separate version qualification.
 
-Status: Historical assessment. The adoption recommendation below is superseded by the [current platform design](../agent-apps-design.md) and [runtime simplification research](2026-10-12-jido-runtime-simplification.md). The support/research pilot is a hypothetical use case, not an implemented capability or platform domain. The core persistence and external-effect findings remain relevant; use the current design for implementation direction.
+Status: Historical package assessment, not a current implementation plan. The host Jido coordinator, Shell/VFS wrappers, separate workflow-operation ledger, billing gateway, artifact publication and hosting registries were removed during scope cleanup. Hypothetical support/research tasks are authored workflow examples. Use the [current design](../agent-apps-design.md) and [operations](../agent-apps-operations.md) for supported behavior.
 
 ## Recommendation
 
-Keep Hermitscale's Postgres operation ledger, Oban reconciliation, Runic workflows, and persistent Codex conversation Sprite as the initial architecture. Jido provides useful agent coordination machinery, but its checked core persistence does **not** establish durable external-effect execution or restart-safe human approval continuation. Consider it later within `Hermitscale.Agents` for bounded noncoding agents or when several independently supervised agents need coordination. This is an architectural assessment, not a claim that Jido cannot be extended to meet these requirements.
+The assessment recommended Postgres-backed state, Oban reconciliation, Runic workflows, and persistent Codex conversation Sprites. A separate generic operation ledger was later removed: ordinary Runic nodes reuse persisted agent turns. Jido provides useful agent coordination machinery, but its checked core persistence does **not** establish durable external-effect execution or restart-safe human approval continuation. Consider it later within `Hermitscale.Agents` for bounded noncoding agents or when several independently supervised agents need coordination. This is an architectural assessment, not a claim that Jido cannot be extended to meet these requirements.
 
 Three GPT-6.1 Sol research agents examined core recovery, the existing workflow engine, and Codex composition. The recommendation is to defer framework adoption for the initial Codex product, retain a narrow integration option, and evaluate packages individually. No dependency was added or design decision changed by this assessment.
 
 | Product need | Recommended implementation |
 | --- | --- |
 | Codex chat and coding workflow steps | Existing proposed Agents interface and direct Codex runner. |
-| Durable workflow waits and retries | Runic integration plus Postgres external operations and Oban. |
+| Coding workflow waits and retries | Native Runic execution reusing Postgres agent turns and Oban dispatch. |
 | Persistent Sprites and published apps | Hermitscale Workspaces and Apps, including retention and data policy. |
 | Future support or research agent choosing among several tools | Candidate for a bounded Jido AI pilot behind Agents. |
 | Supporting several coding CLIs | Evaluate Jido Harness separately when that becomes a requirement. |
@@ -55,7 +55,7 @@ Hermitscale already owns versioned node schemas and configuration, definition id
 
 Jido.Runic is a real integration with Runic, including action nodes, signal/fact conversion, and a strategy that dispatches runnables and applies their results. Its existence makes selective composition plausible; it does not establish durable remote waits. Current main declares version 1.0.1 with Runic `~> 0.1.0-alpha.10`, whereas Hermitscale pins a Git revision. Its strategy also tracks completed nodes by node hash, so repeated mapped occurrences require a regression test against Hermitscale's identity semantics. These are compatibility questions, not proven defects. [Jido.Runic manifest](https://github.com/agentjido/jido_runic/blob/main/mix.exs), [strategy source](https://github.com/agentjido/jido_runic/blob/main/lib/jido/runic/strategy.ex), [Hermitscale lockfile](../../mix.lock)
 
-Keep `Workflows.ExternalOperations` responsible for waiting and accepting terminal results. A Jido action result or asynchronous directive must not be mistaken for an accepted durable wait. Map rejected or failed actions explicitly to the existing `SingleOutput.Result.failure` contract: an ordinary error tuple is otherwise ordinary node output. Keep Runic structs, Jido directives, and process IDs out of persisted workflow facts.
+Ordinary Runic nodes wait on the existing keyed agent turn; a separate generic operation dispatcher is unnecessary. Map rejected or failed actions explicitly to the existing `SingleOutput.Result.failure` contract: an ordinary error tuple is otherwise ordinary node output. Keep Jido directives and process IDs out of persisted workflow facts.
 
 ## Codex and Harness composition
 

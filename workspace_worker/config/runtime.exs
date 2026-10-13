@@ -5,11 +5,8 @@ case System.get_env("WORKSPACE_WORKER_ENABLED", "false") do
     :ok
 
   "true" ->
-    {:ok, deadline, 0} =
-      System.fetch_env!("WORKSPACE_CONTROL_DEADLINE") |> DateTime.from_iso8601()
-
     env = System.fetch_env!("WORKSPACE_PROVIDER_ENV_FILE") |> File.read!() |> JSON.decode!()
-    allowed = ~w(PATH HOME OPENAI_BASE_URL OPENAI_API_KEY CODEX_HOME HERMITSCALE_MODEL)
+    allowed = ~w(PATH HOME OPENAI_API_KEY CODEX_HOME)
 
     true =
       is_map(env) and Enum.all?(env, fn {key, value} -> key in allowed and is_binary(value) end)
@@ -23,7 +20,6 @@ case System.get_env("WORKSPACE_WORKER_ENABLED", "false") do
         journal_path: System.fetch_env!("WORKSPACE_JOURNAL_PATH"),
         socket_path: System.fetch_env!("WORKSPACE_CONTROL_SOCKET"),
         control_token: token,
-        token_deadline: deadline,
         secrets: [token | Map.values(Map.take(env, ["OPENAI_API_KEY"]))],
         harness: [
           cwd: System.fetch_env!("WORKSPACE_CWD"),

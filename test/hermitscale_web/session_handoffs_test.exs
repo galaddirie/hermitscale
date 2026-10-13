@@ -51,7 +51,6 @@ defmodule HermitscaleWeb.SessionHandoffsTest do
           "/apps",
           "/workflows",
           "/apps/" <> app_id <> "/build",
-          "/apps/" <> app_id <> "/deployments/" <> Ecto.UUID.generate(),
           "/workflows/wf:stored_1"
         ] do
       assert {:ok, nonce} = SessionHandoffs.create("old", "new", handoffs, product_path)

@@ -30,8 +30,7 @@ defmodule Hermitscale.WorkspaceWorker.ControlTest do
       runtime: runtime,
       tasks: tasks,
       socket_path: path,
-      control_token: token,
-      token_deadline: ~U[2099-01-01 00:00:00Z]
+      control_token: token
     ]
 
     start_supervised!({Control, control_options})
@@ -69,19 +68,6 @@ defmodule Hermitscale.WorkspaceWorker.ControlTest do
     expired = %{fixture() | "deadline" => "2000-01-01T00:00:00Z"}
     assert %{"ok" => false, "error" => "deadline_expired"} = request(context, expired)
     assert {:error, :operation_not_found} = Journal.status(context.journal, "operation_fixture")
-    refute_receive {:fixture_started, _operation}
-  end
-
-  test "expired transport authority rejects even a valid command", context do
-    :ok = stop_supervised(Control)
-
-    start_supervised!(
-      {Control, Keyword.put(context.options, :token_deadline, ~U[2000-01-01 00:00:00Z])}
-    )
-
-    assert %{"ok" => false, "error" => "unauthorized_or_invalid_frame"} =
-             request(context, fixture())
-
     refute_receive {:fixture_started, _operation}
   end
 

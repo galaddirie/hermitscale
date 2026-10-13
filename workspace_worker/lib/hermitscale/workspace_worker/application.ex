@@ -29,8 +29,7 @@ defmodule Hermitscale.WorkspaceWorker.Application do
              runtime: Hermitscale.WorkspaceWorker.Runtime,
              tasks: Hermitscale.WorkspaceWorker.Tasks,
              socket_path: Keyword.fetch!(config, :socket_path),
-             control_token: Keyword.fetch!(config, :control_token),
-             token_deadline: Keyword.fetch!(config, :token_deadline)}
+             control_token: Keyword.fetch!(config, :control_token)}
           ]
       end
 

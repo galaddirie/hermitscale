@@ -12,7 +12,6 @@ defmodule HermitscaleWeb.AgentFixtures do
       Enum.into(attrs, %{
         instructions: "Inspect the workspace",
         operation_key: Ecto.UUID.generate(),
-        budget_cents: 500,
         timeout_seconds: 1800
       })
 

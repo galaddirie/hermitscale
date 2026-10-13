@@ -24,33 +24,8 @@ if token = System.get_env("SPRITES_API_KEY") do
   config :hermitscale, Hermitscale.Workspaces.SpritesManagement, token: token
 end
 
-gateway_url = System.get_env("INFERENCE_GATEWAY_URL", "http://localhost:4000/inference/v1")
-models = System.get_env("CODING_ALLOWED_MODELS", "gpt-5.1-codex") |> String.split(",", trim: true)
-
-config :hermitscale, Hermitscale.Integrations.ExecutionAccess,
-  gateway_url: gateway_url,
-  models: models
-
-if input_rate = System.get_env("CODING_INPUT_MICROS_PER_MILLION") do
-  output_rate = System.fetch_env!("CODING_OUTPUT_MICROS_PER_MILLION")
-
-  rates =
-    Map.new(
-      models,
-      &{&1,
-       %{
-         input_micros_per_million: String.to_integer(input_rate),
-         output_micros_per_million: String.to_integer(output_rate),
-         version: System.get_env("CODING_RATE_VERSION", "configured-v1")
-       }}
-    )
-
-  config :hermitscale, Hermitscale.Integrations.InferenceGateway, rates: rates
-end
-
-config :hermitscale, Hermitscale.Apps,
-  gateway_host: System.get_env("APP_GATEWAY_HOST", "apps.hermitscale.local"),
-  gateway_scheme: System.get_env("APP_GATEWAY_SCHEME", "https")
+config :hermitscale, HermitscaleWeb.AppGateway,
+  host: System.get_env("APP_GATEWAY_HOST", "apps.hermitscale.local")
 
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the

@@ -142,20 +142,34 @@ defmodule Hermitscale.Workflows.Credentials do
     graph
     |> Validator.node_specs()
     |> Enum.reduce_while({:ok, %{}}, fn node, {:ok, acc} ->
-      case node_reference(node, identity) do
-        {:ok, nil} ->
-          case requirement(node) do
-            [] -> {:cont, {:ok, Map.put(acc, node["id"], %{credentials: nil})}}
-            _ -> {:cont, {:ok, acc}}
-          end
-
-        {:ok, reference} ->
-          {:cont, {:ok, Map.put(acc, node["id"], %{credentials: reference})}}
+      case runtime_context(node, identity) do
+        {:ok, context} ->
+          {:cont, {:ok, Map.put(acc, node["id"], context)}}
 
         {:error, _reason} = error ->
           {:halt, error}
       end
     end)
+  end
+
+  defp runtime_context(node, identity) do
+    with {:ok, reference} <- node_reference(node, identity) do
+      context =
+        if reference != nil or requirement(node) == [], do: %{credentials: reference}, else: %{}
+
+      {:ok, module} = Catalog.fetch(node["type"], node["version"])
+
+      case Keyword.has_key?(module.__catalog_node__().requires, :execution_context) do
+        false ->
+          {:ok, context}
+
+        true when is_struct(identity, ExecutionContext) ->
+          {:ok, Map.put(context, :execution_context, identity)}
+
+        true ->
+          {:error, :execution_identity_required}
+      end
+    end
   end
 
   defp node_reference(node, identity) do

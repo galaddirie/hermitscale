@@ -27,7 +27,7 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
     %{scope: scope, workspace: workspace, lease: lease}
   end
 
-  test "real Jido Shell waits for remote exit and retains the Sprite on teardown", %{
+  test "direct Sprite commands retain remote exit status", %{
     workspace: workspace,
     lease: lease
   } do
@@ -47,12 +47,15 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
     calls = Hermitscale.SpritesSDKFake.calls()
     assert length(calls) == 2
     assert Enum.all?(calls, fn {name, _cmd, _args, _opts} -> name == workspace.sprite_name end)
-    assert {_name, "sh", ["-lc", line], _opts} = List.last(calls)
-    assert String.contains?(line, "sandbox-launch coder")
-    assert String.contains?(line, "timeout --signal=TERM --kill-after=2s")
+
+    assert {_name, "sudo",
+            ["-n", "/opt/hermitscale/bin/sandbox-launch", "coder", "/usr/bin/timeout" | args],
+            _opts} = List.last(calls)
+
+    assert List.last(args) == "mix test"
   end
 
-  test "real Jido VFS transports bounded nofollow file operations using server-owned identity", %{
+  test "direct confined reads use server-owned identity", %{
     scope: scope,
     workspace: workspace,
     lease: lease
@@ -62,7 +65,7 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
       start:
         {Agent, :start_link,
          [
-           fn -> %{results: [["", 0], [Base.encode64("retained content"), 0]], calls: []} end,
+           fn -> %{results: [[Base.encode64("retained content"), 0]], calls: []} end,
            [name: Hermitscale.SpritesSDKFake]
          ]}
     })
@@ -70,11 +73,11 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
     assert {:ok, "retained content"} =
              Workspaces.read_file(scope, workspace.id, lease.id, "lib/app.ex")
 
-    assert {_name, "sudo", ["-n", "python3", "-I", "-c", script, "read", "/workspace/lib/app.ex"],
+    assert {_name, "sudo",
+            ["-n", "python3", "-I", "-c", script, "read", "/workspace/lib/app.ex", "1048576"],
             _opts} = List.last(Hermitscale.SpritesSDKFake.calls())
 
     assert String.contains?(script, "os.O_NOFOLLOW")
-    assert String.contains?(script, "1048576")
 
     assert {:error, :not_found} =
              Workspaces.read_file(workspace_scope_fixture(), workspace.id, lease.id, "lib/app.ex")
@@ -82,7 +85,7 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
     assert {:error, :invalid_path} =
              Workspaces.read_file(scope, workspace.id, lease.id, "../secret")
 
-    assert length(Hermitscale.SpritesSDKFake.calls()) == 2
+    assert length(Hermitscale.SpritesSDKFake.calls()) == 1
   end
 
   test "writer completion allows evidence after deadline while a newer generation stays fenced",
@@ -101,5 +104,57 @@ defmodule Hermitscale.Workspaces.SpriteAccessTest do
 
     assert {:error, :stale_generation} =
              Workspaces.validate_lease(scope, expired.id, purpose: :evidence)
+  end
+
+  test "requested result reads only the bounded result file after the activity deadline", %{
+    scope: scope,
+    workspace: workspace,
+    lease: lease
+  } do
+    start_supervised!(%{
+      id: Hermitscale.SpritesSDKFake,
+      start:
+        {Agent, :start_link,
+         [
+           fn -> %{results: [[Base.encode64(~s({"answer":"done"})), 0]], calls: []} end,
+           [name: Hermitscale.SpritesSDKFake]
+         ]}
+    })
+
+    expired =
+      Repo.update!(Ecto.Changeset.change(lease, deadline: DateTime.add(DateTime.utc_now(), -1)))
+
+    assert {:ok, ~s({"answer":"done"})} =
+             Workspaces.read_result(scope, workspace.id, expired.id)
+
+    assert {_name, "sudo",
+            [
+              "-n",
+              "python3",
+              "-I",
+              "-c",
+              _script,
+              "read",
+              "/workspace/.hermitscale/result.json",
+              "65536"
+            ], _opts} = List.last(Hermitscale.SpritesSDKFake.calls())
+
+    assert {:error, :lease_expired} =
+             Workspaces.read_file(scope, workspace.id, expired.id, "lib/app.ex")
+
+    Repo.update!(Ecto.Changeset.change(workspace, generation: lease.generation + 1))
+    assert {:error, :stale_generation} = Workspaces.read_result(scope, workspace.id, expired.id)
+    assert length(Hermitscale.SpritesSDKFake.calls()) == 1
+  end
+
+  test "requested result does not accept an oversized file", %{workspace: workspace, lease: lease} do
+    start_supervised!(%{
+      id: Hermitscale.SpritesSDKFake,
+      start:
+        {Agent, :start_link,
+         [fn -> %{results: [["", 74]], calls: []} end, [name: Hermitscale.SpritesSDKFake]]}
+    })
+
+    assert {:error, :file_too_large} = SpriteAccess.read_result(workspace, lease)
   end
 end

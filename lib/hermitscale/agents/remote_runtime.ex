@@ -5,13 +5,6 @@ defmodule Hermitscale.Agents.RemoteRuntime do
   alias Hermitscale.Integrations.ExecutionAccess
   alias Hermitscale.Agents.Protocol
 
-  def preflight(scope, session, _turn) do
-    with {:ok, _token} <- Hermitscale.Workspaces.SpritesManagement.token(),
-         :ok <- ExecutionAccess.provider_ready(scope, session) do
-      :ok
-    end
-  end
-
   def step(scope, session, turn, lease) do
     with {:ok, workspace} <- Workspaces.provision_workspace(scope, session.workspace_id),
          {:ok, operation} <- inspect_or_start(scope, session, turn, lease, workspace),
@@ -129,7 +122,7 @@ defmodule Hermitscale.Agents.RemoteRuntime do
     end
   end
 
-  defp terminal_outcome(scope, session, turn, lease, workspace, operation, events) do
+  defp terminal_outcome(scope, _session, turn, lease, workspace, operation, events) do
     with {:ok, evidence} <- Workspaces.termination_evidence(scope, workspace.id, lease.id) do
       outcome =
         case operation["status"] do
@@ -143,24 +136,52 @@ defmodule Hermitscale.Agents.RemoteRuntime do
             if(turn.cancellation_requested_at != nil, do: :cancelled, else: :interrupted)
         end
 
-      result =
-        with {:ok, base} <- Hermitscale.Agents.Publications.current_base_sha(scope, session.id) do
-          Workspaces.collect_evidence(scope, workspace.id, lease.id, base,
-            verification_commands:
-              if(outcome == :succeeded, do: turn.verification_commands, else: [])
-          )
+      result = terminal_result(scope, workspace, turn, lease, outcome)
+
+      {:ok,
+       %{
+         status: outcome,
+         events: events,
+         worker_state: operation,
+         result: result,
+         termination_evidence: evidence
+       }}
+    end
+  end
+
+  defp terminal_result(scope, workspace, turn, lease, outcome) do
+    result =
+      case {outcome, turn.result_schema} do
+        {:succeeded, schema} when schema != %{} -> read_requested_result(scope, workspace, lease)
+        _unrequested -> %{}
+      end
+
+    commands = if outcome == :succeeded, do: turn.verification_commands, else: []
+
+    checks =
+      Enum.map(commands, fn command ->
+        case Workspaces.execute_command(scope, workspace.id, lease.id, command) do
+          {:ok, receipt} -> Map.put(receipt, :command, command)
+          {:error, reason} -> %{command: command, error: inspect(reason)}
+        end
+      end)
+
+    Map.put(result, "checks", checks)
+  end
+
+  defp read_requested_result(scope, workspace, lease) do
+    case Workspaces.read_result(scope, workspace.id, lease.id) do
+      {:ok, content} ->
+        case Jason.decode(content) do
+          {:ok, result} -> %{"result" => result}
+          {:error, _reason} -> %{"result_valid_json" => false}
         end
 
-      with {:ok, result} <- result do
-        {:ok,
-         %{
-           status: outcome,
-           events: events,
-           worker_state: operation,
-           result: result,
-           termination_evidence: evidence
-         }}
-      end
+      {:error, :file_not_found} ->
+        %{"result_evidence_present" => false}
+
+      {:error, reason} ->
+        %{"result_evidence_present" => false, "result_error" => inspect(reason)}
     end
   end
 
@@ -176,7 +197,7 @@ defmodule Hermitscale.Agents.RemoteRuntime do
 
       {:error, reason}
       when reason in [:operation_not_found, :worker_unavailable, :worker_not_started] ->
-        with {:ok, env} <- ExecutionAccess.provider_env(scope, session, turn),
+        with {:ok, env} <- ExecutionAccess.provider_env(scope, session),
              {:ok, source} <- source_credential(scope, session),
              {:ok, _} <-
                Workspaces.prepare_turn(scope, workspace.id, lease, turn, env,
@@ -262,7 +283,7 @@ defmodule Hermitscale.Agents.RemoteRuntime do
       "payload_digest" => Protocol.payload_digest(payload),
       "deadline" =>
         DateTime.to_iso8601(
-          if(type in ["inspect", "read_events", "ack_events"],
+          if(type in ["inspect", "read_events"],
             do: DateTime.add(DateTime.utc_now(:second), 60),
             else: turn.deadline
           )

@@ -22,7 +22,6 @@ defmodule Hermitscale.Agents.Event do
     |> validate_required([
       :org_id,
       :session_id,
-      :turn_id,
       :sequence,
       :source_key,
       :source_digest,

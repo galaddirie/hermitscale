@@ -6,17 +6,12 @@ defmodule Hermitscale.Agents.ReconcileWorker do
     unique: [period: :infinity, fields: [:worker, :args], keys: [:turn_id], states: :incomplete]
 
   alias Hermitscale.{Agents, Authorization}
-  alias Hermitscale.Agents.{SessionAgent, Turn}
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"turn_id" => id}, attempt: attempt, max_attempts: max_attempts}) do
     with {:ok, identity} <- Agents.execution_identity(id),
-         {:ok, scope} <- Authorization.execution_scope(identity),
-         {:ok, turn} <- Agents.get_turn(scope, id) do
-      cond do
-        Turn.terminal?(turn) -> Agents.reconcile_turn(scope, id)
-        true -> reconcile(scope, turn)
-      end
+         {:ok, scope} <- Authorization.execution_scope(identity) do
+      reconcile(scope, id)
     else
       {:error, :execution_actor_ineligible} ->
         case Agents.terminate_turn(id, "execution_actor_ineligible") do
@@ -50,31 +45,20 @@ defmodule Hermitscale.Agents.ReconcileWorker do
     end
   end
 
-  defp reconcile(scope, turn) do
-    # Check serial admission before starting an in-memory coordinator. Product state
-    # remains authoritative even if the agent or this job dies after the commit.
-    case Agents.pending_before?(scope, turn.id) do
-      {:ok, false} ->
-        case SessionAgent.reconcile(scope, turn) do
-          {:ok, %{status: status}}
-          when status in ["running", "provisioning", "waiting_for_approval", "waiting_for_input"] ->
-            {:snooze, 2}
+  defp reconcile(scope, id) do
+    case Agents.reconcile_turn(scope, id) do
+      {:ok, %{status: status}}
+      when status in [:running, :provisioning, :waiting_for_approval, :waiting_for_input] ->
+        {:snooze, 2}
 
-          {:ok, projection} ->
-            {:ok, projection}
+      {:ok, turn} ->
+        {:ok, turn}
 
-          {:error, :waiting_for_previous_turn} ->
-            {:snooze, 10}
-
-          {:error, :reconciliation_required} ->
-            {:cancel, :reconciliation_required}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:ok, true} ->
+      {:error, :waiting_for_previous_turn} ->
         {:snooze, 10}
+
+      {:error, :reconciliation_required} ->
+        {:cancel, :reconciliation_required}
 
       {:error, reason} ->
         {:error, reason}

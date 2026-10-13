@@ -21,8 +21,6 @@ defmodule Hermitscale.Workflows.Run do
     field :definition, :map
     field :admission_digest, :string
 
-    field :owner, :string
-    field :lease_expires_at, :utc_datetime
     field :last_event_sequence, :integer, default: 0
     field :input, :map
     field :output, :map
@@ -43,8 +41,6 @@ defmodule Hermitscale.Workflows.Run do
       :workflow_graph_id,
       :definition,
       :status,
-      :owner,
-      :lease_expires_at,
       :last_event_sequence,
       :input,
       :output,

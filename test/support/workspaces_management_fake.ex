@@ -39,9 +39,4 @@ defmodule Hermitscale.WorkspacesManagementFake do
     send(self(), {:management_admitted_terminated, lease.id})
     termination_evidence(workspace, lease)
   end
-
-  def delete(workspace) do
-    send(self(), {:management_deleted, workspace.id})
-    {:ok, %{}}
-  end
 end

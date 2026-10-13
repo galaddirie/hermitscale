@@ -216,7 +216,7 @@ defmodule Hermitscale.WorkflowsTest do
       assert Workflows.get_run!(scope, run.id).status == :complete
     end
 
-    test "completion uses the admitted graph after an author edits the stored graph", %{
+    test "native resume uses the admitted graph after an author edits the stored graph", %{
       scope: scope
     } do
       assert {:ok, graph} =
@@ -235,28 +235,21 @@ defmodule Hermitscale.WorkflowsTest do
       assert {:ok, _updated} =
                Workflows.update_graph(scope, graph, %{definition: valid_join_graph()})
 
+      ref = Process.monitor(task)
+      assert :ok = Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false)
+      assert_receive {:DOWN, ^ref, :process, ^task, _reason}, 1_000
+
       assert :ok = Workflows.subscribe_run(scope, run.id)
-      send(task, :release)
+
+      assert {:ok, %Run{status: :running} = resumed} =
+               Workflows.resume_run(scope, run, run_context: %{"probe" => %{observer: self()}})
+
+      assert resumed.id == run.id
+      assert_receive {:workflow_node_waiting, resumed_task}, 1_000
+      send(resumed_task, :release)
       assert_receive {:run_complete, id}, 1_000
       assert id == run.id
       assert Workflows.get_run!(scope, run.id).output == %{"value" => %{"probe" => [input]}}
-    end
-
-    test "idle persistence failure remains a failed durable outcome", %{scope: scope} do
-      assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs())
-      assert {:ok, run} = Workflows.create_run(scope, graph, %{status: :running})
-      assert :ok = Workflows.subscribe_run(scope, run.id)
-
-      # A store can return arbitrary dependency details, including secrets.
-      worker = idle_worker_fixture(run, persistence: {:error, "sensitive dependency detail"})
-
-      assert {:ok, %Run{status: :failed} = failed} = Workflows.record_run_idle(worker, [])
-      assert failed.output == nil
-      assert failed.error == %{"reason" => "workflow_persistence_failed"}
-      assert failed.completed_at
-      assert_receive {:run_failed, id}
-      assert id == run.id
-      refute_receive {:run_complete, _id}
     end
 
     test "nil admissions run empty collection semantics and exclude control outputs", %{
@@ -352,7 +345,7 @@ defmodule Hermitscale.WorkflowsTest do
         ])
 
       assert {:ok, _graph} = Workflows.update_graph(scope, graph, %{definition: changed})
-      assert {:ok, _pid} = Workflows.resume_run(collaborator, run)
+      assert {:ok, _pid} = Workflows.resume_run(collaborator, run, executor: :inline)
       assert {:ok, workflow} = Runic.Runner.get_workflow(Hermitscale.WorkflowRunner, run.id)
       reference = Workflow.get_run_context(workflow)["probe"].credentials
       assert reference.account_id == "data_test"

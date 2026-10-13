@@ -99,10 +99,6 @@ defmodule HermitscaleWeb.SessionHandoffs do
       ["", "apps", id, "build"] ->
         match?({:ok, _uuid}, Ecto.UUID.cast(id))
 
-      ["", "apps", id, "deployments", deployment] ->
-        match?({:ok, _uuid}, Ecto.UUID.cast(id)) and
-          match?({:ok, _uuid}, Ecto.UUID.cast(deployment))
-
       ["", "workflows", id] ->
         Regex.match?(~r/\A[A-Za-z][A-Za-z0-9_:-]{0,127}\z/, id)
 

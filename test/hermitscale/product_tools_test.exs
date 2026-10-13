@@ -1,9 +1,7 @@
 defmodule Hermitscale.ProductToolsTest do
   use Hermitscale.DataCase, async: false
-  use Oban.Testing, repo: Hermitscale.Repo
   import Hermitscale.ProductFixtures
   alias Hermitscale.{ProductTools, Workflows}
-  alias Hermitscale.Workflows.ExternalOperationWorker
 
   setup do
     authentication = authenticated_product_fixture()
@@ -48,16 +46,25 @@ defmodule Hermitscale.ProductToolsTest do
     assert {:error, :idempotency_key_required} = ProductTools.execute(scope, "runs.start", args)
     args = Map.put(args, "operation_key", Ecto.UUID.generate())
     assert {:ok, first} = ProductTools.execute(scope, "runs.start", args)
+    :ok = Workflows.subscribe_run(scope, first.id)
+
+    on_exit(fn ->
+      Runic.Runner.stop(Hermitscale.WorkflowRunner, first.id, persist: false)
+    end)
+
     assert {:ok, duplicate} = ProductTools.execute(scope, "runs.start", args)
     assert duplicate.id == first.id
     assert first.admission_digest != nil
     assert Repo.aggregate(Hermitscale.Workflows.Run, :count) == 1
-    assert_enqueued(worker: ExternalOperationWorker, args: %{run_id: first.id})
 
     assert {:error, :operation_key_conflict} =
              ProductTools.execute(scope, "runs.start", %{args | "input" => %{"ticket" => "ENG-8"}})
 
-    assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: first.id})
+    if Workflows.get_run!(scope, first.id).status != :complete do
+      assert_receive {:run_complete, id}, 1_000
+      assert id == first.id
+    end
+
     assert Workflows.get_run!(scope, first.id).status == :complete
     assert {:ok, completed} = ProductTools.execute(scope, "runs.start", args)
     assert completed.id == first.id
@@ -66,7 +73,7 @@ defmodule Hermitscale.ProductToolsTest do
 
   test "example workflow domains are not product operations", %{scope: scope} do
     actions =
-      ~w(reviews.request reviews.decide support.subscribe support.investigate support.inspect support.reply apps.verify_defect)
+      ~w(deployments.request deployments.inspect reviews.request reviews.decide support.subscribe support.investigate support.inspect support.reply apps.verify_defect)
 
     assert ProductTools.definitions(actions) == []
 
@@ -86,7 +93,7 @@ defmodule Hermitscale.ProductToolsTest do
 
     refute "verification_commands" in continue.inputSchema.required
 
-    for tool <- ProductTools.definitions(["agents.publish", "deployments.request"]) do
+    for tool <- ProductTools.definitions(["agents.publish", "apps.publish"]) do
       refute "review_id" in tool.inputSchema.required
       refute Map.has_key?(tool.inputSchema.properties, "verification_commands")
     end

@@ -2,38 +2,26 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
   use Hermitscale.DataCase, async: false
   import Hermitscale.ProductFixtures
   import Hermitscale.AgentsFixtures
-  alias Hermitscale.{Agents, Artifacts, Workspaces, AgentsRuntimeFake, Usage}
+  alias Hermitscale.{Agents, Workspaces, AgentsRuntimeFake}
 
   setup do
-    authentication = authenticated_product_fixture()
-    scope = authentication.current_scope
+    %{current_scope: scope} = authenticated_product_fixture()
     configure_product_fixture(Hermitscale.Agents.Runtime, adapter: AgentsRuntimeFake)
     configure_product_fixture(:workspace_management_adapter, AgentsRuntimeFake)
     %{scope: scope, session: agent_session_fixture(scope)}
   end
 
-  test "one retained writer runs, stores verified output and releases for a follow-up", %{
+  test "retained turns serialize and preserve provider history without scanning artifacts", %{
     scope: scope,
     session: session
   } do
-    start_supervised!(
-      {AgentsRuntimeFake,
-       outcomes: [
-         %{status: :running, worker_state: %{"provider_session_id" => "provider-thread"}},
-         success(session),
-         success(session)
-       ]}
-    )
-
+    start_supervised!({AgentsRuntimeFake, outcomes: [running(), success(), success()]})
     first = agent_turn_fixture(scope, session)
     second = agent_turn_fixture(scope, session)
-    assert {:ok, running} = Agents.reconcile_turn(scope, first.id)
-    assert running.status == :running
+    assert {:ok, %{status: :running}} = Agents.reconcile_turn(scope, first.id)
     assert {:error, :waiting_for_previous_turn} = Agents.reconcile_turn(scope, second.id)
-    assert {:ok, completed} = Agents.reconcile_turn(scope, first.id)
-    assert completed.status == :succeeded
-    assert {:ok, artifact} = Artifacts.get(scope, completed.result["patch_artifact_id"])
-    assert artifact.content == "verified diff"
+    assert {:ok, %{status: :succeeded} = completed} = Agents.reconcile_turn(scope, first.id)
+    assert completed.result["session_id"] == session.id
     assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, completed.lease_id)
 
     assert {:ok, %{provider_conversation_id: "provider-thread"}} =
@@ -46,108 +34,27 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
     assert next.generation > original.generation
     _ = Agents.list_events(scope, session.id)
     _ = Agents.list_turns(scope, session.id)
-    _ = Artifacts.get(scope, completed.result["patch_snapshot_artifact_id"])
     assert length(AgentsRuntimeFake.steps()) == 3
   end
 
-  test "terminal commit is recoverable when the first writer release fails", %{
+  test "terminal persistence survives a failed writer release without another turn", %{
     scope: scope,
     session: session
   } do
-    start_supervised!({AgentsRuntimeFake, outcomes: [success(session)], fail_release: true})
+    start_supervised!({AgentsRuntimeFake, outcomes: [success()], fail_release: true})
     turn = agent_turn_fixture(scope, session)
     assert {:error, :termination_unverified} = Agents.reconcile_turn(scope, turn.id)
     assert {:ok, %{status: :succeeded}} = Agents.get_turn(scope, turn.id)
     assert {:ok, %{status: :succeeded}} = Agents.reconcile_turn(scope, turn.id)
-
-    assert %{
-             compute: %{quantity: 2000, priced: false, unit: "milliseconds"},
-             storage: %{quantity: 1024, priced: false, unit: "logical_file_bytes"}
-           } = Usage.summary(scope, turn.id)
-
-    assert {:ok, %{status: :released}} =
-             Workspaces.get_lease(
-               scope,
-               hd(AgentsRuntimeFake.steps()) |> elem(1) |> Map.fetch!(:id)
-             )
-
-    assert length(AgentsRuntimeFake.steps()) == 1
+    [{_turn, lease}] = AgentsRuntimeFake.steps()
+    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, lease.id)
   end
 
-  test "invalid requested output fails without leaving a writer active", %{
+  test "ordinary chat can complete without JSON or diagnostic results", %{
     scope: scope,
     session: session
   } do
-    start_supervised!({AgentsRuntimeFake, outcomes: [success(session)]})
-
-    turn =
-      agent_turn_fixture(scope, session, %{
-        result_schema: %{"type" => "object", "required" => ["missing"]}
-      })
-
-    assert {:ok, %{status: :failed} = failed} = Agents.reconcile_turn(scope, turn.id)
-    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
-    assert {:ok, _retained_patch} = Artifacts.get(scope, failed.result["patch_artifact_id"])
-  end
-
-  test "interrupted work keeps private file exports and measured usage for historical reads", %{
-    scope: scope,
-    session: session
-  } do
-    content = "partial fix\n"
-    outcome = success(session)
-
-    result =
-      Map.put(outcome.result, "files", [
-        %{
-          "path" => "lib/fix.ex",
-          "content" => Base.encode64(content),
-          "digest" => Hermitscale.Workspaces.Evidence.digest(content)
-        }
-      ])
-
-    start_supervised!(
-      {AgentsRuntimeFake, outcomes: [%{outcome | status: :interrupted, result: result}]}
-    )
-
-    turn = agent_turn_fixture(scope, session)
-
-    assert {:ok, interrupted} = Agents.reconcile_turn(scope, turn.id)
-    assert interrupted.status == :interrupted
-    [export] = interrupted.result["exports"]
-    assert {:ok, %{content: ^content}} = Artifacts.get(scope, export["artifact_id"])
-
-    assert {:ok, snapshot} =
-             Artifacts.get(scope, interrupted.result["patch_snapshot_artifact_id"])
-
-    assert {:ok, %{"exports" => [^export]}} = Jason.decode(snapshot.content)
-
-    assert {:ok, %{usage_summary: %{compute: %{quantity: 2000}}}} =
-             Agents.get_turn(scope, turn.id)
-
-    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, interrupted.lease_id)
-    assert length(AgentsRuntimeFake.steps()) == 1
-  end
-
-  test "malformed file evidence is rejected at the runtime boundary", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
-
-    result =
-      Map.put(outcome.result, "files", [%{"path" => "fix.ex", "content" => nil, "digest" => 42}])
-
-    start_supervised!({AgentsRuntimeFake, outcomes: [%{outcome | result: result}]})
-    turn = agent_turn_fixture(scope, session)
-    assert {:error, :invalid_export} = Agents.reconcile_turn(scope, turn.id)
-  end
-
-  test "missing or null terminal output cannot bypass success validation", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
+    outcome = success()
 
     start_supervised!(
       {AgentsRuntimeFake, outcomes: [Map.delete(outcome, :result), %{outcome | result: nil}]}
@@ -155,47 +62,38 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
 
     for _case <- 1..2 do
       turn = agent_turn_fixture(scope, session)
-
-      assert {:ok, %{status: :failed, result: %{"outcome" => "invalid_result"}} = failed} =
-               Agents.reconcile_turn(scope, turn.id)
-
-      assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
-    end
-  end
-
-  test "ordinary chat retains evidence without requiring a structured result", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
-    absent = Map.merge(outcome.result, %{"result" => nil, "result_evidence_present" => false})
-
-    invalid =
-      Map.merge(outcome.result, %{
-        "result" => nil,
-        "result_evidence_present" => true,
-        "result_valid_json" => false
-      })
-
-    start_supervised!(
-      {AgentsRuntimeFake, outcomes: [%{outcome | result: absent}, %{outcome | result: invalid}]}
-    )
-
-    for _case <- 1..2 do
-      turn = agent_turn_fixture(scope, session)
       assert {:ok, %{status: :succeeded} = completed} = Agents.reconcile_turn(scope, turn.id)
-      assert {:ok, _retained_patch} = Artifacts.get(scope, completed.result["patch_artifact_id"])
       assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, completed.lease_id)
     end
   end
 
-  test "failed optional checks remain evidence without failing a completed chat turn", %{
+  test "requested structured output validates only the current turn", %{
     scope: scope,
     session: session
   } do
-    outcome = success(session)
-    result = Map.put(outcome.result, "checks", [%{"name" => "explicit check", "exit_code" => 1}])
-    start_supervised!({AgentsRuntimeFake, outcomes: [%{outcome | result: result}]})
+    outcome = %{success() | result: %{"result" => %{"answer" => "done"}}}
+
+    start_supervised!(
+      {AgentsRuntimeFake,
+       outcomes: [outcome, %{outcome | result: %{"result_evidence_present" => false}}]}
+    )
+
+    schema = %{"type" => "object", "required" => ["answer"]}
+    first = agent_turn_fixture(scope, session, %{result_schema: schema})
+
+    assert {:ok, %{status: :succeeded, result: %{"result" => %{"answer" => "done"}}}} =
+             Agents.reconcile_turn(scope, first.id)
+
+    second = agent_turn_fixture(scope, session, %{result_schema: schema})
+    assert {:ok, %{status: :failed} = failed} = Agents.reconcile_turn(scope, second.id)
+    assert failed.result["outcome"] == "invalid_result"
+    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
+  end
+
+  test "caller-selected checks remain history rather than a universal chat success requirement",
+       %{scope: scope, session: session} do
+    outcome = %{success() | result: %{"checks" => [%{"command" => "false", "exit_code" => 1}]}}
+    start_supervised!({AgentsRuntimeFake, outcomes: [outcome]})
     turn = agent_turn_fixture(scope, session, %{verification_commands: ["false"]})
     assert {:ok, completed} = Agents.reconcile_turn(scope, turn.id)
     assert completed.status == :succeeded
@@ -218,36 +116,13 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
     end
   end
 
-  test "requested structured output requires valid current-turn JSON", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
-    absent = Map.put(outcome.result, "result_evidence_present", false)
-    start_supervised!({AgentsRuntimeFake, outcomes: [%{outcome | result: absent}]})
-    turn = agent_turn_fixture(scope, session, %{result_schema: %{"type" => "object"}})
-    assert {:ok, %{status: :failed} = failed} = Agents.reconcile_turn(scope, turn.id)
-    assert failed.result["outcome"] == "invalid_result"
-    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
-  end
+  defp running,
+    do: %{status: :running, worker_state: %{"provider_session_id" => "provider-thread"}}
 
-  defp success(session),
+  defp success,
     do: %{
       status: :succeeded,
-      worker_state: %{
-        "provider_session_id" => "provider-thread",
-        "termination_confirmed" => true,
-        "compute_milliseconds" => 2000
-      },
-      result: %{
-        "base_sha" => session.base_sha,
-        "head_sha" => session.base_sha,
-        "diff" => "verified diff",
-        "checks" => [%{"name" => "repository tests", "exit_code" => 0}],
-        "manifest" => ["lib/fix.ex"],
-        "files" => [],
-        "storage_bytes" => 1024,
-        "result" => %{}
-      }
+      worker_state: %{"provider_session_id" => "provider-thread", "termination_confirmed" => true},
+      result: %{}
     }
 end

@@ -14,13 +14,14 @@ spec.loader.exec_module(sandbox)
 class SandboxBoundaryTest(unittest.TestCase):
     def test_provider_environment_drops_management_and_git_credentials(self):
         user = SimpleNamespace(pw_name='hermitcoder', pw_dir='/home/hermitcoder')
-        with patch.dict(os.environ, {'OPENAI_API_KEY': 'injected-capability', 'SPRITES_API_KEY': 'fleet-secret', 'HS_GIT_TOKEN': 'git-secret'}, clear=True), patch.object(sandbox.os, 'open', return_value=1), patch.object(sandbox.os, 'fdopen', mock_open(read_data='{"OPENAI_API_KEY":"bounded-capability","OPENAI_BASE_URL":"https://gateway.example.test/v1","HERMITSCALE_MODEL":"fixture-model"}')):
+        with patch.dict(os.environ, {'OPENAI_API_KEY': 'injected-capability', 'SPRITES_API_KEY': 'fleet-secret', 'HS_GIT_TOKEN': 'git-secret'}, clear=True), patch.object(sandbox.os, 'open', return_value=1), patch.object(sandbox.os, 'fdopen', mock_open(read_data='{"OPENAI_API_KEY":"bounded-capability"}')):
             env = sandbox.execution_environment('provider', user)
         self.assertEqual(env['OPENAI_API_KEY'], 'bounded-capability')
         self.assertNotIn('SPRITES_API_KEY', env)
         self.assertNotIn('HS_GIT_TOKEN', env)
-        self.assertEqual(env['MODEL_PROVIDER'], 'hermitscale')
-        self.assertEqual(__import__('json').loads(env['CODEX_CONFIG'])['model_providers']['hermitscale']['supports_websockets'], False)
+        self.assertNotIn('MODEL_PROVIDER', env)
+        self.assertNotIn('OPENAI_BASE_URL', env)
+        self.assertNotIn('CODEX_CONFIG', env)
 
     def test_new_provider_result_clear_preserves_other_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -58,11 +59,11 @@ class SandboxBoundaryTest(unittest.TestCase):
         self.assertNotIn('GIT_CONFIG_COUNT', env)
         self.assertNotIn('LD_PRELOAD', env)
 
-    def test_app_environment_has_only_app_configuration(self):
+    def test_app_environment_drops_inherited_configuration_and_credentials(self):
         user = SimpleNamespace(pw_name='hermitapp', pw_dir='/home/hermitapp')
         with patch.dict(os.environ, {'HERMIT_REVISION': 'abc', 'OPENAI_API_KEY': 'model-secret', 'LD_PRELOAD': 'injection'}, clear=True):
             env = sandbox.execution_environment('app', user)
-        self.assertEqual(env['HERMIT_REVISION'], 'abc')
+        self.assertNotIn('HERMIT_REVISION', env)
         self.assertNotIn('OPENAI_API_KEY', env)
         self.assertNotIn('LD_PRELOAD', env)
 

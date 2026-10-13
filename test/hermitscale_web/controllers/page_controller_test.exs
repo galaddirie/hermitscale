@@ -1,7 +1,7 @@
 defmodule HermitscaleWeb.PageControllerTest do
   use HermitscaleWeb.ConnCase, async: true
 
-  test "GET / offers browser sign-in and states execution availability", %{conn: conn} do
+  test "GET / offers browser sign-in", %{conn: conn} do
     document =
       conn
       |> get(~p"/")
@@ -9,8 +9,6 @@ defmodule HermitscaleWeb.PageControllerTest do
       |> LazyHTML.from_document()
 
     assert Enum.count(LazyHTML.query(document, "#home-sign-in[href='/auth/login']")) == 1
-
-    assert Enum.count(LazyHTML.query(document, "#home-runtime-status")) == 1
   end
 
   test "obsolete browser cookies grant no authority", %{conn: conn} do
