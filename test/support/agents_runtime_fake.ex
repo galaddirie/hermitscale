@@ -8,9 +8,8 @@ defmodule Hermitscale.AgentsRuntimeFake do
     do:
       {:ok,
        %{
-         outcomes: Keyword.get(options, :outcomes, []),
+         outcomes: Keyword.fetch!(options, :outcomes),
          steps: [],
-         publications: [],
          fail_release: Keyword.get(options, :fail_release, false)
        }}
 
@@ -18,28 +17,12 @@ defmodule Hermitscale.AgentsRuntimeFake do
     do: GenServer.call(__MODULE__, {:step, session, turn, lease})
 
   def steps, do: GenServer.call(__MODULE__, :steps)
-  def publications, do: GenServer.call(__MODULE__, :publications)
-  def publish_branch(_workspace, _lease, attrs), do: GenServer.call(__MODULE__, {:publish, attrs})
   def ensure_allocated(_workspace), do: {:ok, %{compute_state: :sleeping}}
 
   def verify_termination(workspace, lease, proof),
     do: GenServer.call(__MODULE__, {:verify, workspace, lease, proof})
 
   def termination_evidence(workspace, lease), do: {:ok, proof(workspace.id, lease)}
-
-  def handle_call(:publications, _from, state),
-    do: {:reply, Enum.reverse(state.publications), state}
-
-  def handle_call({:publish, attrs}, _from, state) do
-    result = %{
-      repository: attrs.repository,
-      branch: attrs.branch,
-      commit_sha: String.duplicate("b", 40)
-    }
-
-    {:reply, {:ok, result},
-     %{state | publications: [Map.drop(attrs, [:credential]) | state.publications]}}
-  end
 
   def handle_call(:steps, _from, state), do: {:reply, Enum.reverse(state.steps), state}
 

@@ -142,6 +142,12 @@ defmodule HermitscaleWeb.UserAuth do
       {:build, %{"id" => _id}} when base != "/apps" ->
         base <> "/build"
 
+      {:deployment, %{"deployment_id" => deployment}} when base != "/apps" ->
+        case Ecto.UUID.cast(deployment) do
+          {:ok, id} -> base <> "/deployments/" <> id
+          :error -> base
+        end
+
       _other ->
         base
     end

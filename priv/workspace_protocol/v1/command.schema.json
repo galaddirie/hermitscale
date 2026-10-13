@@ -39,7 +39,8 @@
         "inspect",
         "cancel",
         "approve",
-        "read_events"
+        "read_events",
+        "ack_events"
       ]
     },
     "version": {

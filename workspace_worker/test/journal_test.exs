@@ -88,7 +88,7 @@ defmodule Hermitscale.WorkspaceWorker.JournalTest do
              )
   end
 
-  test "events replay stably, gaps and future cursors are explicit", %{
+  test "events replay stably, ack is monotonic, gaps and future cursors are explicit", %{
     journal: journal
   } do
     assert {:ok, start} =
@@ -103,6 +103,18 @@ defmodule Hermitscale.WorkspaceWorker.JournalTest do
     assert {:ok, page} = Journal.execute(journal, read)
     assert Enum.map(page["events"], & &1["cursor"]) == [1, 2]
     assert {:ok, ^page} = Journal.execute(journal, read)
+
+    assert {:ok, _} =
+             Journal.execute(
+               journal,
+               command("ack_events", "ack", %{"epoch" => start["epoch"], "cursor" => 2})
+             )
+
+    assert {:error, :cursor_ahead} =
+             Journal.execute(
+               journal,
+               command("ack_events", "ahead", %{"epoch" => start["epoch"], "cursor" => 9})
+             )
 
     assert {:error, :history_gap} =
              Journal.execute(
@@ -187,6 +199,84 @@ defmodule Hermitscale.WorkspaceWorker.JournalTest do
     assert log =~ "[REDACTED]"
     recovered = start_supervised!({Journal, context.options})
     assert {:error, :operation_not_found} = Journal.status(recovered, "operation_fixture")
+  end
+
+  test "acknowledgment remains monotonic and survives process restart", context do
+    assert {:ok, op} =
+             Journal.execute(context.journal, command("start", "first", %{"prompt" => "Work"}))
+
+    assert :ok =
+             Journal.append_provider_event(context.journal, "operation_fixture", %{
+               "text" => "Output"
+             })
+
+    assert {:ok, %{"acknowledged_cursor" => 2}} =
+             Journal.execute(
+               context.journal,
+               command("ack_events", "ack", %{"epoch" => op["epoch"], "cursor" => 2})
+             )
+
+    assert {:ok, %{"acknowledged_cursor" => 2}} =
+             Journal.execute(
+               context.journal,
+               command("ack_events", "older", %{"epoch" => op["epoch"], "cursor" => 1})
+             )
+
+    :ok = stop_supervised(Journal)
+    recovered = start_supervised!({Journal, context.options})
+
+    assert {:ok, %{"acknowledged_cursor" => 2}} =
+             Journal.execute(
+               recovered,
+               command("ack_events", "ack", %{"epoch" => op["epoch"], "cursor" => 2})
+             )
+  end
+
+  test "only fenced checkpoint recovery changes epoch and leaves old events readable", context do
+    assert {:ok, op} =
+             Journal.execute(context.journal, command("start", "first", %{"prompt" => "Work"}))
+
+    evidence = %{"checkpoint_id" => "checkpoint_fixture", "termination" => "verified"}
+
+    assert {:error, :recovery_not_fenced} =
+             Journal.begin_recovery_epoch(context.journal, "operation_fixture", 2, evidence)
+
+    assert :ok =
+             Journal.confirm_termination(context.journal, "operation_fixture", "interrupted", %{
+               "writer" => "stopped"
+             })
+
+    assert {:ok, epoch} =
+             Journal.begin_recovery_epoch(context.journal, "operation_fixture", 2, evidence)
+
+    refute epoch == op["epoch"]
+
+    old_page =
+      command("read_events", "old", %{"epoch" => op["epoch"], "cursor" => 0, "limit" => 100})
+
+    assert {:ok, %{"events" => [%{"type" => "accepted"}, %{"type" => "termination_confirmed"}]}} =
+             Journal.execute(context.journal, old_page)
+
+    new_page = command("read_events", "new", %{"epoch" => epoch, "cursor" => 0, "limit" => 100})
+
+    assert {:ok, %{"events" => [%{"cursor" => 1, "type" => "recovered"}]}} =
+             Journal.execute(context.journal, new_page)
+
+    :ok = stop_supervised(Journal)
+    restarted = start_supervised!({Journal, context.options})
+    assert Journal.epoch(restarted) == epoch
+
+    assert {:error, :stale_generation} =
+             Journal.execute(
+               restarted,
+               command("start", "stale", %{"prompt" => "Stale"}, "next", 2)
+             )
+
+    assert {:ok, %{"generation" => 3}} =
+             Journal.execute(
+               restarted,
+               command("start", "next", %{"prompt" => "Next"}, "next", 3)
+             )
   end
 
   test "retained worker redacts each refreshed inference capability without a restart", context do

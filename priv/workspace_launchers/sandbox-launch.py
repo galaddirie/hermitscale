@@ -19,7 +19,7 @@ WORKSPACE = '/workspace'
 PROVIDER = '/opt/hermitscale/provider/node_modules/.bin/codex-acp'
 API_SOCKET = '/.sprite/api.sock'
 API_MASK = '/opt/hermitscale/blocked-api'
-PROVIDER_ENV = frozenset(('PATH', 'HOME', 'CODEX_HOME', 'OPENAI_API_KEY'))
+PROVIDER_ENV = frozenset(('PATH', 'HOME', 'CODEX_HOME', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'HERMITSCALE_MODEL'))
 BASE_ENV = {'SHELL': '/bin/bash', 'PATH': '/opt/hermitscale/bin:/opt/hermitscale/provider/node_modules/.bin:/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'}
 CLONE_NEWNS = 0x00020000
 MS_BIND = 4096
@@ -98,11 +98,21 @@ def execution_environment(profile, user):
         if not isinstance(provider, dict) or any(key not in PROVIDER_ENV or not isinstance(value, str) for key, value in provider.items()):
             raise ValueError('invalid provider environment')
         result.update(provider)
-        result.update(NO_BROWSER='1', DEFAULT_AUTH_REQUEST=json.dumps({'methodId':'api-key'}),
-            CODEX_PATH='/opt/hermitscale/provider/node_modules/.bin/codex')
+        # The pinned ACP adapter requires an explicit auth method and provider;
+        # the gateway URL alone does not select its API-key authentication.
+        result.update(NO_BROWSER='1', MODEL_PROVIDER='hermitscale',
+            DEFAULT_AUTH_REQUEST=json.dumps({'methodId':'api-key'}),
+            CODEX_PATH='/opt/hermitscale/provider/node_modules/.bin/codex',
+            CODEX_CONFIG=json.dumps({'model_provider':'hermitscale','model':provider['HERMITSCALE_MODEL'],'web_search':'disabled','check_for_update_on_startup':False,
+                'model_providers':{'hermitscale':{'name':'Hermitscale','base_url':provider['OPENAI_BASE_URL'],
+                    'env_key':'OPENAI_API_KEY','wire_api':'responses','requires_openai_auth':False,'supports_websockets':False}}}))
     if profile == 'git':
         result.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_SYSTEM='/dev/null')
-        for key in ('GIT_TERMINAL_PROMPT', 'GIT_ASKPASS', 'HS_GIT_TOKEN', 'HS_GIT_REPOSITORY', 'GIT_ALLOW_PROTOCOL', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'):
+        for key in ('GIT_TERMINAL_PROMPT', 'GIT_ASKPASS', 'HS_GIT_TOKEN', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'):
+            if key in os.environ:
+                result[key] = os.environ[key]
+    if profile == 'app':
+        for key in ('HERMIT_DATA_DIR', 'HERMIT_REVISION'):
             if key in os.environ:
                 result[key] = os.environ[key]
     return result

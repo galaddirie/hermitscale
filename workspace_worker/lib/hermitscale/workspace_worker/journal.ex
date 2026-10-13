@@ -24,6 +24,10 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
   def approval_delivered(server, command_id),
     do: GenServer.call(server, {:approval_delivered, command_id})
 
+  @doc "Begins an explicitly fenced checkpoint-recovery epoch after writer termination."
+  def begin_recovery_epoch(server, operation_id, generation, evidence),
+    do: GenServer.call(server, {:begin_recovery_epoch, operation_id, generation, evidence})
+
   def mark_running(server, operation_id), do: GenServer.call(server, {:running, operation_id})
 
   def append_provider_event(server, operation_id, payload),
@@ -95,6 +99,42 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
   end
 
   def handle_call({:status, id}, _from, state), do: {:reply, operation(state.data, id), state}
+
+  def handle_call({:begin_recovery_epoch, id, generation, evidence}, _from, state) do
+    with true <- state.data["active_operation"] == nil,
+         {:ok, %{"termination_confirmed" => true}} <- operation(state.data, id),
+         true <- is_integer(generation) and generation > state.data["generation"],
+         true <- is_map(evidence) and map_size(evidence) > 0 do
+      prior_epoch = state.data["epoch"]
+
+      data =
+        state.data
+        |> new_epoch()
+        |> Map.put("generation", generation)
+        |> event(
+          id,
+          "recovered",
+          Protocol.redact_payload(
+            %{
+              "reason" => "checkpoint_recovery",
+              "previous_epoch" => prior_epoch,
+              "generation" => generation,
+              "evidence" => evidence
+            },
+            state.secrets
+          )
+        )
+
+      case persist(%{state | data: data}) do
+        {:ok, next} -> {:reply, {:ok, next.data["epoch"]}, next}
+        {:error, reason} -> {:stop, {:journal_unavailable, reason}, {:error, reason}, state}
+      end
+    else
+      false -> {:reply, {:error, :recovery_not_fenced}, state}
+      {:ok, _operation} -> {:reply, {:error, :termination_unconfirmed}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
   def handle_call({:execute, command}, _from, state) do
     state = %{state | secrets: current_secrets(state) |> Enum.uniq()}
@@ -191,6 +231,15 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
          true <- is_map(evidence) and map_size(evidence) > 0 do
       op = Map.merge(op, %{"status" => outcome, "termination_confirmed" => true})
 
+      op =
+        case Map.fetch(evidence, "compute_milliseconds") do
+          {:ok, milliseconds} when is_integer(milliseconds) and milliseconds >= 0 ->
+            Map.put(op, "compute_milliseconds", milliseconds)
+
+          :error ->
+            op
+        end
+
       data =
         state.data
         |> put_operation(id, op)
@@ -241,7 +290,7 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
 
       :error ->
         options =
-          if command["type"] in ~w(inspect cancel read_events),
+          if command["type"] in ~w(inspect cancel read_events ack_events),
             do: [],
             else: [now: DateTime.utc_now()]
 
@@ -318,6 +367,19 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
     end
   end
 
+  defp mutate(%{"type" => "ack_events", "payload" => payload} = command, data) do
+    with {:ok, _op} <- current_operation(command, data),
+         {:ok, max_cursor} <- epoch_cursor(data, payload["epoch"]),
+         true <- payload["cursor"] <= max_cursor do
+      key = command["operation_id"] <> ":" <> payload["epoch"]
+      prior = Map.get(data["acks"], key, 0)
+      {:ok, put_in(data, ["acks", key], max(prior, payload["cursor"]))}
+    else
+      false -> {:error, :cursor_ahead}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp mutate(%{"type" => "inspect"} = command, data) do
     with {:ok, _op} <- current_operation(command, data), do: {:ok, data}
   end
@@ -385,10 +447,19 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
   defp response(command, data) do
     {:ok, op} = operation(data, command["operation_id"])
 
+    epoch =
+      case command["type"] do
+        "ack_events" -> command["payload"]["epoch"]
+        _other -> data["epoch"]
+      end
+
+    ack = Map.get(data["acks"], command["operation_id"] <> ":" <> epoch, 0)
+
     {:ok,
      Map.merge(op, %{
        "epoch" => data["epoch"],
        "cursor" => data["cursor"],
+       "acknowledged_cursor" => ack,
        "approval_delivered" => Map.get(data["delivered_approvals"], command["command_id"], false)
      })}
   end
@@ -403,7 +474,10 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
   defp put_operation(data, id, op), do: put_in(data, ["operations", id], op)
 
   defp epoch_cursor(data, epoch) do
-    if epoch == data["epoch"], do: {:ok, data["cursor"]}, else: {:error, :history_gap}
+    case Map.fetch(data["epochs"], epoch) do
+      {:ok, cursor} -> {:ok, cursor}
+      :error -> {:error, :history_gap}
+    end
   end
 
   defp event(data, id, type, payload) do
@@ -424,10 +498,11 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
     data
     |> Map.put("cursor", cursor)
     |> Map.put("events", data["events"] ++ [event])
+    |> put_in(["epochs", data["epoch"]], cursor)
   end
 
   defp recover(data) do
-    data = data |> Map.drop(["acks", "epochs"]) |> Map.put_new("delivered_approvals", %{})
+    data = Map.put_new(data, "delivered_approvals", %{})
 
     data =
       case Map.fetch(data, "epoch") do
@@ -453,7 +528,7 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
 
   defp new_epoch(data) do
     epoch = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
-    data |> Map.put("epoch", epoch) |> Map.put("cursor", 0)
+    data |> Map.put("epoch", epoch) |> Map.put("cursor", 0) |> put_in(["epochs", epoch], 0)
   end
 
   defp load(path, workspace_id, max_bytes) do
@@ -467,7 +542,9 @@ defmodule Hermitscale.WorkspaceWorker.Journal do
            "active_operation" => nil,
            "operations" => %{},
            "commands" => %{},
-           "events" => []
+           "events" => [],
+           "epochs" => %{},
+           "acks" => %{}
          }, 0}
 
       {:ok, binary} when byte_size(binary) <= max_bytes ->

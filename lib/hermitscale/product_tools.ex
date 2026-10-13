@@ -13,12 +13,13 @@ defmodule Hermitscale.ProductTools do
     "agents.continue" => "Admit a turn in an existing conversation.",
     "agents.cancel" => "Record cancellation intent.",
     "agents.publish" => "Request branch publication.",
-    "apps.inspect" => "Read an app and its native Sprite service.",
+    "apps.inspect" => "Read an app and recorded environments/deployments.",
     "apps.create" => "Create an app registry record.",
     "apps.build" => "Start a coding conversation for an app.",
     "apps.preview" => "Explicitly start a private preview.",
-    "apps.logs" => "Read native Sprite service logs.",
-    "apps.publish" => "Start the Sprite service and enable its public URL."
+    "apps.logs" => "Read stored bounded logs.",
+    "deployments.request" => "Request release activation.",
+    "deployments.inspect" => "Read recorded release verification."
   }
   def definitions(actions) do
     @tools
@@ -39,17 +40,18 @@ defmodule Hermitscale.ProductTools do
   def permission("agents.publish"), do: "agents:publish"
   def permission("agents." <> _action), do: "agents:run"
   def permission("apps.inspect"), do: "apps:read"
-  def permission("apps.logs"), do: "apps:write"
+  def permission("apps.logs"), do: "apps:read"
   def permission("apps.preview"), do: "apps:write"
   def permission("apps." <> action) when action in ["create", "build"], do: "apps:write"
-  def permission("apps.publish"), do: "apps:deploy"
+  def permission("deployments.request"), do: "apps:deploy"
+  def permission("deployments.inspect"), do: "apps:read"
   def permission(_action), do: nil
 
   def resource_id(name, args) when is_map(args) do
     field =
       case name do
         action
-        when action in ~w(workflows.inspect runs.status agents.inspect apps.inspect) ->
+        when action in ~w(workflows.inspect runs.status agents.inspect apps.inspect deployments.inspect) ->
           "id"
 
         "runs.start" ->
@@ -62,7 +64,7 @@ defmodule Hermitscale.ProductTools do
           "turn_id"
 
         action
-        when action in ~w(apps.build apps.preview apps.logs apps.publish) ->
+        when action in ~w(apps.build apps.preview apps.logs deployments.request) ->
           "app_id"
 
         _other ->
@@ -144,20 +146,44 @@ defmodule Hermitscale.ProductTools do
   defp call(scope, "agents.publish", args),
     do: Agents.publish_branch(scope, args["session_id"], args)
 
-  defp call(scope, "apps.inspect", args), do: Apps.get_app(scope, args["id"])
+  defp call(scope, "apps.inspect", args) do
+    with {:ok, app} <- Apps.get_app(scope, args["id"]),
+         do:
+           {:ok,
+            %{
+              app: app,
+              environments: Apps.list_environments(scope, app.id),
+              deployments: Apps.list_deployments(scope, app.id)
+            }}
+  end
+
   defp call(scope, "apps.create", args), do: Apps.create_app(scope, args)
   defp call(scope, "apps.build", args), do: Apps.start_build(scope, args["app_id"], args)
   defp call(scope, "apps.preview", args), do: Apps.ensure_preview(scope, args["app_id"], args)
-  defp call(scope, "apps.publish", args), do: Apps.publish(scope, args["app_id"], args)
 
-  defp call(scope, "apps.logs", args),
-    do: Apps.read_logs(scope, args["app_id"], limit: Map.get(args, "limit", 100))
+  defp call(scope, "apps.logs", args) do
+    case Map.get(args, "limit", 100) do
+      limit when is_integer(limit) and limit in 1..200 ->
+        case Apps.read_logs(scope, args["app_id"], limit: limit) do
+          logs when is_list(logs) -> {:ok, logs}
+          {:error, _reason} = error -> error
+        end
+
+      _invalid ->
+        {:error, :invalid_limit}
+    end
+  end
+
+  defp call(scope, "deployments.request", args),
+    do: Apps.request_deployment(scope, args["app_id"], args)
+
+  defp call(scope, "deployments.inspect", args), do: Apps.get_deployment(scope, args["id"])
 
   defp case_validation(:ok), do: {:ok, %{valid: true}}
   defp case_validation({:error, reason}), do: {:error, reason}
 
   defp idempotency(name, args) do
-    if name in ~w(workflows.create runs.start agents.continue agents.publish apps.create) and
+    if name in ~w(workflows.create runs.start agents.continue agents.publish apps.create apps.build apps.preview deployments.request) and
          not (is_binary(args["operation_key"]) and byte_size(args["operation_key"]) in 8..128),
        do: {:error, :idempotency_key_required},
        else: :ok

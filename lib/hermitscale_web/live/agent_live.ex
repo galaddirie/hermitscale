@@ -29,6 +29,8 @@ defmodule HermitscaleWeb.AgentLive do
      |> assign(:turn_form, nil)
      |> assign(:operation_key, Ecto.UUID.generate())
      |> assign(:publication_form, publication_form(%{}))
+     |> assign(:prepared_publication, nil)
+     |> assign(:publication, nil)
      |> assign(:connections_loaded?, false)
      |> assign(:openai_accounts, [])
      |> assign(:github_accounts, [])
@@ -158,27 +160,69 @@ defmodule HermitscaleWeb.AgentLive do
   def handle_event("deny_turn", %{"id" => id}, socket), do: answer_approval(socket, id, :rejected)
   def handle_event("reopen_session", _params, socket), do: set_session_status(socket, :open)
 
-  def handle_event("publish_branch", %{"publication" => params}, socket) do
+  def handle_event("prepare_publication", %{"publication" => params}, socket) do
+    scope = socket.assigns.current_scope
     form = publication_form(params)
 
-    if form.source.valid? do
-      case Agents.publish_branch(
-             socket.assigns.current_scope,
-             socket.assigns.conversation.id,
-             params
-           ) do
-        {:ok, result} ->
-          {:noreply,
-           socket
-           |> assign(:publication_form, publication_form(%{}))
-           |> put_flash(:info, "Published branch at " <> result["commit_sha"])
-           |> refresh_history()}
-
-        {:error, reason} ->
-          {:noreply, put_flash(socket, :error, operation_error(reason))}
-      end
+    with true <- form.source.valid?,
+         {:ok, turn} <- Agents.get_turn(scope, params["turn_id"]),
+         true <- turn.session_id == socket.assigns.conversation.id and turn.status == :succeeded,
+         result = turn.result,
+         target = %{
+           "session_id" => turn.session_id,
+           "operation_key" => params["operation_key"],
+           "branch" => params["branch"],
+           "message" => params["message"],
+           "base_sha" => result["base_sha"],
+           "manifest" => result["manifest"],
+           "candidate_digest" => result["candidate_digest"],
+           "patch_snapshot_artifact_id" => result["patch_snapshot_artifact_id"]
+         },
+         {:ok, digest} <- Agents.Publications.target_digest(scope, turn.session_id, target) do
+      {:noreply, assign(socket, prepared_publication: %{target: target, digest: digest})}
     else
-      {:noreply, assign(socket, :publication_form, form)}
+      false ->
+        {:noreply, assign(socket, :publication_form, form)}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Publication could not be prepared: " <> inspect(reason))}
+    end
+  end
+
+  def handle_event(
+        "publish_branch",
+        _params,
+        %{assigns: %{prepared_publication: nil}} = socket
+      ),
+      do: {:noreply, put_flash(socket, :error, "Prepare the branch publication first.")}
+
+  def handle_event("publish_branch", _params, socket) do
+    prepared = socket.assigns.prepared_publication
+    scope = socket.assigns.current_scope
+
+    with :ok <- Authorization.authorize(scope, "agents:publish"),
+         {:ok, digest} <-
+           Agents.Publications.target_digest(
+             scope,
+             socket.assigns.conversation.id,
+             prepared.target
+           ),
+         true <- digest == prepared.digest,
+         {:ok, publication} <-
+           Agents.publish_branch(scope, socket.assigns.conversation.id, prepared.target) do
+      {:noreply,
+       socket
+       |> assign(prepared_publication: nil, publication: publication)
+       |> put_flash(:info, "Branch publication queued. Its pushed commit will be verified.")}
+    else
+      false ->
+        {:noreply,
+         put_flash(socket, :error, "The workspace changed. Prepare the publication again.")}
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Publication could not be admitted: " <> inspect(reason))}
     end
   end
 
@@ -285,6 +329,30 @@ defmodule HermitscaleWeb.AgentLive do
     id = socket.assigns.conversation.id
     {:ok, conversation} = Agents.get_session(scope, id)
     turns = Agents.list_turns(scope, id, limit: @history_page_size)
+    publications = Agents.list_publications(scope, id)
+
+    completed =
+      Enum.find(
+        turns,
+        &(&1.status == :succeeded and is_map(&1.result) and &1.result["manifest"] != [] and
+            not Enum.any?(publications, fn publication ->
+              publication.status == :succeeded and
+                publication.specification["patch_snapshot_artifact_id"] ==
+                  &1.result["patch_snapshot_artifact_id"]
+            end))
+      )
+
+    form =
+      if completed,
+        do:
+          publication_form(%{
+            "turn_id" => completed.id,
+            "operation_key" => Ecto.UUID.generate(),
+            "branch" => "hermitscale/" <> String.slice(completed.id, 0, 8),
+            "message" => "Apply coding changes"
+          }),
+        else: publication_form(%{})
+
     reset? = Keyword.get(opts, :reset, false)
 
     events =
@@ -313,6 +381,8 @@ defmodule HermitscaleWeb.AgentLive do
 
     socket
     |> assign(:conversation, conversation)
+    |> assign(:publication_form, form)
+    |> assign(:publication, List.first(publications))
     |> assign(
       :turn_oldest_sequence,
       socket.assigns.turn_oldest_sequence || oldest_sequence(turns, :admission_sequence, nil)
@@ -339,11 +409,9 @@ defmodule HermitscaleWeb.AgentLive do
   defp newest_sequence(events, _previous), do: events |> Enum.map(& &1.sequence) |> Enum.max()
 
   defp publication_form(params) do
-    params = Map.put_new(params, "operation_key", Ecto.UUID.generate())
-
-    {%{}, %{operation_key: :string, branch: :string, message: :string}}
-    |> Ecto.Changeset.cast(params, [:operation_key, :branch, :message])
-    |> Ecto.Changeset.validate_required([:operation_key, :branch, :message])
+    {%{}, %{turn_id: :string, operation_key: :string, branch: :string, message: :string}}
+    |> Ecto.Changeset.cast(params, [:turn_id, :operation_key, :branch, :message])
+    |> Ecto.Changeset.validate_required([:turn_id, :operation_key, :branch, :message])
     |> Ecto.Changeset.validate_length(:message, max: 4096)
     |> to_form(as: :publication)
   end
@@ -376,9 +444,6 @@ defmodule HermitscaleWeb.AgentLive do
   defp cancellable?(turn),
     do: not Agents.Turn.terminal?(turn) and is_nil(turn.cancellation_requested_at)
 
-  defp event_message(%{type: "branch.published", payload: %{"result" => result}}),
-    do: result["branch"] <> " · " <> result["commit_sha"]
-
   defp event_message(%{payload: payload}) do
     payload
     |> Map.take(["message", "summary", "reason", "status"])
@@ -394,9 +459,6 @@ defmodule HermitscaleWeb.AgentLive do
   defp result_summary(%{"summary" => summary}) when is_binary(summary), do: summary
   defp result_summary(%{"result" => %{"summary" => summary}}) when is_binary(summary), do: summary
   defp result_summary(_result), do: ""
-
-  defp result_checks(%{"checks" => checks}) when is_list(checks), do: checks
-  defp result_checks(_result), do: []
 
   @impl true
   def render(assigns) do
@@ -484,7 +546,7 @@ defmodule HermitscaleWeb.AgentLive do
                 />
                 <.input
                   field={@new_session_form[:base_sha]}
-                  label="Base commit (optional)"
+                  label="Base commit (if using a repository)"
                   placeholder="Full 40-character commit SHA"
                   maxlength="40"
                 />
@@ -578,7 +640,7 @@ defmodule HermitscaleWeb.AgentLive do
                       {turn.instructions}
                     </p>
                     <div class="mt-4 flex items-center justify-between gap-4 border-t border-base-200 pt-3 text-xs text-base-content/55">
-                      <span>Limit: {turn.timeout_seconds} seconds</span>
+                      <span>Budget: {turn.budget_cents} cents · Limit: {turn.timeout_seconds} seconds</span>
                       <button
                         :if={@can_run? and cancellable?(turn)}
                         id={"stop-turn-#{turn.id}"}
@@ -593,6 +655,30 @@ defmodule HermitscaleWeb.AgentLive do
                         role="status"
                       >Stop requested</span>
                     </div>
+                    <dl
+                      :if={turn.usage_summary != %{}}
+                      id={"usage-#{turn.id}"}
+                      class="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs text-base-content/60"
+                    >
+                      <div :if={turn.usage_summary[:model]}>
+                        <dt>Model usage</dt><dd>
+                          {turn.usage_summary.model.quantity} tokens · ${Float.round(
+                            turn.usage_summary.model.cost_micros / 1_000_000,
+                            6
+                          )}
+                        </dd>
+                      </div>
+                      <div :if={turn.usage_summary[:compute]}>
+                        <dt>Worker activity</dt><dd>
+                          {Float.round(turn.usage_summary.compute.quantity / 1000, 3)} seconds · cost unavailable
+                        </dd>
+                      </div>
+                      <div :if={turn.usage_summary[:storage]}>
+                        <dt>Workspace files</dt><dd>
+                          {turn.usage_summary.storage.quantity} bytes · cost unavailable
+                        </dd>
+                      </div>
+                    </dl>
                     <div
                       :if={turn.approval_id && turn.status == :waiting_for_approval}
                       id={"approval-#{turn.id}"}
@@ -628,9 +714,24 @@ defmodule HermitscaleWeb.AgentLive do
                       class="mt-4 border-t border-base-200 pt-4 text-sm"
                     >
                       <p class="whitespace-pre-wrap">{result_summary(turn.result)}</p>
+                      <.link
+                        :if={turn.result["patch_artifact_id"]}
+                        href={~p"/artifacts/#{turn.result["patch_artifact_id"]}"}
+                        id={"patch-#{turn.id}"}
+                        class="btn btn-outline btn-sm mt-3"
+                      >Download changes</.link>
+                      <ul id={"exports-#{turn.id}"} class="mt-3 space-y-1">
+                        <li :for={file <- Map.get(turn.result, "exports", [])}>
+                          <.link
+                            id={"export-#{turn.id}-#{file["artifact_id"]}"}
+                            href={~p"/artifacts/#{file["artifact_id"]}"}
+                            class="link link-primary break-all"
+                          >{file["path"]}</.link>
+                        </li>
+                      </ul>
                       <ul class="mt-3 space-y-1">
                         <li
-                          :for={check <- result_checks(turn.result)}
+                          :for={check <- Map.get(turn.result, "checks", [])}
                           class="flex items-center gap-2"
                         >
                           <.icon
@@ -675,6 +776,14 @@ defmodule HermitscaleWeb.AgentLive do
                     <summary class="cursor-pointer py-2">Task limits</summary>
                     <div class="mt-3 grid gap-4 sm:grid-cols-2">
                       <.input
+                        field={@turn_form[:budget_cents]}
+                        type="number"
+                        label="Maximum budget (cents)"
+                        min="1"
+                        max="10000"
+                        required
+                      />
+                      <.input
                         field={@turn_form[:timeout_seconds]}
                         type="number"
                         label="Time limit (seconds)"
@@ -686,7 +795,7 @@ defmodule HermitscaleWeb.AgentLive do
                   </details>
                   <div class="flex flex-wrap items-center justify-between gap-3">
                     <p class="text-xs leading-5 text-base-content/55">
-                      Runs within your time limit. Workspace files are retained after completion.
+                      Runs within your budget and time limit. Workspace files are retained after completion.
                     </p>
                     <button
                       id="submit-turn"
@@ -714,25 +823,57 @@ defmodule HermitscaleWeb.AgentLive do
 
               <aside class="space-y-5">
                 <section
-                  :if={@can_publish? and @conversation.repository != nil}
+                  :if={
+                    @can_publish? and @conversation.repository != nil and
+                      @publication_form[:turn_id].value
+                  }
                   class="rounded-2xl border border-base-300 p-5"
                 >
                   <h2 class="text-sm font-semibold">Publish changes</h2>
                   <.form
                     for={@publication_form}
                     id="publication-form"
-                    phx-submit="publish_branch"
+                    phx-submit="prepare_publication"
                     class="mt-4"
                   >
+                    <.input field={@publication_form[:turn_id]} type="hidden" />
                     <.input field={@publication_form[:operation_key]} type="hidden" />
                     <.input field={@publication_form[:branch]} label="New branch" required />
                     <.input field={@publication_form[:message]} label="Commit message" required />
                     <button
-                      id="publish-branch"
-                      class="btn btn-primary btn-sm w-full"
-                      phx-disable-with="Publishing…"
-                    >Publish branch</button>
+                      id="prepare-publication"
+                      class="btn btn-outline btn-sm w-full"
+                      phx-disable-with="Preparing…"
+                    >Prepare publication</button>
                   </.form>
+                </section>
+                <section
+                  :if={@prepared_publication}
+                  id="publication-confirmation"
+                  class="rounded-2xl border border-amber-300 p-5"
+                >
+                  <h2 class="font-semibold">Branch publication</h2>
+                  <p class="mt-2 break-all text-sm">{@prepared_publication.target["branch"]}</p>
+                  <pre class="mt-3 overflow-auto text-xs">{Jason.encode!(@prepared_publication.target, pretty: true)}</pre>
+                  <button
+                    :if={@can_publish?}
+                    id="publish-branch"
+                    type="button"
+                    phx-click="publish_branch"
+                    phx-disable-with="Publishing…"
+                    class="btn btn-primary btn-sm mt-4 w-full"
+                  >Publish branch</button>
+                </section>
+                <section
+                  :if={@publication}
+                  id="publication-status"
+                  class="rounded-2xl border border-base-300 p-5 text-sm"
+                  role="status"
+                >
+                  Publication: {@publication.status}
+                  <p :if={@publication.result} class="mt-2 break-all font-mono text-xs">
+                    {@publication.result["commit_sha"]}
+                  </p>
                 </section>
                 <section
                   class="rounded-2xl border border-base-300 p-5"

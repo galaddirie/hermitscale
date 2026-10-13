@@ -10,6 +10,7 @@ defmodule Hermitscale.WorkspacesFixtures do
 
   def workspace_attrs(attrs \\ %{}) do
     Enum.into(attrs, %{
+      recipe: "codex-v1",
       repository: "github:example/project",
       base_sha: String.duplicate("a", 40)
     })

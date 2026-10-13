@@ -49,11 +49,7 @@ defmodule Hermitscale.Workspaces.WorkspacesTest do
       refute_receive {:management_allocate, _}
 
       assert {:error, :owner_key_conflict} =
-               Workspaces.ensure_workspace(
-                 scope,
-                 owner,
-                 workspace_attrs(%{repository: "github:other/project"})
-               )
+               Workspaces.ensure_workspace(scope, owner, workspace_attrs(%{recipe: "other"}))
     end
 
     test "stored reads never contact the provider and cannot cross organizations", %{scope: scope} do
@@ -150,6 +146,7 @@ defmodule Hermitscale.Workspaces.WorkspacesTest do
       assert {:error, :lease_actor_mismatch} =
                Workspaces.release_lease(colleague, lease.id, termination_evidence(lease))
 
+      assert {:error, :workspace_busy} = Workspaces.request_deletion(colleague, workspace.id)
       assert {:ok, ^lease} = Workspaces.validate_lease(scope, lease.id)
       refute_receive :management_termination_verified
     end
@@ -253,6 +250,8 @@ defmodule Hermitscale.Workspaces.WorkspacesTest do
 
       assert {:error, :workspace_busy} =
                Workspaces.admit_lease(scope, workspace.id, "replacement", lease_deadline())
+
+      assert {:error, :workspace_busy} = Workspaces.request_deletion(scope, workspace.id)
     end
   end
 
@@ -290,6 +289,20 @@ defmodule Hermitscale.Workspaces.WorkspacesTest do
 
       assert {:error, :lease_workspace_mismatch} =
                Workspaces.terminate_admitted(other.id, lease.id)
+    end
+
+    test "explicit deletion contacts the provider only after retention and writer fences", %{
+      scope: scope
+    } do
+      workspace = workspace_fixture(scope)
+      {:ok, lease} = Workspaces.admit_lease(scope, workspace.id, "turn", lease_deadline())
+      assert {:error, :workspace_busy} = Workspaces.delete_workspace(scope, workspace.id)
+      refute_receive {:management_deleted, _}
+      {:ok, _} = Workspaces.release_lease(scope, lease.id, termination_evidence(lease))
+      assert {:ok, deleted} = Workspaces.delete_workspace(scope, workspace.id)
+      assert deleted.resource_state == :deleted
+      assert_receive {:management_deleted, id}
+      assert id == workspace.id
     end
   end
 
@@ -352,6 +365,53 @@ defmodule Hermitscale.Workspaces.WorkspacesTest do
 
       assert {:error, :sprites_token_missing} =
                Workspaces.execute_command(scope, workspace.id, lease.id, "mix test")
+
+      assert Workspaces.runtime_qualification().status == :implemented
+      refute_receive {:management_allocate, _}
+    end
+
+    test "package attachment config cannot allocate or destroy retained resources", %{
+      scope: scope
+    } do
+      workspace = workspace_fixture(scope)
+      assert {:ok, lease} = Workspaces.admit_lease(scope, workspace.id, "turn", lease_deadline())
+      config = Hermitscale.Workspaces.SpriteAccess.shell_config(workspace, lease, "test-token")
+      assert config.create == false
+      assert config.sprite_name == workspace.sprite_name
+      assert config.meta.generation == lease.generation
+
+      assert Keyword.fetch!(
+               Hermitscale.Workspaces.SpriteAccess.vfs_options(workspace, "test-token"),
+               :create_on_demand
+             ) == false
+
+      refute function_exported?(Workspaces, :read_version, 4)
+      refute function_exported?(Hermitscale.Workspaces.SpriteAccess, :read_version, 3)
+    end
+  end
+
+  describe "explicit retention deletion" do
+    test "active writers and protections prevent deletion without keeping compute awake", %{
+      scope: scope
+    } do
+      workspace = workspace_fixture(scope)
+
+      assert {:ok, protection} =
+               Workspaces.protect_workspace(scope, workspace.id, "preview", "retained preview")
+
+      assert {:error, :workspace_protected} = Workspaces.request_deletion(scope, workspace.id)
+      assert {:ok, _} = Workspaces.remove_protection(scope, protection.id)
+      assert {:ok, lease} = Workspaces.admit_lease(scope, workspace.id, "turn", lease_deadline())
+      assert {:error, :workspace_busy} = Workspaces.request_deletion(scope, workspace.id)
+      assert {:ok, _} = Workspaces.release_lease(scope, lease.id, termination_evidence(lease))
+      assert {:ok, deleting} = Workspaces.request_deletion(scope, workspace.id)
+      assert deleting.resource_state == :deleting
+
+      assert {:error, :workspace_unavailable} =
+               Workspaces.admit_lease(scope, workspace.id, "later", lease_deadline())
+
+      assert {:error, :workspace_unavailable} =
+               Workspaces.protect_workspace(scope, workspace.id, "pin", "pin")
 
       refute_receive {:management_allocate, _}
     end

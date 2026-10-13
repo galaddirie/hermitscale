@@ -15,6 +15,7 @@ defmodule Hermitscale.Agents.Turn do
     field :operation_key, :string
     field :input_digest, :string
     field :admission_sequence, :integer
+    field :budget_cents, :integer, default: 500
     field :timeout_seconds, :integer, default: 1800
     field :deadline, :utc_datetime
 
@@ -38,6 +39,7 @@ defmodule Hermitscale.Agents.Turn do
     field :result_schema, :map, default: %{}
     field :verification_commands, {:array, :string}, default: []
     field :runtime_state, :map, default: %{}
+    field :usage_summary, :map, virtual: true, default: %{}
     timestamps(type: :utc_datetime)
   end
 
@@ -48,6 +50,7 @@ defmodule Hermitscale.Agents.Turn do
     |> cast(attrs, [
       :instructions,
       :operation_key,
+      :budget_cents,
       :timeout_seconds,
       :result_schema,
       :verification_commands
@@ -62,6 +65,7 @@ defmodule Hermitscale.Agents.Turn do
     ])
     |> validate_length(:instructions, min: 1, max: 32_000)
     |> validate_length(:operation_key, min: 8, max: 128)
+    |> validate_number(:budget_cents, greater_than: 0, less_than_or_equal_to: 10_000)
     |> validate_number(:timeout_seconds,
       greater_than_or_equal_to: 30,
       less_than_or_equal_to: 3_600

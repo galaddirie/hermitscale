@@ -26,9 +26,10 @@ config :hermitscale,
 config :hermitscale, Oban,
   engine: Oban.Engines.Basic,
   repo: Hermitscale.Repo,
-  queues: [default: 10, triggers: 10, agents: 5],
+  queues: [default: 10, triggers: 10, agents: 5, apps: 3, workflow_operations: 5, publications: 3],
   plugins: [
-    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
+    {Oban.Plugins.Cron, crontab: [{"0 * * * *", Hermitscale.Apps.BackupScheduler}]}
   ]
 
 config :hermitscale, Hermitscale.Triggers,

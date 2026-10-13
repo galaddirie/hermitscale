@@ -28,5 +28,4 @@ defmodule Hermitscale.WorkspaceWorker.FixtureSession do
 
   def interrupt("harness_session_fixture", "harness_turn_fixture"), do: :ok
   def close("harness_session_fixture"), do: :ok
-  def list(_options), do: []
 end

@@ -21,7 +21,7 @@ defmodule Hermitscale.Workspaces.Foundation do
   import pwd
   workspace=os.open('/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
   try:
-      for name,user,mode in [('.codex','hermitcoder',0o700),('data','hermitapp',0o2770)]:
+      for name,user,mode in [('.codex','hermitcoder',0o700),('data','hermitapp',0o2770),('preview-data','hermitapp',0o2770)]:
           try: os.mkdir(name,mode,dir_fd=workspace)
           except FileExistsError: pass
           directory=os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=workspace)

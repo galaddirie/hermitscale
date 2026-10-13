@@ -53,6 +53,8 @@ defmodule Hermitscale.WorkspaceWorker.Runtime do
 
         {:ok, deadline, 0} = DateTime.from_iso8601(command["deadline"])
 
+        started_at = System.monotonic_time(:millisecond)
+
         start_result =
           with :ok <- state.activity.acquire(deadline, state.config),
                do: state.adapter.start(command, state.config)
@@ -69,7 +71,8 @@ defmodule Hermitscale.WorkspaceWorker.Runtime do
 
             Process.send_after(self(), {:poll, id}, 100)
 
-            {:reply, reply, put_in(state.handles[id], %{handle: handle, closing: nil})}
+            {:reply, reply,
+             put_in(state.handles[id], %{handle: handle, closing: nil, started_at: started_at})}
 
           {:error, reason} ->
             :ok =
@@ -89,7 +92,7 @@ defmodule Hermitscale.WorkspaceWorker.Runtime do
                     state.journal,
                     id,
                     "failed",
-                    json_value(proof)
+                    measured_proof(proof, started_at)
                   )
 
               {:error, _reason} ->
@@ -251,7 +254,7 @@ defmodule Hermitscale.WorkspaceWorker.Runtime do
             state.journal,
             id,
             outcome,
-            json_value(evidence)
+            measured_proof(evidence, state.handles[id].started_at)
           )
 
         %{state | handles: Map.delete(state.handles, id)}
@@ -260,6 +263,12 @@ defmodule Hermitscale.WorkspaceWorker.Runtime do
         Process.send_after(self(), {:poll, id}, 100)
         state
     end
+  end
+
+  defp measured_proof(proof, started_at) do
+    proof
+    |> json_value()
+    |> Map.put("compute_milliseconds", max(System.monotonic_time(:millisecond) - started_at, 0))
   end
 
   defp json_value(%_{} = struct), do: struct |> Map.from_struct() |> json_value()

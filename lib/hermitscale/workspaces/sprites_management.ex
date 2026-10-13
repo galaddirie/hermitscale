@@ -155,6 +155,13 @@ defmodule Hermitscale.Workspaces.SpritesManagement do
     end
   end
 
+  def delete(workspace) do
+    case operation(workspace, :delete, "") do
+      {:error, :not_found} -> {:ok, %{deleted: true}}
+      result -> result
+    end
+  end
+
   def release_hold(workspace, lease) do
     with {:ok, sprite} <- SpriteAccess.sprite(workspace),
          {:ok, %{exit_code: 0}} <-
@@ -234,29 +241,11 @@ defmodule Hermitscale.Workspaces.SpritesManagement do
   def stop_service(workspace, name),
     do: operation(workspace, :post, "/services/" <> name <> "/stop", %{})
 
-  def service_logs(workspace, limit) do
-    with {:ok, sprite} <- SpriteAccess.sprite(workspace),
-         {:ok, %{exit_code: 0, output: logs}} <-
-           SpriteSDK.capture(
-             sprite,
-             "tail",
-             ["-n", to_string(limit), "/.sprite/logs/services/hs-app.log"],
-             timeout: 5000,
-             output_limit: 65_536
-           ) do
-      {:ok, logs}
-    else
-      {:ok, %{exit_code: _code}} -> {:error, :logs_unavailable}
-      {:error, _reason} = error -> error
-    end
-  end
+  def checkpoint(workspace, comment),
+    do: operation(workspace, :post, "/checkpoint", %{comment: comment})
 
-  def set_app_access(workspace, access) do
-    auth = if access == :public, do: "public", else: "sprite"
-
-    with {:ok, _updated} <- operation(workspace, :put, "", %{url_settings: %{auth: auth}}),
-         do: :ok
-  end
+  def restore_checkpoint(workspace, id),
+    do: operation(workspace, :post, "/checkpoints/" <> id <> "/restore", %{})
 
   def network_policy(workspace, domains) do
     rules = Enum.map(domains, &%{domain: &1, action: "allow"}) ++ [%{domain: "*", action: "deny"}]
@@ -322,8 +311,45 @@ defmodule Hermitscale.Workspaces.SpritesManagement do
     end
   end
 
-  def app_url(workspace) do
-    with {:ok, %{"name" => name, "url" => url}} <-
+  def open_app_socket(workspace, path, headers) do
+    with {:ok, url} <- app_url(workspace), {:ok, token} <- token() do
+      uri = URI.parse(url)
+
+      headers =
+        Enum.reject(headers, fn {name, _value} ->
+          String.downcase(name) in ~w(authorization proxy-authorization host connection)
+        end)
+
+      {:ok, connection} =
+        :gun.open(String.to_charlist(uri.host), 443, %{
+          transport: :tls,
+          tls_opts: [verify: :verify_peer, cacerts: :public_key.cacerts_get()],
+          protocols: [:http]
+        })
+
+      case :gun.await_up(connection, 10_000) do
+        {:ok, _protocol} ->
+          stream =
+            :gun.ws_upgrade(connection, path, [{"authorization", "Bearer " <> token} | headers])
+
+          case :gun.await(connection, stream, 10_000) do
+            {:upgrade, ["websocket"], _response_headers} ->
+              {:ok, connection, stream}
+
+            _rejected ->
+              :gun.close(connection)
+              {:error, :app_socket_unavailable}
+          end
+
+        {:error, _reason} ->
+          :gun.close(connection)
+          {:error, :app_socket_unavailable}
+      end
+    end
+  end
+
+  defp app_url(workspace) do
+    with {:ok, %{"name" => name, "url" => url, "url_settings" => %{"auth" => "sprite"}}} <-
            operation(workspace, :get, ""),
          true <- name == workspace.sprite_name,
          %URI{scheme: "https", host: host, userinfo: nil, port: 443, path: path} <-

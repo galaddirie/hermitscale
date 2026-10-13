@@ -3,9 +3,10 @@ defmodule Hermitscale.WorkspaceWorker.Control do
   Private Unix socket listener reached by an authenticated Sprite exec bridge.
 
   Frames are uint32 big-endian length-prefixed UTF-8 JSON. Each frame contains
-  `token` and `command`. The private control token is delivered by the trusted
-  bridge, never put in a journal or response. This listener has no HTTP route or
-  app-listener integration.
+  `token` and `command`. The expiring control token is delivered by the trusted
+  bridge, never put in a recipe, journal, or response. This listener has no HTTP
+  route or app-listener integration. The transport and OS credential boundary
+  still require real Sprite qualification before deployment.
   """
   use GenServer
 
@@ -41,6 +42,7 @@ defmodule Hermitscale.WorkspaceWorker.Control do
       socket: socket,
       path: path,
       token: token,
+      token_deadline: Keyword.fetch!(options, :token_deadline),
       runtime: Keyword.fetch!(options, :runtime),
       tasks: Keyword.fetch!(options, :tasks)
     }
@@ -91,7 +93,8 @@ defmodule Hermitscale.WorkspaceWorker.Control do
           with {:ok, %{"token" => token, "command" => command} = envelope} <- JSON.decode(frame),
                true <- map_size(envelope) == 2,
                true <- is_binary(token) and byte_size(token) == byte_size(state.token),
-               true <- :crypto.hash_equals(token, state.token) do
+               true <- :crypto.hash_equals(token, state.token),
+               :gt <- DateTime.compare(state.token_deadline, DateTime.utc_now()) do
             case Hermitscale.WorkspaceWorker.Runtime.execute(state.runtime, command) do
               {:ok, result} -> %{"ok" => true, "result" => result}
               {:error, reason} -> %{"ok" => false, "error" => Atom.to_string(reason)}

@@ -17,10 +17,19 @@ defmodule HermitscaleWeb.Router do
     plug :accepts, ["json"]
   end
 
+  scope "/", HermitscaleWeb do
+    pipe_through :api
+    post "/inference/v1/responses", InferenceController, :create
+  end
+
   # ExMCP owns content negotiation and sessions; execution capabilities authenticate
   # every request independently of browser cookies.
   scope "/", HermitscaleWeb do
     forward "/mcp", MCP
+  end
+
+  scope "/", HermitscaleWeb do
+    match :*, "/gateway/:token/*path", AppGatewayController, :proxy
   end
 
   # The handoff already retained a rotated seal; do not refresh the old cookie again.
@@ -57,12 +66,15 @@ defmodule HermitscaleWeb.Router do
       live "/apps", AppLive, :index
       live "/apps/:id", AppLive, :show
       live "/apps/:id/build", AppLive, :build
+      live "/apps/:id/deployments/:deployment_id", AppLive, :deployment
       live "/workflows", WorkflowLive, :index
       live "/workflows/:id", WorkflowLive, :show
     end
 
-    get "/apps/:id/open", AppAccessController, :open
+    get "/apps/:id/previews/:preview_id/open", AppAccessController, :open
+    get "/apps/:id/environments/:environment_id/open", AppAccessController, :open_environment
     post "/api/capabilities", CapabilityController, :create
+    get "/artifacts/:id", ArtifactController, :show
   end
 
   # Other scopes may use custom stacks.

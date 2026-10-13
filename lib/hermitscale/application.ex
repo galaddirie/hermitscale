@@ -15,6 +15,7 @@ defmodule Hermitscale.Application do
       {Oban, Application.fetch_env!(:hermitscale, Oban)},
       {DNSCluster, query: Application.get_env(:hermitscale, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Hermitscale.PubSub},
+      {Jido, name: Hermitscale.AgentRuntime},
       {Runic.Runner,
        name: Hermitscale.WorkflowRunner,
        store: Hermitscale.Workflows.PostgresStore,

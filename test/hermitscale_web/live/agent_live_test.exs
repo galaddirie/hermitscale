@@ -55,10 +55,11 @@ defmodule HermitscaleWeb.AgentLiveTest do
       session = conversation_fixture(scope)
       {:ok, view, _html} = live(conn, ~p"/agents/#{session.id}")
       assert has_element?(view, "#turn-form")
+      refute has_element?(view, "#runtime-qualification")
 
       view
       |> form("#turn-form",
-        turn: %{instructions: "Inspect this project", timeout_seconds: 1800}
+        turn: %{instructions: "Inspect this project", budget_cents: 500, timeout_seconds: 1800}
       )
       |> render_submit()
 
@@ -108,6 +109,62 @@ defmodule HermitscaleWeb.AgentLiveTest do
       assert has_element?(view, "#agent-turns-#{turn.id}")
     end
 
+    test "reopening interrupted work shows retained downloads and unpriced actual activity", %{
+      conn: conn,
+      scope: scope
+    } do
+      Hermitscale.ProductFixtures.configure_product_fixture(Hermitscale.Agents.Runtime,
+        adapter: Hermitscale.AgentsRuntimeFake
+      )
+
+      Hermitscale.ProductFixtures.configure_product_fixture(
+        :workspace_management_adapter,
+        Hermitscale.AgentsRuntimeFake
+      )
+
+      session = conversation_fixture(scope)
+      content = "work in progress\n"
+
+      start_supervised!(
+        {Hermitscale.AgentsRuntimeFake,
+         outcomes: [
+           %{
+             status: :interrupted,
+             worker_state: %{"termination_confirmed" => true, "compute_milliseconds" => 2000},
+             result: %{
+               "base_sha" => String.duplicate("a", 40),
+               "diff" => "partial diff",
+               "checks" => [%{"name" => "tests", "exit_code" => 1}],
+               "storage_bytes" => 1024,
+               "files" => [
+                 %{
+                   "path" => "fix.ex",
+                   "content" => Base.encode64(content),
+                   "digest" => Hermitscale.Workspaces.Evidence.digest(content)
+                 }
+               ]
+             }
+           }
+         ]}
+      )
+
+      turn = turn_fixture(scope, session)
+      assert {:ok, completed} = Agents.reconcile_turn(scope, turn.id)
+      [export] = completed.result["exports"]
+
+      {:ok, view, _html} = live(conn, ~p"/agents/#{session.id}")
+      assert has_element?(view, "#turn-status-#{turn.id}", "Interrupted")
+      assert has_element?(view, "#usage-#{turn.id}", "cost unavailable")
+
+      assert has_element?(
+               view,
+               "#export-#{turn.id}-#{export["artifact_id"]}[href='/artifacts/#{export["artifact_id"]}']"
+             )
+
+      assert has_element?(view, "#result-#{turn.id} .text-error")
+      assert length(Hermitscale.AgentsRuntimeFake.steps()) == 1
+    end
+
     test "a repeated form operation saves only one turn", %{conn: conn, scope: scope} do
       session = conversation_fixture(scope)
       {:ok, view, _html} = live(conn, ~p"/agents/#{session.id}")
@@ -122,6 +179,7 @@ defmodule HermitscaleWeb.AgentLiveTest do
       params = %{
         instructions: "Keep this request once",
         operation_key: operation_key,
+        budget_cents: 500,
         timeout_seconds: 1800
       }
 

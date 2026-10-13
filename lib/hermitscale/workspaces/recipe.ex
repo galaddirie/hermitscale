@@ -1,4 +1,4 @@
-defmodule Hermitscale.Workspaces.Setup do
+defmodule Hermitscale.Workspaces.Recipe do
   @moduledoc "Pinned worker/provider installation and retained checkout preparation."
   alias Hermitscale.Workspaces.{SpriteAccess, SpriteSDK, SpritesManagement, WorkerClient}
   @root Path.expand("../../..", __DIR__)
@@ -15,6 +15,15 @@ defmodule Hermitscale.Workspaces.Setup do
   @source_seed_path Path.join(@root, "priv/workspace_launchers/source_seed.py")
   @external_resource @source_seed_path
   @source_seed_script File.read!(@source_seed_path)
+
+  @provider_version "0.162.1"
+  @adapter_version "1.6.2"
+  @scaffold_path Path.join(@root, "priv/app_recipes/python_sqlite_v1/app.py")
+  @external_resource @scaffold_path
+  @scaffold File.read!(@scaffold_path)
+  @scaffold_test_path Path.join(@root, "priv/app_recipes/python_sqlite_v1/test_app.py")
+  @external_resource @scaffold_test_path
+  @scaffold_test File.read!(@scaffold_test_path)
 
   @installer """
   import os, sys, json, subprocess, shutil
@@ -45,7 +54,7 @@ defmodule Hermitscale.Workspaces.Setup do
   os.chmod(wrapper, 0o755)
   service = '/opt/hermitscale/bin/start-worker'
   with open(service,'w') as f:
-      f.write('#!/usr/bin/python3 -I\\nimport os,json,sys\\nconfig=json.load(open("/var/lib/hermitscale/control/worker-env.json"))\\nallowed={"WORKSPACE_WORKER_ENABLED","WORKSPACE_BUNDLE_ID","WORKSPACE_ID","WORKSPACE_JOURNAL_PATH","WORKSPACE_CONTROL_SOCKET","WORKSPACE_CONTROL_TOKEN_FILE","WORKSPACE_PROVIDER_ENV_FILE","WORKSPACE_LEASE_FILE","WORKSPACE_PROVIDER_SESSION_FILE","WORKSPACE_CWD","WORKSPACE_ACP_PATH","HOME","PATH"}\\nif not isinstance(config,dict) or any(k not in allowed or not isinstance(v,str) for k,v in config.items()): raise ValueError("invalid worker configuration")\\nif len(sys.argv)!=2 or sys.argv[1]!=config["WORKSPACE_BUNDLE_ID"]: raise ValueError("worker bundle mismatch")\\nconfig.update(PATH="/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",HOME="/home/hermitworker",SHELL="/bin/bash",LANG="C.UTF-8",USER="hermitworker",LOGNAME="hermitworker")\\nos.execve("/usr/sbin/runuser",["runuser","-u","hermitworker","--preserve-environment","--","/opt/hermitscale/source/workspace_worker/_build/prod/rel/workspace_worker/bin/workspace_worker","start"],config)\\n')
+      f.write('#!/usr/bin/python3 -I\\nimport os,json,sys\\nconfig=json.load(open("/var/lib/hermitscale/control/worker-env.json"))\\nallowed={"WORKSPACE_WORKER_ENABLED","WORKSPACE_BUNDLE_ID","WORKSPACE_ID","WORKSPACE_JOURNAL_PATH","WORKSPACE_CONTROL_SOCKET","WORKSPACE_CONTROL_TOKEN_FILE","WORKSPACE_CONTROL_DEADLINE","WORKSPACE_PROVIDER_ENV_FILE","WORKSPACE_LEASE_FILE","WORKSPACE_PROVIDER_SESSION_FILE","WORKSPACE_CWD","WORKSPACE_ACP_PATH","HOME","PATH"}\\nif not isinstance(config,dict) or any(k not in allowed or not isinstance(v,str) for k,v in config.items()): raise ValueError("invalid worker configuration")\\nif len(sys.argv)!=2 or sys.argv[1]!=config["WORKSPACE_BUNDLE_ID"]: raise ValueError("worker bundle mismatch")\\nconfig.update(PATH="/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",HOME="/home/hermitworker",SHELL="/bin/bash",LANG="C.UTF-8",USER="hermitworker",LOGNAME="hermitworker")\\nos.execve("/usr/sbin/runuser",["runuser","-u","hermitworker","--preserve-environment","--","/opt/hermitscale/source/workspace_worker/_build/prod/rel/workspace_worker/bin/workspace_worker","start"],config)\\n')
   os.chown(service,0,0); os.chmod(service,0o755)
   worker = os.path.join(root, 'workspace_worker')
   for args in [['mix','local.hex','--force'],['mix','local.rebar','--force'],['mix','deps.get','--only','prod'],['mix','deps.compile'],['mix','compile','--warnings-as-errors'],['mix','release','--overwrite']]:
@@ -133,8 +142,21 @@ defmodule Hermitscale.Workspaces.Setup do
     end
   end
 
-  defp allowed_domains(_env) do
-    ~w(api.openai.com api.github.com github.com raw.githubusercontent.com codeload.github.com registry.npmjs.org pypi.org files.pythonhosted.org hex.pm repo.hex.pm builds.hex.pm)
+  def sources, do: @sources
+
+  def install(sprite) do
+    with :ok <- Hermitscale.Workspaces.Foundation.prepare(sprite), do: ensure_worker(sprite)
+  end
+
+  def versions, do: %{codex: @provider_version, codex_acp: @adapter_version}
+
+  defp allowed_domains(env) do
+    gateway = URI.parse(Map.fetch!(env, "OPENAI_BASE_URL")).host
+
+    [
+      gateway
+      | ~w(github.com raw.githubusercontent.com codeload.github.com registry.npmjs.org pypi.org files.pythonhosted.org hex.pm repo.hex.pm builds.hex.pm)
+    ]
   end
 
   defp ensure_worker(sprite) do
@@ -164,7 +186,10 @@ defmodule Hermitscale.Workspaces.Setup do
     config = %{
       repository: workspace.repository,
       base_sha: workspace.base_sha,
-      source_credential: credential_value(source_credential)
+      source_credential: credential_value(source_credential),
+      recipe: workspace.recipe,
+      scaffold: @scaffold,
+      scaffold_test: @scaffold_test
     }
 
     case SpriteSDK.capture(sprite, "sudo", ["-n", "python3", "-I", "-c", setup],
@@ -228,6 +253,7 @@ defmodule Hermitscale.Workspaces.Setup do
       "WORKSPACE_JOURNAL_PATH" => "/var/lib/hermitscale/control/journal.ndjson",
       "WORKSPACE_CONTROL_SOCKET" => "/run/hermitscale/worker.sock",
       "WORKSPACE_CONTROL_TOKEN_FILE" => "/var/lib/hermitscale/control/token",
+      "WORKSPACE_CONTROL_DEADLINE" => "2099-01-01T00:00:00Z",
       "WORKSPACE_PROVIDER_ENV_FILE" => "/var/lib/hermitscale/control/provider-env.json",
       "WORKSPACE_LEASE_FILE" => "/var/lib/hermitscale/control/lease.json",
       "WORKSPACE_PROVIDER_SESSION_FILE" => "/var/lib/hermitscale/control/provider-session",
@@ -242,11 +268,11 @@ defmodule Hermitscale.Workspaces.Setup do
   defp credential_value(%{value: value}) when is_binary(value), do: value
 
   defp valid_provider_env(env) when is_map(env) do
-    allowed = ~w(PATH HOME OPENAI_API_KEY CODEX_HOME)
+    allowed = ~w(PATH HOME OPENAI_BASE_URL OPENAI_API_KEY CODEX_HOME HERMITSCALE_MODEL)
 
     if Enum.all?(env, fn {key, value} -> key in allowed and is_binary(value) end) and
          Enum.all?(
-           ~w(OPENAI_API_KEY),
+           ~w(OPENAI_BASE_URL OPENAI_API_KEY HERMITSCALE_MODEL),
            &(is_binary(Map.get(env, &1)) and Map.get(env, &1) != "")
          ),
        do: :ok,

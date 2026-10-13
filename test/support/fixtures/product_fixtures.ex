@@ -52,6 +52,27 @@ defmodule Hermitscale.ProductFixtures do
     issued
   end
 
+  def inference_capability_fixture(scope, turn, attrs \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          kind: "inference",
+          resource_ids: [turn.id],
+          actions: ["responses"],
+          operation_id: turn.id,
+          connection: %{"provider" => "openai", "account_id" => "data_openai"},
+          models: ["test-model"],
+          remaining_calls: 5,
+          remaining_cost_micros: 100_000,
+          ttl_seconds: 60
+        },
+        Map.new(attrs)
+      )
+
+    {:ok, issued} = ExecutionAccess.issue(scope, attrs)
+    issued
+  end
+
   def expire_fixture(record) do
     record
     |> Ecto.Changeset.change(expires_at: DateTime.add(DateTime.utc_now(:second), -1, :second))

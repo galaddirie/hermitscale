@@ -117,46 +117,6 @@ defmodule Hermitscale.Workspaces.SpritesManagementTest do
              Workspaces.release_lease(scope, lease.id, termination_evidence(lease))
   end
 
-  test "service visibility uses the native public and sprite authentication settings", %{
-    workspace: workspace
-  } do
-    for {access, auth} <- [public: "public", private: "sprite"] do
-      Req.Test.expect(__MODULE__, fn conn ->
-        assert conn.method == "PUT"
-        assert conn.request_path == "/v1/sprites/" <> workspace.sprite_name
-        {:ok, body, conn} = Plug.Conn.read_body(conn)
-        assert Jason.decode!(body) == %{"url_settings" => %{"auth" => auth}}
-        Req.Test.json(conn, metadata(workspace))
-      end)
-
-      assert :ok = SpritesManagement.set_app_access(workspace, access)
-    end
-  end
-
-  test "native app URL accepts either visibility and rejects unrelated hosts", %{
-    workspace: workspace
-  } do
-    for auth <- ["public", "sprite"] do
-      Req.Test.expect(__MODULE__, fn conn ->
-        Req.Test.json(
-          conn,
-          Map.merge(metadata(workspace), %{
-            "url" => "https://#{workspace.sprite_name}-org.sprites.app",
-            "url_settings" => %{"auth" => auth}
-          })
-        )
-      end)
-
-      assert {:ok, "https://" <> _rest} = SpritesManagement.app_url(workspace)
-    end
-
-    Req.Test.expect(__MODULE__, fn conn ->
-      Req.Test.json(conn, Map.put(metadata(workspace), "url", "https://unrelated.example"))
-    end)
-
-    assert {:error, :invalid_app_upstream} = SpritesManagement.app_url(workspace)
-  end
-
   defp metadata(workspace),
     do: %{
       "name" => workspace.sprite_name,

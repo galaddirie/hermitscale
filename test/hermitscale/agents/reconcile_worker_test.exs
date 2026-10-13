@@ -12,30 +12,17 @@ defmodule Hermitscale.Agents.ReconcileWorkerTest do
     start_supervised!({Provider, %{}})
     {:ok, authentication} = Auth.sign_in("team-code")
     scope = authentication.current_scope
-
-    Hermitscale.ProductFixtures.configure_product_fixture(Hermitscale.Agents.Runtime,
-      adapter: Hermitscale.AgentsRuntimeFake
-    )
-
-    Hermitscale.ProductFixtures.configure_product_fixture(
-      :workspace_management_adapter,
-      Hermitscale.AgentsRuntimeFake
-    )
-
-    start_supervised!(
-      {Hermitscale.AgentsRuntimeFake, outcomes: [%{status: :interrupted, worker_state: %{}}]}
-    )
-
     session = agent_session_fixture(scope)
     %{scope: scope, session: session}
   end
 
-  test "the worker reconciles committed interruption and retries do not duplicate work", %{
+  test "Jido coordinates committed interruption and retries do not duplicate work", %{
     scope: scope,
     session: session
   } do
     turn = agent_turn_fixture(scope, session)
-    assert {:ok, %{status: :interrupted}} = perform_job(ReconcileWorker, %{turn_id: turn.id})
+    assert {:ok, %{status: "interrupted"}} = perform_job(ReconcileWorker, %{turn_id: turn.id})
+    assert is_nil(Jido.whereis(Hermitscale.AgentRuntime, "session:" <> session.id))
     assert {:ok, %{status: :interrupted}} = perform_job(ReconcileWorker, %{turn_id: turn.id})
 
     assert [%{type: "turn.queued"}, %{type: "turn.interrupted"}] =

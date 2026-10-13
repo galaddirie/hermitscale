@@ -13,16 +13,22 @@ defmodule Hermitscale.Workspaces do
 
   alias Hermitscale.Workspaces.{
     Lease,
+    Protection,
     SpriteAccess,
     SpritesManagement,
     Workspace,
     WorkerClient,
-    Setup
+    Recipe,
+    Evidence,
+    Publication
   }
 
   @max_lease_seconds 3600
   @max_file_bytes 1_048_576
   @max_command_bytes 8192
+
+  @doc "Reports installed runtime versions and required configuration without attaching compute."
+  def runtime_qualification, do: SpriteAccess.qualification()
 
   def get_lease(scope, lease_id) do
     with :ok <- authorize_activity(scope),
@@ -54,7 +60,7 @@ defmodule Hermitscale.Workspaces do
     with {:ok, workspace, lease} <- resolve_access(scope, workspace_id, lease.id),
          {:ok, workspace} <- provision_workspace(scope, workspace.id),
          :ok <- revalidate_remote_authority(scope, management_adapter()) do
-      Setup.prepare(workspace, lease, turn, provider_env, options)
+      Recipe.prepare(workspace, lease, turn, provider_env, options)
     end
   end
 
@@ -131,12 +137,26 @@ defmodule Hermitscale.Workspaces do
     end
   end
 
-  def read_result(scope, workspace_id, lease_id) do
+  def delete_workspace(scope, workspace_id) do
+    with {:ok, workspace} <- request_deletion(scope, workspace_id),
+         :ok <- revalidate_remote_authority(scope, management_adapter()),
+         {:ok, _deleted} <- management_adapter().delete(workspace) do
+      Repo.transaction(fn ->
+        current = lock_workspace!(workspace.org_id, workspace.id)
+
+        current
+        |> Workspace.state_changeset(%{resource_state: :deleted, compute_state: :sleeping})
+        |> update_or_rollback!()
+      end)
+    end
+  end
+
+  def collect_evidence(scope, workspace_id, lease_id, base_sha, options \\ []) do
     with {:ok, lease} <- validate_lease(scope, lease_id, purpose: :evidence),
          {:ok, workspace} <- get_workspace(scope, workspace_id),
          true <- lease.workspace_id == workspace.id,
          :ok <- revalidate_remote_authority(scope, management_adapter()) do
-      access_adapter().read_result(workspace, lease)
+      Evidence.collect(workspace, lease, base_sha, options)
     else
       false -> {:error, :lease_workspace_mismatch}
       {:error, _reason} = error -> error
@@ -144,64 +164,100 @@ defmodule Hermitscale.Workspaces do
   end
 
   def publish_branch(scope, workspace_id, lease_id, attributes) do
-    with {:ok, workspace, lease} <- resolve_access(scope, workspace_id, lease_id),
+    access =
+      if Map.get(attributes, :reconcile_only) == true,
+        do: resolve_publication_read(scope, workspace_id, lease_id),
+        else: resolve_access(scope, workspace_id, lease_id)
+
+    with {:ok, workspace, lease} <- access,
          :ok <- revalidate_remote_authority(scope, management_adapter()) do
-      access_adapter().publish_branch(workspace, lease, attributes)
+      Publication.publish(workspace, lease, attributes)
     end
   end
 
-  def start_service(scope, workspace_id, lease_id, spec) do
+  def ensure_service(scope, workspace_id, lease_id, name, spec) do
+    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
+         :ok <- validate_service_name(name),
+         {:ok, spec} <- validate_service_spec(spec),
+         :ok <- revalidate_remote_authority(scope, management_adapter()) do
+      profile = if name == "hs-app", do: "app", else: "coder"
+
+      service = %{
+        spec
+        | command: "sudo",
+          args: ["-n", "/opt/hermitscale/bin/sandbox-launch", profile, spec.command | spec.args]
+      }
+
+      management_adapter().ensure_service(workspace, name, service)
+    end
+  end
+
+  def inspect_service(scope, workspace_id, lease_id, name) do
+    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
+         :ok <- validate_service_name(name),
+         do: management_adapter().inspect_service(workspace, name)
+  end
+
+  def stop_service(scope, workspace_id, lease_id, name) do
+    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
+         :ok <- validate_service_name(name),
+         do: management_adapter().stop_service(workspace, name)
+  end
+
+  def checkpoint(scope, workspace_id, lease_id, comment) do
     with {:ok, workspace, lease} <- resolve_access(scope, workspace_id, lease_id),
-         {:ok, spec} <- validate_service_spec(Map.put(spec, :http_port, spec.port)),
-         :ok <- revalidate_remote_authority(scope, management_adapter()),
-         {:ok, source_commit} <- service_source_commit(workspace, lease),
-         {:ok, _service} <-
-           management_adapter().ensure_service(workspace, "hs-app", %{
-             spec
-             | command: "sudo",
-               args: [
-                 "-n",
-                 "/opt/hermitscale/bin/sandbox-launch",
-                 "app",
-                 spec.command | spec.args
-               ]
-           }),
-         {:ok, url} <- management_adapter().app_url(workspace) do
-      {:ok, %{url: url, source_commit: source_commit, status: "running"}}
-    end
-  end
-
-  defp service_source_commit(workspace, lease) do
-    case access_adapter().execute_command(workspace, lease, "git rev-parse HEAD") do
-      {:ok, %{exit_code: 0, output: source}} -> {:ok, String.trim(source)}
-      {:ok, %{exit_code: _code}} -> {:ok, nil}
+         true <- is_binary(comment) and byte_size(comment) <= 1024,
+         {:ok, _proof} <- management_adapter().termination_evidence(workspace, lease) do
+      management_adapter().checkpoint(workspace, comment)
+    else
+      false -> {:error, :invalid_checkpoint_comment}
       {:error, _reason} = error -> error
     end
   end
 
-  def stop_service(scope, workspace_id, lease_id) do
-    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
-         :ok <- revalidate_remote_authority(scope, management_adapter()),
-         do: management_adapter().stop_service(workspace, "hs-app")
+  def export_artifact(scope, workspace_id, lease_id, paths)
+      when is_list(paths) and length(paths) <= 100 do
+    with {:ok, workspace, lease} <- resolve_access(scope, workspace_id, lease_id) do
+      Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, files} ->
+        with {:ok, path} <- validate_path(path),
+             {:ok, content} <- access_adapter().read_file(workspace, lease, path) do
+          file = %{path: path, content: Base.encode64(content), digest: Evidence.digest(content)}
+          {:cont, {:ok, [file | files]}}
+        else
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, files} ->
+          {:ok,
+           %{
+             files: Enum.reverse(files),
+             digest: Evidence.digest(Jason.encode!(Enum.reverse(files)))
+           }}
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
   end
 
-  def service_logs(scope, workspace_id, lease_id, limit)
-      when is_integer(limit) and limit in 1..1000 do
-    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
-         :ok <- revalidate_remote_authority(scope, management_adapter()),
-         do: management_adapter().service_logs(workspace, limit)
-  end
-
-  def set_app_access(scope, workspace_id, lease_id, access) when access in [:private, :public] do
-    with {:ok, workspace, _lease} <- resolve_access(scope, workspace_id, lease_id),
-         :ok <- revalidate_remote_authority(scope, management_adapter()),
-         :ok <- management_adapter().set_app_access(workspace, access),
-         do: management_adapter().app_url(workspace)
-  end
-
-  def app_url(scope, workspace_id) do
-    with {:ok, workspace} <- get_workspace(scope, workspace_id),
-         do: management_adapter().app_url(workspace)
+  def import_artifact(scope, workspace_id, lease_id, %{files: files, digest: digest}) do
+    with true <- is_list(files) and length(files) <= 100,
+         true <- Evidence.digest(Jason.encode!(files)) == digest do
+      Enum.reduce_while(files, :ok, fn %{path: path, content: encoded, digest: hash}, :ok ->
+        with {:ok, content} <- Base.decode64(encoded),
+             true <- Evidence.digest(content) == hash,
+             :ok <- write_file(scope, workspace_id, lease_id, path, content) do
+          {:cont, :ok}
+        else
+          false -> {:halt, {:error, :artifact_digest_mismatch}}
+          :error -> {:halt, {:error, :invalid_artifact}}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
+    else
+      false -> {:error, :artifact_digest_mismatch}
+    end
   end
 
   def app_request(scope, workspace_id, path, options \\ []) do
@@ -211,7 +267,14 @@ defmodule Hermitscale.Workspaces do
          do: management_adapter().app_request(workspace, path, options)
   end
 
-  @doc "Reads a bounded file under an authorized, current lease."
+  def open_app_socket(scope, workspace_id, path, headers) do
+    with :ok <- Authorization.authorize(scope, "apps:read"),
+         {:ok, workspace} <- get_workspace(scope, workspace_id),
+         :ok <- validate_app_path(path),
+         do: management_adapter().open_app_socket(workspace, path, headers)
+  end
+
+  @doc "Explicit live read under an authorized, current lease; historical reads use stored evidence."
   def read_file(scope, workspace_id, lease_id, path) do
     with :ok <- authorize_read(scope),
          {:ok, workspace, lease} <- resolve_access(scope, workspace_id, lease_id),
@@ -387,6 +450,87 @@ defmodule Hermitscale.Workspaces do
     end
   end
 
+  @doc "Adds a retention protection without starting or holding compute."
+  def protect_workspace(scope, workspace_id, owner_key, reason) do
+    with :ok <- Authorization.authorize(scope, "workspaces:write"),
+         {:ok, id} <- cast_id(workspace_id) do
+      org_id = Scope.organization_id!(scope)
+
+      Repo.transaction(fn ->
+        workspace = lock_workspace!(org_id, id)
+        ensure_available!(workspace)
+
+        changeset =
+          Protection.changeset(
+            %Protection{org_id: org_id, workspace_id: id},
+            %{owner_key: owner_key, reason: reason}
+          )
+
+        _protection =
+          insert_or_rollback!(changeset,
+            on_conflict: :nothing,
+            conflict_target: [:workspace_id, :owner_key]
+          )
+
+        existing = Repo.get_by!(Protection, workspace_id: id, owner_key: owner_key)
+
+        case existing.reason == reason do
+          true -> existing
+          false -> Repo.rollback(:protection_conflict)
+        end
+      end)
+    end
+  end
+
+  @doc "Removes an organization's retention protection under the same deletion lock."
+  def remove_protection(scope, protection_id) do
+    with :ok <- Authorization.authorize(scope, "workspaces:write"),
+         {:ok, id} <- cast_id(protection_id) do
+      org_id = Scope.organization_id!(scope)
+
+      Repo.transaction(fn ->
+        case Repo.get_by(Protection, id: id, org_id: org_id) do
+          nil ->
+            Repo.rollback(:not_found)
+
+          %Protection{} = protection ->
+            _workspace = lock_workspace!(org_id, protection.workspace_id)
+            Repo.delete!(protection)
+        end
+      end)
+    end
+  end
+
+  @doc "Fences explicit deletion after checking writers and retention protections."
+  def request_deletion(scope, workspace_id) do
+    with :ok <- Authorization.authorize(scope, "workspaces:write"),
+         {:ok, id} <- cast_id(workspace_id) do
+      org_id = Scope.organization_id!(scope)
+
+      Repo.transaction(fn ->
+        workspace = lock_workspace!(org_id, id)
+
+        case workspace.resource_state do
+          state when state in [:deleting, :deleted] ->
+            workspace
+
+          state when state in [:provision_pending, :retained] ->
+            ensure_no_writer!(workspace)
+
+            if Repo.exists?(from p in Protection, where: p.workspace_id == ^id),
+              do: Repo.rollback(:workspace_protected)
+
+            workspace
+            |> Workspace.state_changeset(%{
+              resource_state: :deleting,
+              generation: workspace.generation + 1
+            })
+            |> update_or_rollback!()
+        end
+      end)
+    end
+  end
+
   defp provision(_scope, %Workspace{resource_state: :retained} = workspace), do: {:ok, workspace}
 
   defp provision(_scope, %Workspace{resource_state: state}) when state in [:deleting, :deleted],
@@ -523,6 +667,17 @@ defmodule Hermitscale.Workspaces do
     end
   end
 
+  defp resolve_publication_read(scope, workspace_id, lease_id) do
+    with {:ok, workspace} <- get_workspace(scope, workspace_id),
+         {:ok, lease} <- get_lease(scope, lease_id),
+         true <- lease.workspace_id == workspace.id do
+      {:ok, workspace, lease}
+    else
+      false -> {:error, :lease_workspace_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp resolve_access(scope, workspace_id, lease_id) do
     with :ok <- authorize_activity(scope),
          {:ok, id} <- cast_id(workspace_id),
@@ -541,7 +696,7 @@ defmodule Hermitscale.Workspaces do
 
   defp resolve_control_access(scope, workspace_id, lease_id, envelope) do
     purpose =
-      if envelope["type"] in ~w(inspect cancel read_events),
+      if envelope["type"] in ~w(inspect cancel read_events ack_events),
         do: :evidence,
         else: :activity
 
@@ -553,13 +708,21 @@ defmodule Hermitscale.Workspaces do
     end
   end
 
+  defp validate_service_name(name) when is_binary(name) do
+    if Regex.match?(~r/\Ahs-[a-z0-9-]{1,50}\z/, name),
+      do: :ok,
+      else: {:error, :invalid_service_name}
+  end
+
+  defp validate_service_name(_name), do: {:error, :invalid_service_name}
+
   defp validate_service_spec(%{command: command, args: args, cwd: cwd} = spec)
        when is_binary(command) and is_list(args) and is_binary(cwd) do
     with :ok <- validate_command(command),
          true <-
            length(args) <= 64 and Enum.all?(args, &(is_binary(&1) and byte_size(&1) <= 8192)),
          {:ok, relative} <- if(cwd == ".", do: {:ok, ""}, else: validate_path(cwd)),
-         true <- is_integer(spec.http_port) and spec.http_port in 1..65535 do
+         true <- Map.get(spec, :http_port) in [nil, 8080] do
       {:ok, Map.put(spec, :cwd, Path.join("/workspace", relative))}
     else
       false -> {:error, :invalid_service_spec}
@@ -700,7 +863,7 @@ defmodule Hermitscale.Workspaces do
 
   defp same_source?(left, right),
     do:
-      left.repository == right.repository and
+      left.recipe == right.recipe and left.repository == right.repository and
         left.base_sha == right.base_sha
 
   defp authorize_activity(scope) do
@@ -723,14 +886,8 @@ defmodule Hermitscale.Workspaces do
 
       {:error, :forbidden} ->
         case Authorization.authorize(scope, "agents:read") do
-          :ok ->
-            :ok
-
-          {:error, :forbidden} ->
-            case Authorization.authorize(scope, "apps:read") do
-              :ok -> :ok
-              {:error, :forbidden} -> authorize_activity(scope)
-            end
+          :ok -> :ok
+          {:error, :forbidden} -> Authorization.authorize(scope, "apps:read")
         end
     end
   end

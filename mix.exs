@@ -74,6 +74,10 @@ defmodule Hermitscale.MixProject do
       {:bandit, "~> 1.5"},
       {:runic, github: "zblanco/runic", branch: "main"},
       {:solid, "~> 1.3.2"},
+      {:jido, "== 2.4.0"},
+      {:jido_shell,
+       github: "agentjido/jido_shell", ref: "3c9af797d1f2c852e2b182e77509fafc5b51f86b"},
+      {:jido_vfs, "== 1.0.1"},
       {:sprites, github: "superfly/sprites-ex", ref: "c59c9358787ece90fb83b0631dde57f54a173753"},
       {:workspace_protocol, path: "priv/workspace_protocol/v1"}
     ]

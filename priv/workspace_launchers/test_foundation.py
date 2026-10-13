@@ -21,7 +21,7 @@ class FoundationDirectoriesTest(unittest.TestCase):
             workspace = Path(directory)
             self.initialize(workspace)
             self.assertEqual((workspace / '.codex').stat().st_mode & 0o7777, 0o700)
-            for name in ('data',):
+            for name in ('data', 'preview-data'):
                 mode = (workspace / name).stat().st_mode
                 self.assertEqual(mode & 0o777, 0o770)
                 if sys.platform.startswith('linux'):

@@ -74,14 +74,17 @@ defmodule HermitscaleWeb.UserAuthTest do
     assert get_session(conn, :sealed_session) == authentication.sealed_session
   end
 
-  test "a rotated session returns to the requested app or workflow", %{conn: conn} do
+  test "a rotated session returns to the requested app, review or workflow", %{conn: conn} do
     %{conn: conn, authentication: authentication} = authenticated_conn(conn)
     {:ok, refreshed} = Auth.switch_organization(authentication.sealed_session, "tenant:team")
     Provider.put_response(:authenticate, {:ok, refreshed})
     id = Ecto.UUID.generate()
+    deployment_id = Ecto.UUID.generate()
 
     for {view, action, params, expected} <- [
           {HermitscaleWeb.AppLive, :build, %{"id" => id}, "/apps/" <> id <> "/build"},
+          {HermitscaleWeb.AppLive, :deployment, %{"id" => id, "deployment_id" => deployment_id},
+           "/apps/" <> id <> "/deployments/" <> deployment_id},
           {HermitscaleWeb.WorkflowLive, :show, %{"id" => "wf:stored_1"}, "/workflows/wf:stored_1"}
         ] do
       mounted = %{

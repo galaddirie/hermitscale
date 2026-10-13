@@ -8,7 +8,7 @@ defmodule Hermitscale.WorkspaceProtocol.V1 do
 
   @command_keys ~w(version workspace_id operation_id command_id generation payload_digest deadline type payload)
   @event_keys ~w(version workspace_id operation_id epoch cursor type payload)
-  @types ~w(start inspect cancel approve read_events)
+  @types ~w(start inspect cancel approve read_events ack_events)
   @event_types ~w(accepted running cancel_requested approval_decided uncertain recovered provider terminal_observed termination_confirmed runtime_unavailable history_gap)
   @max_command_bytes 65_536
   @max_event_bytes 16_384
@@ -175,6 +175,11 @@ defmodule Hermitscale.WorkspaceProtocol.V1 do
        )
        when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit in 1..100 do
     with :ok <- exact_keys(payload, ~w(epoch cursor limit)), :ok <- identifier(epoch), do: :ok
+  end
+
+  defp payload_shape("ack_events", %{"epoch" => epoch, "cursor" => cursor} = payload)
+       when is_integer(cursor) and cursor >= 0 do
+    with :ok <- exact_keys(payload, ~w(epoch cursor)), :ok <- identifier(epoch), do: :ok
   end
 
   defp payload_shape(_type, _payload), do: {:error, :invalid_payload}

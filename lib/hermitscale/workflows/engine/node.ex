@@ -77,6 +77,33 @@ defmodule Hermitscale.Workflows.Engine.Node do
     end
   end
 
+  @doc "Whether this node delegates its effect to a durable context operation."
+  def external?(%__MODULE__{module: module}),
+    do: function_exported?(module, :__external_operation__, 0)
+
+  def external?(_component), do: false
+
+  @doc "Resolves non-secret request data without executing the external effect."
+  def external_request(runnable) do
+    callback = Runic.Workflow.SingleOutput.Context.from_runnable(runnable)
+    input_id = Map.fetch!(callback.meta, :_hermitscale_input_id)
+    context = Context.new(runnable.input_fact.value, runnable.input_fact.meta, callback, input_id)
+
+    runnable.node.params
+    |> :erlang.binary_to_term([:safe])
+    |> Hermitscale.Workflows.Expr.resolve(Context.expressions(context))
+  end
+
+  @doc "Creates native completion events and preserves the original occurrence lineage."
+  def complete_external(runnable, result) do
+    context = %{
+      runnable.context
+      | run_context: Map.put(runnable.context.run_context, :_hermitscale_external_result, result)
+    }
+
+    execute(runnable.node, %{runnable | context: context})
+  end
+
   defp error_kind(%module{}), do: module
   defp error_kind({kind, _reason}) when kind in [:error, :exit, :throw], do: kind
   defp error_kind(_error), do: :runtime_resource
@@ -87,6 +114,11 @@ defmodule Hermitscale.Workflows.Engine.Node do
     state = Metadata.state(metadata)
 
     cond do
+      Map.has_key?(callback_context.runtime, :_hermitscale_external_result) ->
+        callback_context.runtime
+        |> Map.fetch!(:_hermitscale_external_result)
+        |> interpret(node, metadata, callback_context)
+
       Map.has_key?(callback_context.meta, :_hermitscale_skip) ->
         skipped = Map.fetch!(callback_context.meta, :_hermitscale_skip)
 

@@ -11,9 +11,11 @@ defmodule Hermitscale.Workflows do
   alias Hermitscale.Repo
 
   alias Hermitscale.Workflows.{
+    Catalog,
     Compiler,
     Credentials,
     Engine,
+    ExternalOperations,
     Graph,
     Policy,
     Replay,
@@ -250,8 +252,7 @@ defmodule Hermitscale.Workflows do
   defp do_start_run(%Graph{} = graph, input, opts, context, initiator, trigger_id) do
     case Keyword.fetch(opts, :run_id) do
       :error ->
-        with {:ok, admitted} <- do_admit_run(graph, input, opts, context, initiator, trigger_id),
-             do: start_admitted(admitted, opts)
+        do_admit_run(graph, input, opts, context, initiator, trigger_id)
 
       {:ok, key} when is_binary(key) and byte_size(key) in 8..128 ->
         keyed_start(graph, input, opts, context, initiator, trigger_id, key)
@@ -300,17 +301,21 @@ defmodule Hermitscale.Workflows do
               opts
               |> Keyword.put(:admission_id, id)
               |> Keyword.put(:admission_digest, digest)
+              |> Keyword.put(:executor, :queued)
 
             case do_admit_run(graph, input, opts, context, initiator, trigger_id) do
-              {:ok, admitted} -> {:new, admitted}
+              {:ok, run} -> {:new, run}
               {:error, reason} -> Repo.rollback(reason)
             end
         end
       end)
 
     case result do
-      {:ok, {:new, admitted}} ->
-        start_admitted(admitted, opts)
+      {:ok, {:new, run}} ->
+        case Keyword.get(opts, :executor) do
+          :inline -> ExternalOperations.advance(run.id, opts)
+          _executor -> {:ok, run}
+        end
 
       {:ok, {:existing, run}} ->
         {:ok, run}
@@ -360,7 +365,7 @@ defmodule Hermitscale.Workflows do
          trigger_id,
          now
        ) do
-    Repo.transaction(fn ->
+    admission = fn ->
       attrs = %{input: json_payload(input), status: :running, started_at: now}
 
       attrs =
@@ -378,35 +383,66 @@ defmodule Hermitscale.Workflows do
                trigger_id,
                Keyword.get(opts, :admission_digest)
              ),
-           workflow <-
-             workflow
-             |> Workflow.enable_event_emission()
-             |> Workflow.plan(Engine.input(input, run.id)),
            {store_module, store_state} <- Runic.Runner.get_store(@runner),
-           {:ok, _cursor} <-
-             store_module.append(
-               run.id,
-               [definition_event | Enum.reverse(workflow.uncommitted_events)],
-               store_state
-             ) do
-        {Repo.reload!(run), %{workflow | uncommitted_events: []}, run_context}
-      else
-        {:error, reason} -> Repo.rollback(reason)
+           {:ok, _cursor} <- store_module.append(run.id, [definition_event], store_state) do
+        {:ok, run}
       end
-    end)
+    end
+
+    case ExternalOperations.external_definition?(graph.definition) or
+           Keyword.has_key?(opts, :admission_id) do
+      true ->
+        result =
+          Repo.transaction(fn ->
+            with {:ok, run} <- admission.(),
+                 {:ok, run} <-
+                   ExternalOperations.start(
+                     run,
+                     workflow,
+                     input,
+                     Keyword.put(opts, :executor, :queued)
+                   ) do
+              run
+            else
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end)
+
+        with {:ok, run} <- result do
+          case Keyword.get(opts, :executor) do
+            :inline -> ExternalOperations.advance(run.id, opts)
+            _executor -> {:ok, run}
+          end
+        end
+
+      false ->
+        with {:ok, run} <- admission.(),
+             do: start_execution(run, workflow, input, opts, run_context)
+    end
   end
 
-  defp start_admitted({run, workflow, run_context}, opts) do
-    with {:ok, _pid} <-
-           Runic.Runner.start_workflow(
-             @runner,
-             run.id,
-             workflow,
-             runner_opts(opts, run.definition)
-             |> Keyword.merge(run_opts(opts, run_context))
-             |> Keyword.put(:resumed, true)
-           ) do
-      run_result(run, opts)
+  defp start_execution(run, workflow, input, opts, run_context) do
+    case ExternalOperations.external_definition?(run.definition) or run.admission_digest != nil do
+      true ->
+        ExternalOperations.start(run, workflow, input, opts)
+
+      false ->
+        with {:ok, _pid} <-
+               Runic.Runner.start_workflow(
+                 @runner,
+                 run.id,
+                 workflow,
+                 runner_opts(opts, run.definition)
+               ),
+             :ok <-
+               Runic.Runner.run(
+                 @runner,
+                 run.id,
+                 Engine.input(input, run.id),
+                 run_opts(opts, run_context)
+               ) do
+          run_result(run, opts)
+        end
     end
   end
 
@@ -414,23 +450,34 @@ defmodule Hermitscale.Workflows do
     run = get_run!(scope, run.id)
 
     with :ok <- Authorization.authorize(scope, "workflows:run") do
-      case {run.status, Keyword.get(opts, :executor)} do
-        {_status, :inline} ->
-          do_resume_run(run, opts)
-
-        {status, _executor} when status in [:complete, :failed, :cancelled] ->
-          {:ok, run}
-
-        {_status, _executor} ->
-          with {:ok, _pid} <- do_resume_run(run, opts), do: {:ok, Repo.reload!(run)}
-      end
+      do_resume_run(run, opts)
     end
   end
 
   defp do_resume_run(%Run{status: :cancelled} = run, _opts), do: {:ok, run}
 
-  defp do_resume_run(%Run{} = run, opts) do
-    run |> Repo.preload(:graph) |> resume_with_graph(opts)
+  defp do_resume_run(%Run{status: status} = run, opts) when status in [:complete, :failed] do
+    case catalogued_definition?(run.definition) do
+      true -> resume_supported_run(run, opts)
+      false -> {:ok, run}
+    end
+  end
+
+  defp do_resume_run(%Run{} = run, opts), do: resume_supported_run(run, opts)
+
+  defp resume_supported_run(run, opts) do
+    case ExternalOperations.external_definition?(run.definition) or run.admission_digest != nil do
+      true -> ExternalOperations.advance(run.id, opts)
+      false -> run |> Repo.preload(:graph) |> resume_with_graph(opts)
+    end
+  end
+
+  defp catalogued_definition?(nil), do: true
+
+  defp catalogued_definition?(%{"nodes" => nodes}) do
+    Enum.all?(nodes, fn %{"type" => type, "version" => version} ->
+      match?({:ok, _module}, Catalog.fetch(type, version))
+    end)
   end
 
   defp resume_with_graph(%Run{graph: nil}, _opts), do: {:error, :missing_graph}
@@ -490,6 +537,15 @@ defmodule Hermitscale.Workflows do
     }
   end
 
+  def mark_run_complete(run_id, %Workflow{} = workflow) do
+    run = run_id |> get_run_for_system!() |> Repo.preload(:graph)
+
+    case ExternalOperations.waiting?(run_id) do
+      true -> {:error, :waiting_for_external_operations}
+      false -> complete_run(run, workflow, terminal_ids(run.definition || run.graph.definition))
+    end
+  end
+
   defp complete_run(run, workflow, terminal_ids) do
     case Engine.completion(workflow) do
       :ok ->
@@ -540,7 +596,8 @@ defmodule Hermitscale.Workflows do
     mark_run_failed(id, "workflow_execution_failed")
   end
 
-  # A checkpoint retry does not call on_idle again; report the failed native save.
+  # Runic retains the pending events, but a successful checkpoint retry does
+  # not call on_idle again. Record the failed durable outcome explicitly.
   def record_run_idle(%Runic.Runner.Worker{id: id, persistence: {:error, _reason}}, _terminal_ids) do
     mark_run_failed(id, "workflow_persistence_failed")
   end
@@ -567,6 +624,11 @@ defmodule Hermitscale.Workflows do
 
   defp run_notification(%Run{status: :complete, id: id}), do: {:run_complete, id}
   defp run_notification(%Run{status: :failed, id: id}), do: {:run_failed, id}
+
+  @doc false
+  def broadcast_run_result(%Run{status: status} = run) when status in [:complete, :failed] do
+    Phoenix.PubSub.broadcast(Hermitscale.PubSub, run_topic(run.id), run_notification(run))
+  end
 
   @doc """
   Subscribes the caller to `{:run_complete, id}` or `{:run_failed, id}` events.
@@ -609,9 +671,7 @@ defmodule Hermitscale.Workflows do
       :executor,
       :executor_opts
     ])
-    |> Keyword.put(:hooks,
-      on_idle: &__MODULE__.record_run_idle(&1, terminal_ids)
-    )
+    |> Keyword.put(:hooks, on_idle: &__MODULE__.record_run_idle(&1, terminal_ids))
   end
 
   defp run_opts(opts, run_context) do

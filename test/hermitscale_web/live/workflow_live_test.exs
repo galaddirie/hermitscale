@@ -1,9 +1,11 @@
 defmodule HermitscaleWeb.WorkflowLiveTest do
   use HermitscaleWeb.ConnCase, async: false
+  use Oban.Testing, repo: Hermitscale.Repo
   import Phoenix.LiveViewTest
   import HermitscaleWeb.BrowserAuthFixtures
   alias Hermitscale.Workflows
   import Hermitscale.WorkflowEditorFixtures
+  alias Hermitscale.Workflows.{ExternalOperationWorker, ExternalOperations}
 
   setup do
     setup_provider()
@@ -134,7 +136,7 @@ defmodule HermitscaleWeb.WorkflowLiveTest do
     assert has_element?(editor, "#workflow-save-state", "Unsaved changes")
   end
 
-  test "starts a saved workflow and displays recorded completion", %{conn: conn, scope: scope} do
+  test "starts a saved workflow and displays durable completion", %{conn: conn, scope: scope} do
     graph = workflow_fixture(scope)
     {:ok, editor, _html} = live(conn, ~p"/workflows/#{graph.id}")
 
@@ -146,21 +148,17 @@ defmodule HermitscaleWeb.WorkflowLiveTest do
 
     assert has_element?(editor, "#workflow-run-detail")
 
-    [run] = Workflows.list_runs(scope, graph.id)
-    :ok = Workflows.subscribe_run(scope, run.id)
+    job =
+      all_enqueued(worker: ExternalOperationWorker) |> Enum.find(&Map.has_key?(&1.args, "run_id"))
 
-    on_exit(fn -> Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false) end)
-
-    if Workflows.get_run!(scope, run.id).status != :complete do
-      assert_receive {:run_complete, id}, 1_000
-      assert id == run.id
-    end
-
+    assert job
+    assert {:ok, _result} = perform_job(ExternalOperationWorker, job.args)
     editor |> element("#refresh-workflow-run") |> render_click()
     assert has_element?(editor, "#workflow-run-status", "complete")
     assert has_element?(editor, "#workflow-run-output")
-    run = Workflows.get_run!(scope, run.id)
+    run = Workflows.get_run!(scope, job.args["run_id"])
     assert run.status == :complete
+    assert ExternalOperations.list(scope, run.id) == []
 
     assert_patch(editor, ~p"/workflows/#{graph.id}?run_id=#{run.id}")
     {:ok, reopened, _html} = live(conn, ~p"/workflows/#{graph.id}?run_id=#{run.id}")

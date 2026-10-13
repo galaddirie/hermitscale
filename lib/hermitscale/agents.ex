@@ -21,115 +21,15 @@ defmodule Hermitscale.Agents do
     RemoteRuntime
   }
 
-  @doc "Publishes the current workspace branch under current actor authority and one fenced lease."
-  def publish_branch(scope, session_id, attrs) when is_map(attrs) do
-    with :ok <- Authorization.authorize(scope, "agents:publish"),
-         {:ok, scope} <-
-           Authorization.execution_scope(
-             Scope.execution_context(scope, ["agents:read", "agents:publish"])
-           ),
-         {:ok, session} <- get_session(scope, session_id),
-         {:ok, request} <- publication_request(attrs),
-         {:ok, recorded} <- record_publication_request(session, request) do
-      case Repo.get_by(Event,
-             session_id: session.id,
-             source_key: publication_key(request, "published")
-           ) do
-        nil -> publish_requested_branch(scope, session, recorded)
-        completed -> finish_publication(scope, completed)
-      end
-    end
-  end
+  def runtime_qualification, do: Runtime.qualification()
 
-  def publish_branch(_scope, _session_id, _attrs), do: {:error, :invalid_publication}
+  def publish_branch(scope, session_id, attrs),
+    do: Hermitscale.Agents.Publications.request(scope, session_id, attrs)
 
-  defp publication_request(attrs) do
-    request = Map.new(attrs, fn {key, value} -> {to_string(key), value} end)
-    request = Map.take(request, ~w(branch message operation_key))
+  def get_publication(scope, id), do: Hermitscale.Agents.Publications.get(scope, id)
 
-    case request do
-      %{"branch" => branch, "message" => message, "operation_key" => key}
-      when is_binary(branch) and byte_size(branch) in 1..255 and is_binary(message) and
-             byte_size(message) in 1..4096 and is_binary(key) and byte_size(key) in 8..128 ->
-        {:ok, request}
-
-      _invalid ->
-        {:error, :invalid_publication}
-    end
-  end
-
-  defp record_publication_request(session, request) do
-    transaction_and_broadcast(session.id, fn ->
-      current = lock_session!(session.id)
-      key = publication_key(request, "requested")
-
-      case Repo.get_by(Event, session_id: session.id, source_key: key) do
-        %Event{payload: payload} = event ->
-          if Map.take(payload, ~w(branch message operation_key)) != request,
-            do: Repo.rollback(:publication_key_conflict)
-
-          event
-
-        nil ->
-          payload =
-            Map.put(
-              request,
-              "deadline",
-              DateTime.to_iso8601(DateTime.add(DateTime.utc_now(:second), 300))
-            )
-
-          append_event!(current, %{id: nil}, "branch.requested", payload, key)
-          Repo.get_by!(Event, session_id: session.id, source_key: key)
-      end
-    end)
-  end
-
-  defp publish_requested_branch(scope, session, event) do
-    request = event.payload
-    {:ok, deadline, 0} = DateTime.from_iso8601(request["deadline"])
-
-    with {:ok, credential} <-
-           Hermitscale.Integrations.ExecutionAccess.credential(
-             scope,
-             session,
-             "github",
-             ["repo"],
-             ["agents:publish"]
-           ),
-         {:ok, lease} <-
-           Workspaces.admit_lease(
-             scope,
-             session.workspace_id,
-             "publish:" <> request["operation_key"],
-             deadline
-           ),
-         {:ok, result} <-
-           Workspaces.publish_branch(scope, session.workspace_id, lease.id, %{
-             repository: session.repository,
-             branch: request["branch"],
-             message: request["message"],
-             operation_key: request["operation_key"],
-             credential: credential
-           }),
-         {:ok, completed} <-
-           transaction_and_broadcast(session.id, fn ->
-             current = lock_session!(session.id)
-             payload = %{"result" => Jason.decode!(Jason.encode!(result)), "lease_id" => lease.id}
-             key = publication_key(request, "published")
-             append_event!(current, %{id: nil}, "branch.published", payload, key)
-             Repo.get_by!(Event, session_id: session.id, source_key: key)
-           end) do
-      finish_publication(scope, completed)
-    end
-  end
-
-  defp finish_publication(scope, event) do
-    with {:ok, _lease} <- Workspaces.release_activity(scope, event.payload["lease_id"]),
-         do: {:ok, event.payload["result"]}
-  end
-
-  defp publication_key(request, suffix),
-    do: "publish:" <> request["operation_key"] <> ":" <> suffix
+  def list_publications(scope, session_id),
+    do: Hermitscale.Agents.Publications.list_for_session(scope, session_id)
 
   def list_sessions(%Scope{} = scope) do
     with :ok <- Authorization.authorize(scope, "agents:read") do
@@ -202,7 +102,7 @@ defmodule Hermitscale.Agents do
             else: nil
 
         if existing do
-          fields = [:title, :repository, :base_sha, :connection_set]
+          fields = [:title, :repository, :base_sha, :recipe, :connection_set]
 
           if Map.take(existing, fields) != Map.take(candidate, fields),
             do: Repo.rollback(:session_key_conflict)
@@ -210,7 +110,7 @@ defmodule Hermitscale.Agents do
           existing
         else
           workspace_attrs =
-            Map.take(Changeset.apply_changes(changeset), [:repository, :base_sha])
+            Map.take(Changeset.apply_changes(changeset), [:recipe, :repository, :base_sha])
             |> Map.update!(:repository, fn
               nil -> nil
               repository -> "github:" <> repository
@@ -292,6 +192,7 @@ defmodule Hermitscale.Agents do
       |> order_by([t], desc: t.admission_sequence)
       |> limit(^batch_size)
       |> Repo.all()
+      |> Enum.map(&with_usage(scope, &1))
     end
   end
 
@@ -398,36 +299,7 @@ defmodule Hermitscale.Agents do
 
       case Repo.get(query, id) do
         nil -> {:error, :not_found}
-        turn -> {:ok, turn}
-      end
-    end
-  end
-
-  @doc "Waits on committed turn updates, reattaching to the retained turn through its deadline."
-  def await_turn(%Scope{} = scope, id) do
-    with {:ok, turn} <- get_turn(scope, id),
-         :ok <- subscribe(scope, turn.session_id) do
-      try do
-        await_turn_update(scope, turn.id, turn.session_id)
-      after
-        Phoenix.PubSub.unsubscribe(Hermitscale.PubSub, topic(turn.session_id))
-      end
-    end
-  end
-
-  defp await_turn_update(scope, id, session_id) do
-    with {:ok, turn} <- get_turn(scope, id) do
-      case Turn.terminal?(turn) do
-        true ->
-          {:ok, turn}
-
-        false ->
-          receive do
-            {:agent_turn_updated, ^session_id, ^id} -> await_turn_update(scope, id, session_id)
-          after
-            max(DateTime.diff(turn.deadline, DateTime.utc_now(), :millisecond), 0) ->
-              {:error, :turn_deadline_exceeded}
-          end
+        turn -> {:ok, with_usage(scope, turn)}
       end
     end
   end
@@ -508,6 +380,7 @@ defmodule Hermitscale.Agents do
 
   defp reconcile_admitted(scope, turn) do
     with {:ok, session} <- get_session(scope, turn.session_id),
+         :ok <- Runtime.preflight(scope, session, turn),
          {:ok, lease} <- turn_lease(scope, session, turn) do
       case Runtime.step(scope, session, turn, lease) do
         {:ok, outcome} ->
@@ -516,7 +389,9 @@ defmodule Hermitscale.Agents do
         {:error, reason}
         when reason in [
                :sprites_token_missing,
-               :connection_setup_required
+               :inference_gateway_not_configured,
+               :connection_setup_required,
+               :model_rate_not_configured
              ] ->
           interrupt_after_termination(turn, Atom.to_string(reason))
 
@@ -527,7 +402,9 @@ defmodule Hermitscale.Agents do
       {:error, reason}
       when reason in [
              :sprites_token_missing,
-             :connection_setup_required
+             :inference_gateway_not_configured,
+             :connection_setup_required,
+             :model_rate_not_configured
            ] ->
         interrupt_after_termination(turn, Atom.to_string(reason))
 
@@ -541,6 +418,7 @@ defmodule Hermitscale.Agents do
   defp settle_terminal(scope, turn) do
     with {:ok, lease} <- Workspaces.get_lease(scope, turn.lease_id) do
       if lease.status == :released do
+        Hermitscale.Integrations.ExecutionAccess.revoke(scope, turn.id)
         with {:ok, _released} <- Workspaces.release_activity(scope, lease.id), do: {:ok, turn}
       else
         evidence =
@@ -551,6 +429,7 @@ defmodule Hermitscale.Agents do
 
         with {:ok, proof} <- evidence,
              {:ok, _released} <- Workspaces.release_lease(scope, lease.id, proof) do
+          Hermitscale.Integrations.ExecutionAccess.revoke(scope, turn.id)
           with {:ok, _released} <- Workspaces.release_activity(scope, lease.id), do: {:ok, turn}
         end
       end
@@ -563,6 +442,8 @@ defmodule Hermitscale.Agents do
   defp interrupt_after_termination(turn, reason) do
     with %Session{} = session <- Repo.get(Session, turn.session_id),
          {:ok, _released} <- Workspaces.terminate_admitted(session.workspace_id, turn.lease_id) do
+      Hermitscale.Integrations.ExecutionAccess.revoke_turn(turn.id)
+
       transaction_and_broadcast(session.id, fn ->
         interrupt!(lock_session!(session.id), Repo.get!(Turn, turn.id), reason)
       end)
@@ -635,6 +516,19 @@ defmodule Hermitscale.Agents do
                  do: Map.put(attrs, :completed_at, DateTime.utc_now(:second)),
                  else: attrs
 
+             if outcome.status in [:succeeded, :failed, :interrupted, :cancelled] do
+               result =
+                 case Map.get(outcome, :result) do
+                   value when is_map(value) -> value
+                   _absent -> %{}
+                 end
+
+               case Hermitscale.Usage.record_worker_measurements(scope, turn.id, worker, result) do
+                 :ok -> :ok
+                 {:error, reason} -> Repo.rollback(reason)
+               end
+             end
+
              updated = current |> Changeset.change(attrs) |> Repo.update() |> unwrap!()
              provider_id = updated.provider_conversation_id
 
@@ -658,8 +552,24 @@ defmodule Hermitscale.Agents do
 
              updated
            end) do
+      if events != [] do
+        last = List.last(events)
+
+        Workspaces.worker_command(
+          scope,
+          session.workspace_id,
+          lease.id,
+          RemoteRuntime.envelope(updated, lease, "ack_events", %{
+            "epoch" => last["epoch"],
+            "cursor" => last["cursor"]
+          })
+        )
+      end
+
       if Turn.terminal?(updated) and Map.has_key?(outcome, :termination_evidence) do
         with {:ok, _} <- Workspaces.release_lease(scope, lease.id, outcome.termination_evidence) do
+          Hermitscale.Integrations.ExecutionAccess.revoke(scope, turn.id)
+
           with {:ok, _released} <- Workspaces.release_activity(scope, lease.id),
                do: {:ok, updated}
         end
@@ -669,31 +579,102 @@ defmodule Hermitscale.Agents do
     end
   end
 
-  defp validate_outcome(_scope, session, turn, %{status: :succeeded} = outcome) do
-    result = Map.get(outcome, :result, %{})
+  defp validate_outcome(scope, session, turn, %{status: status, result: result} = outcome)
+       when status in [:succeeded, :failed, :interrupted, :cancelled] and is_map(result) do
+    with {:ok, exports} <- export_workspace_files(scope, session, Map.get(result, "files", [])),
+         candidate = %{
+           "base_sha" => result["base_sha"],
+           "diff" => Map.get(result, "diff", ""),
+           "files" =>
+             Enum.map(Map.get(result, "files", []), &Map.take(&1, ["path", "digest"]))
+             |> Enum.sort_by(& &1["path"])
+         },
+         snapshot = Map.put(candidate, "exports", exports),
+         {:ok, snapshot_artifact} <-
+           Hermitscale.Artifacts.record(scope, %{
+             owner_type: "session",
+             owner_id: session.id,
+             kind: "patch_snapshot",
+             content_type: "application/json",
+             content: Jason.encode!(snapshot)
+           }),
+         {:ok, patch} <-
+           Hermitscale.Artifacts.record(scope, %{
+             owner_type: "session",
+             owner_id: session.id,
+             kind: "patch",
+             content_type: "text/x-diff",
+             content: candidate["diff"]
+           }) do
+      recorded =
+        result
+        |> Map.drop(["diff", "files"])
+        |> Map.merge(%{
+          "session_id" => session.id,
+          "workspace_id" => session.workspace_id,
+          "patch_artifact_id" => patch.id,
+          "patch_snapshot_artifact_id" => snapshot_artifact.id,
+          "candidate_digest" => Protocol.payload_digest(candidate),
+          "exports" => exports
+        })
 
-    case Hermitscale.Agents.Result.validate(result, turn.result_schema) do
-      :ok ->
-        {:ok, Map.put(outcome, :result, conversation_result(session, result))}
+      case if(status == :succeeded,
+             do: Hermitscale.Agents.Result.validate(result, turn.result_schema),
+             else: :ok
+           ) do
+        :ok ->
+          {:ok, %{outcome | result: recorded}}
 
-      {:error, reason} ->
-        {:ok,
-         outcome
-         |> Map.put(:status, :failed)
-         |> Map.put(:result, %{"outcome" => "invalid_result", "reason" => inspect(reason)})}
+        {:error, reason} ->
+          {:ok,
+           %{
+             outcome
+             | status: :failed,
+               result:
+                 Map.merge(recorded, %{"outcome" => "invalid_result", "reason" => inspect(reason)})
+           }}
+      end
     end
   end
 
-  defp validate_outcome(_scope, session, _turn, %{result: result} = outcome) when is_map(result),
-    do: {:ok, %{outcome | result: conversation_result(session, result)}}
+  defp validate_outcome(_scope, _session, _turn, %{status: :succeeded} = outcome) do
+    {:ok,
+     outcome
+     |> Map.put(:status, :failed)
+     |> Map.put(:result, %{"outcome" => "invalid_result", "reason" => "invalid_result"})}
+  end
 
   defp validate_outcome(_scope, _session, _turn, outcome), do: {:ok, outcome}
 
-  defp conversation_result(session, result) when is_map(result),
-    do: Map.merge(result, %{"session_id" => session.id, "workspace_id" => session.workspace_id})
+  defp export_workspace_files(scope, session, files)
+       when is_list(files) and length(files) <= 100 do
+    Enum.reduce_while(files, {:ok, []}, fn file, {:ok, recorded} ->
+      with %{"path" => path, "content" => encoded, "digest" => digest}
+           when is_binary(path) and is_binary(encoded) and is_binary(digest) <- file,
+           {:ok, content} <- Base.decode64(encoded),
+           true <- Hermitscale.Workspaces.Evidence.digest(content) == digest,
+           {:ok, artifact} <-
+             Hermitscale.Artifacts.record(scope, %{
+               owner_type: "session",
+               owner_id: session.id,
+               kind: "workspace_file",
+               content_type: "application/octet-stream",
+               content: content
+             }) do
+        {:cont,
+         {:ok,
+          recorded ++
+            [%{"path" => path, "artifact_id" => artifact.id, "digest" => artifact.digest}]}}
+      else
+        false -> {:halt, {:error, :artifact_digest_mismatch}}
+        :error -> {:halt, {:error, :invalid_export}}
+        {:error, _reason} = error -> {:halt, error}
+        _invalid -> {:halt, {:error, :invalid_export}}
+      end
+    end)
+  end
 
-  defp conversation_result(session, _result),
-    do: %{"session_id" => session.id, "workspace_id" => session.workspace_id}
+  defp export_workspace_files(_scope, _session, _files), do: {:error, :invalid_export}
 
   def answer_approval(scope, turn_id, decision) do
     with {:ok, scope} <- execution_scope(scope),
@@ -751,6 +732,59 @@ defmodule Hermitscale.Agents do
     end
   end
 
+  @doc false
+  def reject_ineligible_turn(id) do
+    with {:ok, id} <- uuid(id) do
+      case Repo.get(Turn, id) do
+        nil ->
+          {:error, :not_found}
+
+        turn ->
+          transaction_and_broadcast(turn.session_id, fn ->
+            session = lock_session!(turn.session_id)
+            turn = Repo.get!(Turn, id)
+
+            cond do
+              Turn.terminal?(turn) ->
+                turn
+
+              turn.status == :queued and is_nil(turn.dispatched_at) ->
+                interrupt!(session, turn, "execution_actor_ineligible")
+
+              turn.error == %{
+                "reason" => "execution_actor_ineligible",
+                "termination" => "unconfirmed"
+              } ->
+                turn
+
+              true ->
+                updated =
+                  turn
+                  |> Changeset.change(
+                    cancellation_requested_at: DateTime.utc_now(:second),
+                    error: %{
+                      "reason" => "execution_actor_ineligible",
+                      "termination" => "unconfirmed"
+                    }
+                  )
+                  |> Repo.update()
+                  |> unwrap!()
+
+                append_event!(
+                  session,
+                  updated,
+                  "turn.cancellation_requested",
+                  %{"reason" => "execution_actor_ineligible"},
+                  "revoked:" <> turn.id
+                )
+
+                updated
+            end
+          end)
+      end
+    end
+  end
+
   defp interrupt!(_session, %Turn{status: status} = turn, _reason)
        when status in [:succeeded, :failed, :interrupted, :cancelled],
        do: turn
@@ -793,6 +827,11 @@ defmodule Hermitscale.Agents do
     )
   end
 
+  @doc false
+  def pending_before?(scope, id) do
+    with {:ok, turn} <- get_turn(scope, id), do: {:ok, earlier_pending?(turn)}
+  end
+
   defp append_event!(session, turn, type, payload, source_key) do
     case Repo.get_by(Event, session_id: session.id, source_key: source_key) do
       %Event{turn_id: turn_id, type: ^type, payload: ^payload} when turn_id == turn.id -> session
@@ -819,7 +858,7 @@ defmodule Hermitscale.Agents do
   end
 
   @doc """
-  Commits a bounded worker batch under its admitted lease.
+  Commits a bounded worker batch under its admitted lease before any transport acknowledgement.
   Worker events are evidence only and cannot approve actions or settle a turn.
   """
   def record_worker_events(scope, turn_id, lease_id, events)
@@ -920,6 +959,9 @@ defmodule Hermitscale.Agents do
     from s in Session, where: s.org_id == ^org_id and s.initiator_user_id == ^user_id
   end
 
+  defp with_usage(scope, turn),
+    do: %{turn | usage_summary: Hermitscale.Usage.summary(scope, turn.id)}
+
   defp execution_scope(scope) do
     with :ok <- Authorization.authorize(scope, "agents:run") do
       scope
@@ -935,6 +977,7 @@ defmodule Hermitscale.Agents do
       :sha256,
       Jason.encode!([
         turn.instructions,
+        turn.budget_cents,
         turn.timeout_seconds,
         turn.result_schema,
         turn.verification_commands

@@ -12,17 +12,17 @@ defmodule Hermitscale.WorkspaceWorker.HarnessTest do
     config = [
       cwd: "/workspace",
       acp_path: "/opt/bin/codex-acp",
-      env: %{"PATH" => "/opt/bin", "OPENAI_API_KEY" => "fixture-key"},
+      env: %{"PATH" => "/opt/bin", "HERMITSCALE_MODEL" => "fixture-model"},
       session_api: FixtureSession,
-      process_api: FixtureSession
+      verify_process_groups: false
     ]
 
     Process.put(:fixture_initializing, true)
     assert {:ok, handle} = Harness.start(command, config)
     assert_receive {:fixture_request, request}
-    refute Map.has_key?(request, :model)
+    assert request.model == "fixture-model"
     assert request.env_mode == :replace
-    assert request.env == %{"PATH" => "/opt/bin", "OPENAI_API_KEY" => "fixture-key"}
+    assert request.env == %{"PATH" => "/opt/bin", "HERMITSCALE_MODEL" => "fixture-model"}
     assert request.turn_runtime_timeout_ms > 0
     assert request.approval_timeout_ms <= 300_000
     assert_receive {:fixture_prompt, "Inspect the retained workspace"}
@@ -48,9 +48,9 @@ defmodule Hermitscale.WorkspaceWorker.HarnessTest do
     config = [
       cwd: "/workspace",
       acp_path: "/opt/bin/codex-acp",
-      env: %{"OPENAI_API_KEY" => "fixture-key"},
+      env: %{"HERMITSCALE_MODEL" => "fixture-model"},
       session_api: FixtureSession,
-      process_api: FixtureSession,
+      verify_process_groups: false,
       provider_session_file: path
     ]
 
