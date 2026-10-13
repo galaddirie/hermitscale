@@ -135,6 +135,10 @@ defmodule HermitscaleWeb.UserAuth do
   def on_mount(:mount_current_scope, _params, session, socket),
     do: {:cont, mount_current_scope(socket, session)}
 
+  defp refresh_return_to(params, %{view: HermitscaleWeb.ReviewsLive}) do
+    uuid_path(params, "/reviews")
+  end
+
   defp refresh_return_to(params, %{view: HermitscaleWeb.AppLive, assigns: assigns}) do
     base = uuid_path(params, "/apps")
 

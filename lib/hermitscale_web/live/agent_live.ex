@@ -2,7 +2,7 @@ defmodule HermitscaleWeb.AgentLive do
   @moduledoc "Authenticated conversations with durable, streamed turn and event history."
   use HermitscaleWeb, :live_view
 
-  alias Hermitscale.{Agents, Authorization}
+  alias Hermitscale.{Agents, Authorization, Reviews}
 
   @history_page_size 20
 
@@ -155,9 +155,9 @@ defmodule HermitscaleWeb.AgentLive do
   def handle_event("archive_session", _params, socket), do: set_session_status(socket, :archived)
 
   def handle_event("approve_turn", %{"id" => id}, socket),
-    do: answer_approval(socket, id, :approved)
+    do: answer_review(socket, id, :approved)
 
-  def handle_event("deny_turn", %{"id" => id}, socket), do: answer_approval(socket, id, :rejected)
+  def handle_event("deny_turn", %{"id" => id}, socket), do: answer_review(socket, id, :rejected)
   def handle_event("reopen_session", _params, socket), do: set_session_status(socket, :open)
 
   def handle_event("prepare_publication", %{"publication" => params}, socket) do
@@ -176,10 +176,18 @@ defmodule HermitscaleWeb.AgentLive do
            "base_sha" => result["base_sha"],
            "manifest" => result["manifest"],
            "candidate_digest" => result["candidate_digest"],
-           "patch_snapshot_artifact_id" => result["patch_snapshot_artifact_id"]
+           "patch_snapshot_artifact_id" => result["patch_snapshot_artifact_id"],
+           "policy_revision" => 1
          },
-         {:ok, digest} <- Agents.Publications.target_digest(scope, turn.session_id, target) do
-      {:noreply, assign(socket, prepared_publication: %{target: target, digest: digest})}
+         {:ok, digest} <- Agents.Publications.target_digest(scope, turn.session_id, target),
+         {:ok, review} <-
+           Reviews.request(scope, %{
+             action: "agents.publish_branch",
+             target_digest: digest,
+             target: target,
+             operation_key: "publish-review:" <> target["operation_key"]
+           }) do
+      {:noreply, assign(socket, prepared_publication: %{target: target, review: review})}
     else
       false ->
         {:noreply, assign(socket, :publication_form, form)}
@@ -191,35 +199,34 @@ defmodule HermitscaleWeb.AgentLive do
   end
 
   def handle_event(
-        "publish_branch",
+        "approve_publication",
         _params,
         %{assigns: %{prepared_publication: nil}} = socket
       ),
-      do: {:noreply, put_flash(socket, :error, "Prepare the branch publication first.")}
+      do: {:noreply, put_flash(socket, :error, "Prepare a publication review first.")}
 
-  def handle_event("publish_branch", _params, socket) do
+  def handle_event("approve_publication", _params, socket) do
     prepared = socket.assigns.prepared_publication
     scope = socket.assigns.current_scope
 
     with :ok <- Authorization.authorize(scope, "agents:publish"),
-         {:ok, digest} <-
-           Agents.Publications.target_digest(
+         {:ok, current_review} <- Reviews.get(scope, prepared.review.id),
+         {:ok, review} <-
+           if(current_review.status == :approved,
+             do: {:ok, current_review},
+             else: Reviews.decide(scope, current_review.id, :approved)
+           ),
+         {:ok, publication} <-
+           Agents.publish_branch(
              scope,
              socket.assigns.conversation.id,
-             prepared.target
-           ),
-         true <- digest == prepared.digest,
-         {:ok, publication} <-
-           Agents.publish_branch(scope, socket.assigns.conversation.id, prepared.target) do
+             Map.put(prepared.target, "review_id", review.id)
+           ) do
       {:noreply,
        socket
        |> assign(prepared_publication: nil, publication: publication)
        |> put_flash(:info, "Branch publication queued. Its pushed commit will be verified.")}
     else
-      false ->
-        {:noreply,
-         put_flash(socket, :error, "The workspace changed. Prepare the publication again.")}
-
       {:error, reason} ->
         {:noreply,
          put_flash(socket, :error, "Publication could not be admitted: " <> inspect(reason))}
@@ -306,8 +313,8 @@ defmodule HermitscaleWeb.AgentLive do
     end
   end
 
-  defp answer_approval(socket, id, decision) do
-    case Agents.answer_approval(socket.assigns.current_scope, id, decision) do
+  defp answer_review(socket, id, decision) do
+    case Agents.answer_review(socket.assigns.current_scope, id, decision) do
       {:ok, turn} -> {:noreply, socket |> stream_insert(:turns, turn) |> refresh_history()}
       {:error, reason} -> {:noreply, put_flash(socket, :error, operation_error(reason))}
     end
@@ -349,9 +356,29 @@ defmodule HermitscaleWeb.AgentLive do
             "turn_id" => completed.id,
             "operation_key" => Ecto.UUID.generate(),
             "branch" => "hermitscale/" <> String.slice(completed.id, 0, 8),
-            "message" => "Apply coding changes"
+            "message" => "Apply reviewed coding changes"
           }),
         else: publication_form(%{})
+
+    prepared =
+      case Reviews.list(scope) do
+        reviews when is_list(reviews) ->
+          case Enum.find(
+                 reviews,
+                 &(&1.action == "agents.publish_branch" and &1.target["session_id"] == id and
+                     not Enum.any?(publications, fn publication ->
+                       publication.specification["review_id"] == &1.id
+                     end) and
+                     &1.status in [:requested, :approved] and
+                     DateTime.compare(&1.expires_at, DateTime.utc_now(:second)) == :gt)
+               ) do
+            nil -> nil
+            review -> %{target: review.target, review: review}
+          end
+
+        {:error, _reason} ->
+          nil
+      end
 
     reset? = Keyword.get(opts, :reset, false)
 
@@ -383,6 +410,7 @@ defmodule HermitscaleWeb.AgentLive do
     |> assign(:conversation, conversation)
     |> assign(:publication_form, form)
     |> assign(:publication, List.first(publications))
+    |> assign(:prepared_publication, prepared)
     |> assign(
       :turn_oldest_sequence,
       socket.assigns.turn_oldest_sequence || oldest_sequence(turns, :admission_sequence, nil)
@@ -436,7 +464,7 @@ defmodule HermitscaleWeb.AgentLive do
 
   defp status_label(:queued), do: "Queued"
   defp status_label(:succeeded), do: "Completed"
-  defp status_label(:waiting_for_approval), do: "Waiting for permission"
+  defp status_label(:waiting_for_approval), do: "Waiting for review"
 
   defp status_label(status),
     do: status |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
@@ -680,14 +708,14 @@ defmodule HermitscaleWeb.AgentLive do
                       </div>
                     </dl>
                     <div
-                      :if={turn.approval_id && turn.status == :waiting_for_approval}
-                      id={"approval-#{turn.id}"}
+                      :if={turn.review_id && turn.status == :waiting_for_approval}
+                      id={"review-#{turn.id}"}
                       class="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950"
                     >
-                      <p class="font-semibold">Permission requested</p>
+                      <p class="font-semibold">Review requested</p>
                       <pre class="mt-2 overflow-auto whitespace-pre-wrap text-xs">{Jason.encode!(Map.get(turn.runtime_state,"approval_request",%{}),pretty: true)}</pre>
                       <div
-                        :if={@can_run?}
+                        :if={"reviews:decide" in @current_scope.membership.permissions}
                         class="mt-3 flex gap-2"
                       >
                         <button
@@ -829,7 +857,7 @@ defmodule HermitscaleWeb.AgentLive do
                   }
                   class="rounded-2xl border border-base-300 p-5"
                 >
-                  <h2 class="text-sm font-semibold">Publish changes</h2>
+                  <h2 class="text-sm font-semibold">Publish reviewed changes</h2>
                   <.form
                     for={@publication_form}
                     id="publication-form"
@@ -844,25 +872,36 @@ defmodule HermitscaleWeb.AgentLive do
                       id="prepare-publication"
                       class="btn btn-outline btn-sm w-full"
                       phx-disable-with="Preparing…"
-                    >Prepare publication</button>
+                    >Review publication</button>
                   </.form>
                 </section>
                 <section
                   :if={@prepared_publication}
-                  id="publication-confirmation"
+                  id="publication-review"
                   class="rounded-2xl border border-amber-300 p-5"
                 >
-                  <h2 class="font-semibold">Branch publication</h2>
+                  <h2 class="font-semibold">Branch review</h2>
                   <p class="mt-2 break-all text-sm">{@prepared_publication.target["branch"]}</p>
                   <pre class="mt-3 overflow-auto text-xs">{Jason.encode!(@prepared_publication.target, pretty: true)}</pre>
+                  <.link
+                    navigate={~p"/reviews/#{@prepared_publication.review.id}"}
+                    class="mt-3 inline-block text-sm text-primary"
+                  >Open review & changes</.link>
                   <button
-                    :if={@can_publish?}
-                    id="publish-branch"
+                    :if={
+                      @can_publish? and
+                        (@prepared_publication.review.status == :approved or
+                           "reviews:decide" in @current_scope.membership.permissions)
+                    }
+                    id="approve-publication"
                     type="button"
-                    phx-click="publish_branch"
-                    phx-disable-with="Publishing…"
+                    phx-click="approve_publication"
+                    phx-disable-with="Admitting…"
                     class="btn btn-primary btn-sm mt-4 w-full"
-                  >Publish branch</button>
+                  >{if(@prepared_publication.review.status == :approved,
+                    do: "Publish approved branch",
+                    else: "Approve & publish branch"
+                  )}</button>
                 </section>
                 <section
                   :if={@publication}

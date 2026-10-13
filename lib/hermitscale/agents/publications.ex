@@ -1,12 +1,12 @@
 defmodule Hermitscale.Agents.Publications do
   @moduledoc "Manifest-bound branch publication with remote commit reconciliation."
   import Ecto.Query
-  alias Hermitscale.{Agents, Authorization, Repo, Workspaces}
+  alias Hermitscale.{Agents, Authorization, Repo, Workspaces, Reviews}
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.Agents.{Protocol, Publication, PublicationWorker}
 
   @deadline_seconds 300
-  @known_aborts ~w(publication_key_conflict source_revision_changed branch_conflict candidate_changed manifest_not_in_candidate publication_failed publication_evidence_mismatch invalid_publication)a
+  @known_aborts ~w(publication_key_conflict source_revision_changed branch_conflict candidate_changed unreviewed_manifest publication_failed review_expired review_mismatch_or_not_approved publication_evidence_mismatch invalid_publication)a
   @retryable ~w(unavailable rate_limited invalid_response lease_conflict writer_active)a
 
   def request(scope, session_id, attrs) do
@@ -24,59 +24,68 @@ defmodule Hermitscale.Agents.Publications do
           with :ok <- same_admission(existing, session, scope, digest) do
             if terminal?(existing),
               do: {:ok, existing},
-              else: admit_publication(scope, session, spec, digest)
+              else: admit_reviewed(scope, session, spec, digest)
           end
 
         nil ->
-          admit_publication(scope, session, spec, digest)
+          admit_reviewed(scope, session, spec, digest)
       end
     end
   end
 
-  defp admit_publication(scope, session, spec, digest) do
-    result =
-      Repo.transaction(fn ->
-        cs =
-          Publication.changeset(
-            %Publication{
-              org_id: session.org_id,
-              session_id: session.id,
-              execution_actor_user_id: scope.user.id
-            },
-            %{operation_key: spec["operation_key"], payload_digest: digest, specification: spec}
-          )
-
-        record =
-          case Repo.insert(cs,
-                 on_conflict: :nothing,
-                 conflict_target: [:org_id, :operation_key]
-               ) do
-            {:ok, _} ->
-              Repo.get_by!(Publication,
+  defp admit_reviewed(scope, session, spec, digest) do
+    with :ok <-
+           Reviews.authorize_decision(
+             scope,
+             spec["review_id"],
+             "agents.publish_branch",
+             digest,
+             Map.get(spec, "policy_revision", 1)
+           ) do
+      result =
+        Repo.transaction(fn ->
+          cs =
+            Publication.changeset(
+              %Publication{
                 org_id: session.org_id,
-                operation_key: spec["operation_key"]
-              )
+                session_id: session.id,
+                execution_actor_user_id: scope.user.id
+              },
+              %{operation_key: spec["operation_key"], payload_digest: digest, specification: spec}
+            )
 
-            {:error, reason} ->
-              Repo.rollback(reason)
-          end
+          record =
+            case Repo.insert(cs,
+                   on_conflict: :nothing,
+                   conflict_target: [:org_id, :operation_key]
+                 ) do
+              {:ok, _} ->
+                Repo.get_by!(Publication,
+                  org_id: session.org_id,
+                  operation_key: spec["operation_key"]
+                )
 
-        case same_admission(record, session, scope, digest) do
-          :ok -> :ok
-          {:error, reason} -> Repo.rollback(reason)
-        end
+              {:error, reason} ->
+                Repo.rollback(reason)
+            end
 
-        if terminal?(record) do
-          record
-        else
-          case Oban.insert(PublicationWorker.new(%{publication_id: record.id})) do
-            {:ok, _} -> record
+          case same_admission(record, session, scope, digest) do
+            :ok -> :ok
             {:error, reason} -> Repo.rollback(reason)
           end
-        end
-      end)
 
-    notify_result(result)
+          if terminal?(record) do
+            record
+          else
+            case Oban.insert(PublicationWorker.new(%{publication_id: record.id})) do
+              {:ok, _} -> record
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end
+        end)
+
+      notify_result(result)
+    end
   end
 
   defp same_admission(record, session, scope, digest) do
@@ -103,9 +112,10 @@ defmodule Hermitscale.Agents.Publications do
       target =
         Map.take(
           spec,
-          ~w(branch base_sha manifest message patch_snapshot_artifact_id candidate_digest)
+          ~w(branch base_sha manifest message patch_snapshot_artifact_id candidate_digest policy_revision)
         )
         |> Map.put("session_id", session.id)
+        |> Map.put_new("policy_revision", 1)
 
       {:ok, Protocol.payload_digest(target)}
     else
@@ -167,12 +177,7 @@ defmodule Hermitscale.Agents.Publications do
   end
 
   def reconcile(scope, id) do
-    with :ok <- Authorization.authorize(scope, "agents:publish"),
-         {:ok, scope} <-
-           Authorization.execution_scope(
-             Scope.execution_context(scope, ["agents:read", "agents:publish"])
-           ),
-         {:ok, record} <- get(scope, id),
+    with {:ok, record} <- get(scope, id),
          {:ok, session} <- Agents.get_session(scope, record.session_id) do
       cond do
         terminal?(record) ->
@@ -197,7 +202,17 @@ defmodule Hermitscale.Agents.Publications do
   end
 
   defp reconcile_active(scope, session, record) do
-    with {:ok, credential} <- credential(scope, session),
+    spec = record.specification
+
+    with :ok <-
+           Reviews.authorize_decision(
+             scope,
+             spec["review_id"],
+             "agents.publish_branch",
+             record.payload_digest,
+             Map.get(spec, "policy_revision", 1)
+           ),
+         {:ok, credential} <- credential(scope, session),
          {:ok, lease} <- lease(scope, session, record),
          {:ok, current} <- store(record, status: :running, lease_id: lease.id) do
       if terminal?(current) do
@@ -453,8 +468,8 @@ defmodule Hermitscale.Agents.Publications do
 
   defp notify_result({:error, _reason} = error), do: error
 
-  defp validate(%{"operation_key" => key} = spec)
-       when is_binary(key) and byte_size(key) in 8..128,
+  defp validate(%{"operation_key" => key, "review_id" => review} = spec)
+       when is_binary(key) and byte_size(key) in 8..128 and is_binary(review),
        do: validate_proposal(spec)
 
   defp validate(_spec), do: {:error, :invalid_publication}

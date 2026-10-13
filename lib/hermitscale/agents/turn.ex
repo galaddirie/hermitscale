@@ -35,9 +35,8 @@ defmodule Hermitscale.Agents.Turn do
     field :worker_epoch, :string
     field :worker_cursor, :integer, default: 0
     field :provider_conversation_id, :string
-    field :approval_id, :binary_id
+    field :review_id, :binary_id
     field :result_schema, :map, default: %{}
-    field :verification_commands, {:array, :string}, default: []
     field :runtime_state, :map, default: %{}
     field :usage_summary, :map, virtual: true, default: %{}
     timestamps(type: :utc_datetime)
@@ -52,8 +51,7 @@ defmodule Hermitscale.Agents.Turn do
       :operation_key,
       :budget_cents,
       :timeout_seconds,
-      :result_schema,
-      :verification_commands
+      :result_schema
     ])
     |> update_change(:instructions, &String.trim/1)
     |> validate_required([
@@ -77,25 +75,6 @@ defmodule Hermitscale.Agents.Turn do
         {:error, _reason} -> [result_schema: "is not a supported valid JSON schema"]
       end
     end)
-    |> validate_verification_commands()
     |> foreign_key_constraint(:session_id)
-  end
-
-  defp validate_verification_commands(changeset) do
-    case get_field(changeset, :verification_commands) do
-      commands when is_list(commands) ->
-        if length(commands) <= 10 and Enum.all?(commands, &(byte_size(&1) in 1..4096)) do
-          changeset
-        else
-          add_error(
-            changeset,
-            :verification_commands,
-            "must contain at most 10 commands of 1 to 4096 bytes"
-          )
-        end
-
-      nil ->
-        add_error(changeset, :verification_commands, "must be a list of commands")
-    end
   end
 end

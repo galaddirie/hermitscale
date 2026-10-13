@@ -11,7 +11,8 @@ defmodule Hermitscale.Workflows.Nodes.Agents.PublishBranch.V1 do
       :manifest,
       :message,
       :candidate_digest,
-      :patch_snapshot_artifact_id
+      :patch_snapshot_artifact_id,
+      :review_id
     ],
     params: [
       session_id: [type: :string, required: true],
@@ -24,6 +25,8 @@ defmodule Hermitscale.Workflows.Nodes.Agents.PublishBranch.V1 do
         type: :string,
         required: true,
         doc: "ID of the host-verified patch_snapshot artifact."
-      ]
+      ],
+      review_id: [type: :string],
+      policy_revision: [type: :pos_integer, default: 1]
     ]
 end

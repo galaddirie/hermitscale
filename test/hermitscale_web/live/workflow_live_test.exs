@@ -71,35 +71,6 @@ defmodule HermitscaleWeb.WorkflowLiveTest do
     refute has_element?(editor, "#workflow-edges path")
   end
 
-  test "a saved removed action can be inspected and deleted before saving", %{
-    conn: conn,
-    scope: scope
-  } do
-    graph = workflow_fixture(scope)
-
-    removed = %{
-      "id" => "retired",
-      "type" => "support.investigate",
-      "version" => 1,
-      "params" => %{}
-    }
-
-    definition = Map.update!(graph.definition, "nodes", &(&1 ++ [removed]))
-    graph |> Ecto.Changeset.change(definition: definition) |> Hermitscale.Repo.update!()
-
-    {:ok, editor, _html} = live(conn, ~p"/workflows/#{graph.id}")
-    editor |> element("#nodes-retired") |> render_click()
-    assert has_element?(editor, "#workflow-node-config-form")
-    editor |> element("#delete-workflow-node") |> render_click()
-    refute has_element?(editor, "#nodes-retired")
-
-    editor
-    |> form("#save-workflow-form", graph: %{name: graph.name, status: "draft"})
-    |> render_submit()
-
-    assert Workflows.get_graph!(scope, graph.id).definition == graph.definition
-  end
-
   test "invalid parameter JSON and cycles remain visible and cannot overwrite a saved definition",
        %{conn: conn, scope: scope} do
     graph = workflow_fixture(scope)

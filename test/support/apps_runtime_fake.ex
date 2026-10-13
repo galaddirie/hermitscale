@@ -135,7 +135,7 @@ defmodule Hermitscale.AppsRuntimeFake do
 
   defp recipe(workspace, "backup", operation, _revision, _digest) do
     path = "incoming/" <> operation <> ".backup.tar"
-    content = Jason.encode!(%{"records" => data(workspace.id)})
+    content = Jason.encode!(%{"notes" => data(workspace.id)})
     Agent.update(__MODULE__, &put_in(&1, [:files, {workspace.id, path}], content))
 
     output(%{
@@ -154,8 +154,8 @@ defmodule Hermitscale.AppsRuntimeFake do
         &Map.fetch!(&1.files, {workspace.id, "incoming/" <> operation <> ".backup.tar"})
       )
 
-    %{"records" => records} = Jason.decode!(content)
-    Agent.update(__MODULE__, &put_in(&1, [:data, workspace.id], records))
+    %{"notes" => notes} = Jason.decode!(content)
+    Agent.update(__MODULE__, &put_in(&1, [:data, workspace.id], notes))
     output(%{"restored" => operation, "digest" => digest, "integrity" => "ok"})
   end
 

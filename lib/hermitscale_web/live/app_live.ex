@@ -1,6 +1,6 @@
 defmodule HermitscaleWeb.AppLive do
   use HermitscaleWeb, :live_view
-  alias Hermitscale.{Agents, Apps, Authorization}
+  alias Hermitscale.{Agents, Apps, Authorization, Reviews}
   alias Ecto.Changeset
 
   @impl true
@@ -25,6 +25,7 @@ defmodule HermitscaleWeb.AppLive do
      |> assign(:github_accounts, [])
      |> assign(:can_write?, Authorization.authorize(scope, "apps:write") == :ok)
      |> assign(:can_deploy?, Authorization.authorize(scope, "apps:deploy") == :ok)
+     |> assign(:can_decide?, Authorization.authorize(scope, "reviews:decide") == :ok)
      |> assign(
        :new_app_form,
        to_form(Apps.change_app(scope, %{operation_key: Ecto.UUID.generate()}))
@@ -228,8 +229,15 @@ defmodule HermitscaleWeb.AppLive do
            expected_active_deployment: environment.active_deployment_id,
            operation_key: Ecto.UUID.generate()
          },
-         {:ok, _target} <- Apps.deployment_target_digest(scope, app.id, input) do
-      prepared = %{input: input, checks: built.checks, action: :deploy}
+         {:ok, target} <- Apps.deployment_target_digest(scope, app.id, input),
+         {:ok, review} <-
+           Reviews.request(scope, %{
+             action: "apps.deploy",
+             target_digest: target,
+             target: Map.drop(input, [:operation_key]),
+             operation_key: "deploy-review:" <> input.operation_key
+           }) do
+      prepared = %{input: input, review: review, checks: built.checks, action: :deploy}
 
       {:noreply,
        assign(socket,
@@ -242,16 +250,17 @@ defmodule HermitscaleWeb.AppLive do
   end
 
   def handle_event(
-        "confirm_action",
+        "approve_deployment",
         _params,
         %{assigns: %{prepared: %{action: :publish} = prepared}} = socket
       ) do
     scope = socket.assigns.current_scope
 
-    with {:ok, _environment} <-
+    with {:ok, review} <- approve_review(scope, prepared.review),
+         {:ok, _environment} <-
            Apps.publish_environment(scope, prepared.input.environment_id, %{
              public: prepared.input.public,
-             expected_active_deployment: prepared.input.expected_active_deployment
+             review_id: review.id
            }) do
       {:noreply,
        socket
@@ -264,15 +273,16 @@ defmodule HermitscaleWeb.AppLive do
   end
 
   def handle_event(
-        "confirm_action",
+        "approve_deployment",
         _params,
         %{assigns: %{prepared: %{action: :restore} = prepared}} = socket
       ) do
     scope = socket.assigns.current_scope
 
-    with {:ok, recovery} <-
+    with {:ok, review} <- approve_review(scope, prepared.review),
+         {:ok, recovery} <-
            Apps.restore_data(scope, prepared.input.environment_id, prepared.input.backup_id, %{
-             expected_active_deployment: prepared.input.expected_active_deployment,
+             review_id: review.id,
              operation_key: prepared.input.operation_key
            }) do
       {:noreply,
@@ -284,19 +294,16 @@ defmodule HermitscaleWeb.AppLive do
     end
   end
 
-  def handle_event(
-        "confirm_action",
-        _params,
-        %{assigns: %{prepared: %{action: action} = prepared}} = socket
-      )
-      when action in [:deploy, :rollback] do
+  def handle_event("approve_deployment", _params, socket) do
+    prepared = socket.assigns.prepared
     scope = socket.assigns.current_scope
 
-    with {:ok, deployment} <-
+    with {:ok, review} <- approve_review(scope, prepared.review),
+         {:ok, deployment} <-
            Apps.request_deployment(
              scope,
              socket.assigns.app.id,
-             prepared.input
+             Map.put(prepared.input, :review_id, review.id)
            ) do
       {:noreply,
        socket
@@ -308,15 +315,24 @@ defmodule HermitscaleWeb.AppLive do
     end
   end
 
-  def handle_event("confirm_action", _params, socket),
-    do: {:noreply, put_flash(socket, :error, "Prepare an action before confirming it.")}
-
   def handle_event("prepare_publication", _params, socket) do
     scope = socket.assigns.current_scope
     environment = socket.assigns.environment
     public = not environment.public
 
-    with {:ok, deployment} <- Apps.get_deployment(scope, environment.active_deployment_id) do
+    with {:ok, deployment} <- Apps.get_deployment(scope, environment.active_deployment_id),
+         {:ok, target} <- Apps.publication_target_digest(scope, environment.id, public),
+         {:ok, review} <-
+           Reviews.request(scope, %{
+             action: "apps.publish",
+             target_digest: target,
+             target: %{
+               environment_id: environment.id,
+               public: public,
+               active_deployment_id: environment.active_deployment_id
+             },
+             operation_key: "app-access:" <> Ecto.UUID.generate()
+           }) do
       input = %{
         environment_id: environment.id,
         public: public,
@@ -329,6 +345,7 @@ defmodule HermitscaleWeb.AppLive do
        assign(socket,
          prepared: %{
            input: input,
+           review: review,
            checks: [
              if(public,
                do: "Anyone with the published URL can access the app",
@@ -348,8 +365,20 @@ defmodule HermitscaleWeb.AppLive do
     environment = socket.assigns.environment
 
     with {:ok, backup} <- Apps.get_backup(scope, attrs["backup_id"]),
-         {:ok, _target} <- Apps.restore_target_digest(scope, environment.id, backup.id),
-         {:ok, deployment} <- Apps.get_deployment(scope, environment.active_deployment_id) do
+         {:ok, target} <- Apps.restore_target_digest(scope, environment.id, backup.id),
+         {:ok, deployment} <- Apps.get_deployment(scope, environment.active_deployment_id),
+         {:ok, review} <-
+           Reviews.request(scope, %{
+             action: "apps.restore_data",
+             target_digest: target,
+             target: %{
+               environment_id: environment.id,
+               backup_id: backup.id,
+               backup_digest: backup.digest,
+               active_deployment_id: environment.active_deployment_id
+             },
+             operation_key: "data-recovery:" <> Ecto.UUID.generate()
+           }) do
       input = %{
         environment_id: environment.id,
         backup_id: backup.id,
@@ -363,6 +392,7 @@ defmodule HermitscaleWeb.AppLive do
        assign(socket,
          prepared: %{
            input: input,
+           review: review,
            checks: [
              "Backup integrity and independent restoration verified",
              "Replaces current database and uploads with this backup"
@@ -392,11 +422,19 @@ defmodule HermitscaleWeb.AppLive do
       operation_key: Ecto.UUID.generate()
     }
 
-    with {:ok, _target} <- Apps.deployment_target_digest(scope, socket.assigns.app.id, input) do
+    with {:ok, target} <- Apps.deployment_target_digest(scope, socket.assigns.app.id, input),
+         {:ok, review} <-
+           Reviews.request(scope, %{
+             action: "apps.deploy",
+             target_digest: target,
+             target: Map.drop(input, [:operation_key]),
+             operation_key: "rollback-review:" <> input.operation_key
+           }) do
       {:noreply,
        assign(socket,
          prepared: %{
            input: input,
+           review: review,
            checks: ["Uses this recorded code artifact", "Preserves current customer data"],
            action: :rollback
          }
@@ -527,6 +565,8 @@ defmodule HermitscaleWeb.AppLive do
       |> stream(:logs, Apps.read_logs(scope, app.id), reset: true)
       |> stream(:workflows, Apps.list_workflows(scope, app.id), reset: true)
 
+    socket = restore_pending_review(socket)
+
     case {socket.assigns.conversation, builds} do
       {nil, [%{session_id: id} | _]} ->
         {:ok, conversation} = Agents.get_session(scope, id)
@@ -539,6 +579,78 @@ defmodule HermitscaleWeb.AppLive do
         socket
     end
   end
+
+  defp restore_pending_review(%{assigns: %{prepared: prepared}} = socket)
+       when not is_nil(prepared),
+       do: socket
+
+  defp restore_pending_review(socket) do
+    scope = socket.assigns.current_scope
+    environment = socket.assigns.environment
+    deployments = Apps.list_deployments(scope, socket.assigns.app.id)
+
+    review =
+      Reviews.list(scope)
+      |> Enum.find(fn review ->
+        review.action == "apps.deploy" and review.requested_by_user_id == scope.user.id and
+          review.status in [:requested, :approved] and
+          DateTime.compare(review.expires_at, DateTime.utc_now()) == :gt and
+          review.target["environment_id"] == environment.id and
+          not Enum.any?(deployments, &(&1.review_id == review.id))
+      end)
+
+    case review do
+      nil ->
+        socket
+
+      review ->
+        keys = [
+          :environment_id,
+          :session_id,
+          :source_commit,
+          :artifact_id,
+          :artifact_digest,
+          :configuration_digest,
+          :expected_active_deployment,
+          :rollback_of_id
+        ]
+
+        input = Map.new(keys, &{&1, Map.get(review.target, Atom.to_string(&1))})
+
+        operation_key =
+          review.operation_key
+          |> String.replace_prefix("deploy-review:", "")
+          |> String.replace_prefix("rollback-review:", "")
+
+        input = Map.put(input, :operation_key, operation_key)
+
+        case Apps.deployment_target_digest(scope, socket.assigns.app.id, input) do
+          {:ok, target} when target == review.target_digest ->
+            action = if input.rollback_of_id, do: :rollback, else: :deploy
+
+            assign(socket, :prepared, %{
+              input: input,
+              review: review,
+              checks: [
+                "Frozen artifact retained",
+                "Approval binds this source, configuration and prior release"
+              ],
+              action: action
+            })
+
+          {:ok, _changed} ->
+            socket
+
+          {:error, _changed_or_unavailable} ->
+            socket
+        end
+    end
+  end
+
+  defp approve_review(_scope, %{status: :approved} = review), do: {:ok, review}
+
+  defp approve_review(scope, %{status: :requested} = review),
+    do: Reviews.decide(scope, review.id, :approved)
 
   defp load_conversation(socket) do
     conversation = socket.assigns.conversation
@@ -611,10 +723,10 @@ defmodule HermitscaleWeb.AppLive do
     |> to_form(as: :recovery)
   end
 
-  defp action_label(:deploy), do: "deployment"
-  defp action_label(:rollback), do: "code rollback"
-  defp action_label(:publish), do: "access change"
-  defp action_label(:restore), do: "data restoration"
+  defp review_label(:deploy), do: "deployment"
+  defp review_label(:rollback), do: "code rollback"
+  defp review_label(:publish), do: "access change"
+  defp review_label(:restore), do: "data restoration"
   defp failure(socket, reason), do: put_flash(socket, :error, message(reason))
 
   defp message(:workspace_busy),
@@ -686,7 +798,7 @@ defmodule HermitscaleWeb.AppLive do
               /><.input
                 field={@new_app_form[:slug]}
                 label="URL name"
-                placeholder="team-app"
+                placeholder="team-notes"
                 required
                 maxlength="80"
               /><.input
@@ -972,7 +1084,7 @@ defmodule HermitscaleWeb.AppLive do
                     id="rollback-app-code"
                     phx-click="prepare_rollback"
                     class="btn btn-outline btn-sm mt-6"
-                  >Prepare code rollback</button>
+                  >Review code rollback</button>
                 </section>
               <% end %>
               <div class="grid gap-8 lg:grid-cols-[1fr_340px]">
@@ -1107,13 +1219,10 @@ defmodule HermitscaleWeb.AppLive do
                     class="mt-4 block break-all text-xs text-primary"
                   >{@public_url}</.link><button
                     :if={@can_deploy? and @environment.active_deployment_id}
-                    id="prepare-app-public-access"
+                    id="review-app-public-access"
                     phx-click="prepare_publication"
                     class="btn btn-ghost btn-sm mt-4 w-full"
-                  >{if(@environment.public,
-                    do: "Change to private access",
-                    else: "Change to public access"
-                  )}</button><.form
+                  >{if(@environment.public, do: "Review private access", else: "Review public access")}</button><.form
                     :if={@can_deploy? and @backup_options != []}
                     for={@recovery_form}
                     id="app-data-recovery-form"
@@ -1127,8 +1236,8 @@ defmodule HermitscaleWeb.AppLive do
                       options={@backup_options}
                       required
                     /><p class="mb-4 text-xs leading-6 text-base-content/55">
-                      Restoring a backup replaces the current database and uploads. Confirm the exact backup before restoring.
-                    </p><button id="prepare-app-data-recovery" class="btn btn-outline btn-sm w-full">Prepare restoration</button>
+                      Restoring a backup replaces the current database and uploads. Review the exact backup before approving.
+                    </p><button id="review-app-data-recovery" class="btn btn-outline btn-sm w-full">Review restoration</button>
                   </.form><p
                     :if={@recovery}
                     id="app-data-recovery-status"
@@ -1137,17 +1246,17 @@ defmodule HermitscaleWeb.AppLive do
                   >
                     Recovery: {@recovery.status}
                   </p><p class="mt-4 text-xs leading-6 text-base-content/55">
-                    Reading this page keeps environments asleep. Data restoration requires an explicit request.
+                    Reading this page keeps environments asleep. Data restoration requires its own explicit approval.
                   </p>
                 </aside>
               </div>
             <% end %>
             <section
               :if={@prepared}
-              id="deployment-confirmation"
+              id="deployment-review"
               class="mt-8 rounded-2xl border border-primary/30 bg-primary/5 p-6"
             >
-              <h2 class="text-xl font-semibold">Confirm {action_label(@prepared.action)}</h2><p class="mt-3 text-sm leading-7">
+              <h2 class="text-xl font-semibold">Review {review_label(@prepared.action)}</h2><p class="mt-3 text-sm leading-7">
                 Source
                 <span class="font-mono">{String.slice(@prepared.input.source_commit, 0, 8)}</span>
                 · production · current release {String.slice(
@@ -1164,14 +1273,19 @@ defmodule HermitscaleWeb.AppLive do
               </ul><p :if={@prepared.action in [:deploy, :rollback]} class="mt-4 text-sm">
                 Customer data remains in production. The release performs a verified independent backup before switching.
               </p><p :if={@prepared.action == :restore} class="mt-4 text-sm text-error">
-                This recovery replaces current data. Writes made after the selected backup will be removed.
+                This approved recovery replaces current data. Writes made after the selected backup will be removed.
               </p><button
-                :if={@can_deploy?}
-                id="confirm-app-action"
-                phx-click="confirm_action"
+                :if={@can_decide?}
+                id="approve-app-deployment"
+                phx-click="approve_deployment"
                 phx-disable-with="Admitting…"
                 class="btn btn-primary mt-5"
-              >Confirm {action_label(@prepared.action)}</button>
+              >Approve {review_label(@prepared.action)}</button><p
+                :if={not @can_decide?}
+                class="mt-4 text-sm"
+              >
+                An eligible reviewer must approve review {@prepared.review.id}.
+              </p>
             </section>
           <% end %>
         <% end %>

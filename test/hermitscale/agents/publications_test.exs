@@ -4,7 +4,7 @@ defmodule Hermitscale.Agents.PublicationsTest do
   import Hermitscale.ProductFixtures
   import Hermitscale.AgentsFixtures
   import Hermitscale.IntegrationsFixtures
-  alias Hermitscale.{Agents, AgentsRuntimeFake, Artifacts, AuthTest.Provider}
+  alias Hermitscale.{Agents, AgentsRuntimeFake, Artifacts, AuthTest.Provider, Reviews}
   alias Hermitscale.Agents.{Publications, PublicationWorker}
   alias Hermitscale.WorkOSTest.Client, as: Pipes
 
@@ -26,50 +26,60 @@ defmodule Hermitscale.Agents.PublicationsTest do
       "manifest" => result["manifest"],
       "candidate_digest" => result["candidate_digest"],
       "patch_snapshot_artifact_id" => result["patch_snapshot_artifact_id"],
+      "policy_revision" => 1,
       "operation_key" => Ecto.UUID.generate()
     }
 
     %{scope: scope, session: session, target: target}
   end
 
-  test "host-recorded patch snapshot binds idempotent publication without a review",
+  test "host-recorded patch snapshot binds exact review and idempotent publication admission",
        context do
     %{scope: scope, session: session, target: target} = context
     assert {:ok, digest} = Publications.target_digest(scope, session.id, target)
     assert {:ok, artifact} = Artifacts.get(scope, target["patch_snapshot_artifact_id"])
     assert artifact.owner_id == session.id
     assert artifact.kind == "patch_snapshot"
-    assert {:ok, publication} = Agents.publish_branch(scope, session.id, target)
+    {:ok, review} = request_review(scope, target, digest)
+    attrs = Map.put(target, "review_id", review.id)
+
+    assert {:error, :review_mismatch_or_not_approved} =
+             Agents.publish_branch(scope, session.id, attrs)
+
+    assert {:ok, _review} = Reviews.decide(scope, review.id, :approved)
+    assert {:ok, publication} = Agents.publish_branch(scope, session.id, attrs)
     assert publication.status == :queued
     assert publication.payload_digest == digest
     assert_enqueued(worker: PublicationWorker, args: %{publication_id: publication.id})
-    assert {:ok, same} = Agents.publish_branch(scope, session.id, target)
+    assert {:ok, same} = Agents.publish_branch(scope, session.id, attrs)
     assert same.id == publication.id
     assert length(AgentsRuntimeFake.steps()) == 1
   end
 
-  test "changed publication intent cannot reuse a key and invalid source evidence is refused",
-       context do
+  test "changed manifest, branch, base or candidate cannot use the prior review", context do
     %{scope: scope, session: session, target: target} = context
-    assert {:ok, _publication} = Agents.publish_branch(scope, session.id, target)
+    {:ok, digest} = Publications.target_digest(scope, session.id, target)
+    {:ok, review} = request_review(scope, target, digest)
+    {:ok, _review} = Reviews.decide(scope, review.id, :approved)
+    attrs = Map.put(target, "review_id", review.id)
 
     for changed <- [
-          Map.put(target, "manifest", ["lib/other.ex"]),
-          Map.put(target, "branch", "fix/ENG-8")
+          Map.put(attrs, "manifest", ["lib/other.ex"]),
+          Map.put(attrs, "branch", "fix/ENG-8")
         ] do
-      assert {:error, :publication_key_conflict} =
+      assert {:error, :review_mismatch_or_not_approved} =
                Agents.publish_branch(scope, session.id, changed)
     end
 
     for changed <- [
-          Map.put(target, "candidate_digest", String.duplicate("b", 64)),
-          Map.put(target, "base_sha", String.duplicate("b", 40))
+          Map.put(attrs, "candidate_digest", String.duplicate("b", 64)),
+          Map.put(attrs, "base_sha", String.duplicate("b", 40))
         ] do
       assert {:error, :publication_evidence_mismatch} =
                Agents.publish_branch(scope, session.id, changed)
     end
 
-    assert_enqueued(worker: PublicationWorker)
+    refute_enqueued(worker: PublicationWorker)
   end
 
   test "artifacts from another private session or a raw diff are not publication snapshots",
@@ -108,12 +118,15 @@ defmodule Hermitscale.Agents.PublicationsTest do
     refute_enqueued(worker: PublicationWorker)
   end
 
-  test "current publish revocation blocks snapshot publication", context do
+  test "current publish revocation blocks admission even with an approved snapshot", context do
     %{scope: scope, session: session, target: target} = context
+    {:ok, digest} = Publications.target_digest(scope, session.id, target)
+    {:ok, review} = request_review(scope, target, digest)
+    {:ok, _review} = Reviews.decide(scope, review.id, :approved)
     :ok = Provider.put_response(:get_role, {:ok, %{permissions: ["agents:read"]}})
 
     assert {:error, :execution_actor_ineligible} =
-             Agents.publish_branch(scope, session.id, target)
+             Agents.publish_branch(scope, session.id, Map.put(target, "review_id", review.id))
 
     refute_enqueued(worker: PublicationWorker)
   end
@@ -148,9 +161,11 @@ defmodule Hermitscale.Agents.PublicationsTest do
     assert {:ok, ^sha} = Publications.current_base_sha(scope, session.id)
     assert {:ok, %{status: :succeeded}} = Publications.reconcile(scope, completed.id)
     assert length(Hermitscale.PublicationSDKFake.requests()) == 1
+    review = Repo.get!(Hermitscale.Reviews.Review, publication.specification["review_id"])
+    expire_fixture(review)
 
     assert {:ok, same} =
-             Agents.publish_branch(scope, session.id, target)
+             Agents.publish_branch(scope, session.id, Map.put(target, "review_id", review.id))
 
     assert same.id == completed.id
     assert same.status == :succeeded
@@ -283,7 +298,12 @@ defmodule Hermitscale.Agents.PublicationsTest do
   end
 
   defp admit_publication(%{scope: scope, session: session, target: target}) do
-    {:ok, publication} = Agents.publish_branch(scope, session.id, target)
+    {:ok, digest} = Publications.target_digest(scope, session.id, target)
+    {:ok, review} = request_review(scope, target, digest)
+    {:ok, _review} = Reviews.decide(scope, review.id, :approved)
+
+    {:ok, publication} =
+      Agents.publish_branch(scope, session.id, Map.put(target, "review_id", review.id))
 
     publication
   end
@@ -333,6 +353,16 @@ defmodule Hermitscale.Agents.PublicationsTest do
        }}
     )
   end
+
+  defp request_review(scope, target, digest),
+    do:
+      Reviews.request(scope, %{
+        action: "agents.publish_branch",
+        target: target,
+        target_digest: digest,
+        operation_key: "review:" <> target["operation_key"],
+        policy_revision: 1
+      })
 
   defp success(session),
     do: %{

@@ -68,11 +68,11 @@ os.execvp('git',['git']+args)
         prefix = 'import os,pwd,types\npwd.getpwnam=lambda _name: types.SimpleNamespace(pw_uid=os.getuid(),pw_gid=os.getgid())\n'
         return subprocess.run(['python3', '-I', '-c', prefix + script], input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    def evidence(self, commands=None):
+    def evidence(self):
         source = (Path(__file__).resolve().parents[2] / 'lib/hermitscale/workspaces/evidence.ex').read_text()
         script = source.split('  @script """', 1)[1].split('  """', 1)[0]
         script = textwrap.dedent(script).replace('\\\\', '\\').replace('/workspace', str(self.workspace))
-        process = subprocess.run(['python3', '-I', '-c', script, self.base, json.dumps(commands or [])], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.run(['python3', '-I', '-c', script, self.base, 'false'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(process.returncode, 0, process.stderr.decode())
         return json.loads(process.stdout)
 
@@ -104,15 +104,6 @@ os.execvp('git',['git']+args)
         self.assertFalse(result['result_valid_json'])
         self.assertEqual(result['result_diagnostic']['captured_bytes'], 65536)
         self.assertTrue(result['result_diagnostic']['truncated'])
-
-    def test_verification_commands_are_explicit_and_preserve_failed_receipts(self):
-        (self.workspace / 'package.json').write_text('{"scripts":{"test":"exit 1"}}')
-        ordinary = self.evidence()
-        self.assertEqual(ordinary['checks'], [])
-        checked = self.evidence(['printf verified', 'exit 7'])
-        self.assertEqual([check['exit_code'] for check in checked['checks']], [0, 7])
-        self.assertEqual(checked['checks'][0]['output'], 'verified')
-        self.assertFalse(checked['checks_passed'])
 
     def test_evidence_and_publisher_bind_the_same_raw_candidate_despite_attributes(self):
         (self.workspace / 'app.py').write_text('exact reviewed bytes\n')

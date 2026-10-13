@@ -15,7 +15,6 @@ defmodule Hermitscale.Workflows.Nodes.Agents.Codex.Run.V1 do
       recipe: [type: :string, default: "codex-v1"],
       connection_set: [type: :map, default: %{}],
       result_schema: [type: :map, default: %{}],
-      verification_commands: [type: {:list, :string}, default: []],
       budget_cents: [type: :pos_integer, default: 500],
       timeout_seconds: [type: :pos_integer, default: 900]
     ]

@@ -50,7 +50,7 @@ defmodule Hermitscale.Workspaces.Publication do
         {:error, :candidate_changed}
 
       {:ok, %{exit_code: 87}} ->
-        {:error, :manifest_not_in_candidate}
+        {:error, :unreviewed_manifest}
 
       {:ok, %{exit_code: 88}} ->
         {:error, :publication_deadline}

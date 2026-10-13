@@ -394,6 +394,29 @@ defmodule Hermitscale.Workflows.ExternalOperations do
 
   defp admit!(run, workflow, runnable, params) do
     request = jsonable(params)
+    authored_node = Enum.find(run.definition["nodes"], &(&1["id"] == runnable.node.name))
+
+    request =
+      case authored_node["connection"] do
+        nil -> request
+        connection -> Map.put(request, "_connection", connection)
+      end
+
+    request =
+      case {runnable.node.module.__catalog_node__().id, runnable.input_fact.value} do
+        {"github.pull_requests.create",
+         %{"repository" => repository, "branch" => branch, "commit_sha" => sha} = publication} ->
+          Map.put(
+            request,
+            "_publication",
+            Map.take(publication, ["publication_id"])
+            |> Map.merge(%{"repository" => repository, "branch" => branch, "commit_sha" => sha})
+          )
+
+        _other_input ->
+          request
+      end
+
     callback = Runic.Workflow.SingleOutput.Context.from_runnable(runnable)
 
     context =

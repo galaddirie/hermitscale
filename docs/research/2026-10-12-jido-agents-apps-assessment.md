@@ -2,7 +2,7 @@
 
 Date: October 12, 2026. Scope: the proposed [Agents and Apps design](../agent-apps-design.md), not an implementation or dependency change. Research used official documentation, Context7 for discovery, and directly fetched official source. Runtime conclusions below were checked against **Jido v2.4.0**; mutable ecosystem sources need separate version qualification.
 
-Status: Historical assessment. The adoption recommendation below is superseded by the [current platform design](../agent-apps-design.md) and [runtime simplification research](2026-10-12-jido-runtime-simplification.md). The support/research pilot is a hypothetical use case, not an implemented capability or platform domain. The core persistence and external-effect findings remain relevant; use the current design for implementation direction.
+Status: Historical assessment. The adoption recommendation below is superseded by the [Jido-based design](../agent-apps-design.md) and [runtime simplification research](2026-10-12-jido-runtime-simplification.md). The core persistence and external-effect findings remain relevant; use the design document for implementation direction.
 
 ## Recommendation
 
@@ -77,11 +77,11 @@ Jido Workspace's README explicitly excludes Sprite workflow orchestration; its d
 
 Framework process state, remote filesystem persistence, and external-effect history solve different problems. None substitutes for the others. Closing Jido or Harness transports must release compute activity while preserving stored files. History views remain database reads. A local orchestration agent must not poll an idle Sprite to keep its own state current. Adding a reasoning agent also adds model usage; it does not reduce persistent storage costs.
 
-## Historical hypothetical pilot
+## A useful later pilot
 
-The assessment considered a support investigation agent behind `Hermitscale.Agents`, with a small set of permitted evidence tools and a fixed iteration and model budget. It may gather context and draft a response; publication, deployment, and sending remain explicit Hermitscale operations. Compare its quality and implementation effort against a fixed workflow with the existing Responses node. Use Codex delegation only for an actual repository investigation.
+Implement one support investigation agent behind `Hermitscale.Agents`, with a small set of permitted evidence tools and a fixed iteration and model budget. It may gather context and draft a response; publication, deployment, and sending remain explicit Hermitscale operations. Compare its quality and implementation effort against a fixed workflow with the existing Responses node. Use Codex delegation only for an actual repository investigation.
 
-This pilot was not adopted as a platform contract. Similar tasks can be composed from ordinary provider and agent nodes. The hypothetical module name is not an instruction to add a support context, and the package analysis does not justify a second product history or framework abstraction.
+If that pilot earns its dependency, keep Jido-specific code in a module such as `agents/support_triage.ex`. Callers continue to use Agents. Workspaces and Apps remain independent of Jido, and the workflow engine receives the same durable operation references and verified results. Do not expose Jido's internal state as a second product history or add a framework abstraction before this second execution mode exists.
 
 Before accepting either a Jido or Harness integration, demonstrate:
 

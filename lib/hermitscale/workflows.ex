@@ -11,7 +11,6 @@ defmodule Hermitscale.Workflows do
   alias Hermitscale.Repo
 
   alias Hermitscale.Workflows.{
-    Catalog,
     Compiler,
     Credentials,
     Engine,
@@ -454,30 +453,11 @@ defmodule Hermitscale.Workflows do
     end
   end
 
-  defp do_resume_run(%Run{status: :cancelled} = run, _opts), do: {:ok, run}
-
-  defp do_resume_run(%Run{status: status} = run, opts) when status in [:complete, :failed] do
-    case catalogued_definition?(run.definition) do
-      true -> resume_supported_run(run, opts)
-      false -> {:ok, run}
-    end
-  end
-
-  defp do_resume_run(%Run{} = run, opts), do: resume_supported_run(run, opts)
-
-  defp resume_supported_run(run, opts) do
+  defp do_resume_run(%Run{} = run, opts) do
     case ExternalOperations.external_definition?(run.definition) or run.admission_digest != nil do
       true -> ExternalOperations.advance(run.id, opts)
       false -> run |> Repo.preload(:graph) |> resume_with_graph(opts)
     end
-  end
-
-  defp catalogued_definition?(nil), do: true
-
-  defp catalogued_definition?(%{"nodes" => nodes}) do
-    Enum.all?(nodes, fn %{"type" => type, "version" => version} ->
-      match?({:ok, _module}, Catalog.fetch(type, version))
-    end)
   end
 
   defp resume_with_graph(%Run{graph: nil}, _opts), do: {:error, :missing_graph}

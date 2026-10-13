@@ -3,6 +3,7 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
   use Oban.Testing, repo: Hermitscale.Repo
   import Hermitscale.WorkflowExternalFixtures
   import Hermitscale.WorkflowsFixtures, only: [graph_attrs: 1]
+  import Hermitscale.IntegrationsFixtures
   alias Hermitscale.{Auth, AuthTest.Provider, Workflows}
 
   alias Hermitscale.Workflows.{
@@ -40,7 +41,7 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
              provider <- ~w(github linear),
              do: %{
                "slug" => provider,
-               "connected_accounts" => [provider_account_fixture(provider, scope.organization.id)]
+               "connected_accounts" => [account_fixture(provider, scope.organization.id)]
              }
            )
        }}
@@ -51,7 +52,7 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
        %{
          auth_method: "oauth",
          value: "provider-secret",
-         scopes: write_scopes_fixture(provider),
+         scopes: scopes_fixture(provider),
          missing_scopes: []
        }}
     end)
@@ -63,7 +64,7 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
     {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: coding_graph()))
 
     assert {:ok, run} =
-             Workflows.start_run(scope, graph, %{"request" => "update"}, executor: :inline)
+             Workflows.start_run(scope, graph, %{"ticket" => "ENG-7"}, executor: :inline)
 
     assert run.status == :running
     assert [operation] = ExternalOperations.list(scope, run.id)
@@ -77,7 +78,7 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
     assert {:snooze, 5} = perform_job(ExternalOperationWorker, %{operation_id: operation.id})
     assert_receive {:external_dispatch, "agents.codex.run", operation_id, request}
     assert operation_id == operation.id
-    assert request["instructions"] == "Update the source and verify the changes"
+    assert request["instructions"] == "Fix ENG-7 and verify the changes"
     assert {:ok, resumed} = Workflows.resume_run(scope, run)
     assert resumed.status == :running
     assert [waiting] = ExternalOperations.list(scope, run.id)
@@ -87,70 +88,102 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
     refute_receive {:external_dispatch, _, _, _}
   end
 
-  test "ordinary provider writes preserve their declared authority and message bodies", %{
+  test "coding to verified branch to GitHub PR to Linear notification finishes once", %{
     scope: scope
   } do
     {:ok, graph} =
       Workflows.create_graph(scope, graph_attrs(definition: coding_publication_graph()))
 
-    {:ok, run} = Workflows.start_run(scope, graph, nil, executor: :inline)
+    {:ok, run} = Workflows.start_run(scope, graph, %{"ticket" => "ENG-7"}, executor: :inline)
     [coding] = ExternalOperations.list(scope, run.id)
     assert {:ok, _coding} = ExternalOperations.accept_terminal(coding.id, {:ok, coding_result()})
     assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
     publish = operation(scope, run, "publish")
-    assert publish.request["manifest"] == ["lib/change.ex"]
+    assert publish.request["manifest"] == ["lib/fix.ex"]
     assert publish.request["session_id"] != ""
-
-    Req.Test.expect(__MODULE__, fn conn ->
-      assert conn.method == "POST"
-      assert conn.request_path == "/repos/acme/backend/pulls"
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      attrs = Jason.decode!(body)
-      assert attrs["head"] == "automation/update"
-      assert attrs["body"] == "Verified workflow changes"
-
-      Req.Test.json(conn, %{
-        "id" => 1,
-        "number" => 7,
-        "html_url" => "https://github.com/acme/backend/pull/7"
-      })
-    end)
-
-    Req.Test.expect(__MODULE__, fn conn ->
-      assert conn.method == "POST"
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      attrs = Jason.decode!(body)
-
-      assert attrs["variables"]["input"]["body"] ==
-               "Ready: https://github.com/acme/backend/pull/7"
-
-      Req.Test.json(conn, %{
-        "data" => %{
-          "commentCreate" => %{
-            "success" => true,
-            "comment" => %{"id" => "comment_7"}
-          }
-        }
-      })
-    end)
 
     assert {:ok, _publication} =
              ExternalOperations.accept_terminal(publish.id, {:ok, publication_result()})
 
     assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
+    pull = operation(scope, run, "pull")
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/repos/acme/backend/pulls"
+      Req.Test.json(conn, [])
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      assert conn.method == "GET"
+      assert conn.request_path == "/repos/acme/backend/git/ref/heads/fix%2FENG-7"
+      Req.Test.json(conn, %{"object" => %{"sha" => String.duplicate("b", 40)}})
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      assert conn.method == "POST"
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      attrs = Jason.decode!(body)
+      assert attrs["head"] == "fix/ENG-7"
+      assert attrs["body"] =~ "hermitscale-delivery:"
+
+      Req.Test.json(
+        conn,
+        Map.merge(attrs, %{
+          "id" => 1,
+          "number" => 7,
+          "html_url" => "https://github.com/acme/backend/pull/7",
+          "head" => %{"sha" => String.duplicate("b", 40)}
+        })
+      )
+    end)
+
+    assert {:ok, :complete} = perform_job(ExternalOperationWorker, %{operation_id: pull.id})
+    assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
+    notification = operation(scope, run, "notify")
+    assert notification.request["body"] == "Ready: https://github.com/acme/backend/pull/7"
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{
+        "data" => %{
+          "issue" => %{"comments" => %{"nodes" => [], "pageInfo" => %{"hasNextPage" => false}}}
+        }
+      })
+    end)
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      attrs = Jason.decode!(body)
+      assert attrs["variables"]["input"]["body"] =~ "hermitscale-delivery:"
+
+      Req.Test.json(conn, %{
+        "data" => %{
+          "commentCreate" => %{
+            "success" => true,
+            "comment" => %{"id" => "comment_7", "body" => attrs["variables"]["input"]["body"]}
+          }
+        }
+      })
+    end)
+
+    assert {:ok, :complete} =
+             perform_job(ExternalOperationWorker, %{operation_id: notification.id})
+
+    assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
     complete = Workflows.get_run!(scope, run.id)
     assert complete.status == :complete
-    assert complete.output["value"]["notify"] == [%{"id" => "comment_7"}]
+    assert complete.output["value"]["notify"] |> length() == 1
     assert {:ok, _run} = Workflows.resume_run(scope, complete)
+
+    assert {:ok, :complete} =
+             perform_job(ExternalOperationWorker, %{operation_id: notification.id})
 
     workflow = restore(complete)
 
     for id <- ~w(coding publish pull notify),
         do: assert(length(Engine.productions(workflow, id)) == 1)
 
-    operations = ExternalOperations.list(scope, run.id)
-    assert operations |> Enum.map(& &1.node_id) |> Enum.sort() == ["coding", "publish"]
-    assert Enum.all?(operations, &(&1.status == :consumed))
+    assert Enum.all?(ExternalOperations.list(scope, run.id), &(&1.status == :consumed))
   end
 
   test "duplicate completion and restart accept one native occurrence", %{scope: scope} do
@@ -246,71 +279,6 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
     assert {:error, :forbidden} = ExternalOperations.get(denied, operation.id)
   end
 
-  test "cancelled runs do not resume, and retired terminal definitions remain readable", %{
-    scope: scope
-  } do
-    {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: coding_graph()))
-    {:ok, run} = Workflows.start_run(scope, graph, nil, executor: :inline)
-
-    cancelled =
-      run
-      |> Hermitscale.Workflows.Run.changeset(%{
-        status: :cancelled,
-        completed_at: DateTime.utc_now(:second)
-      })
-      |> Repo.update!()
-
-    assert {:ok, current} = Workflows.resume_run(scope, cancelled)
-    assert current.status == :cancelled
-    assert current.definition == run.definition
-
-    definition = retired_workflow_definition()
-
-    for status <- [:cancelled, :failed, :complete] do
-      saved =
-        run
-        |> Hermitscale.Workflows.Run.changeset(%{
-          status: status,
-          definition: definition,
-          completed_at: DateTime.utc_now(:second)
-        })
-        |> Repo.update!()
-
-      assert {:ok, current} = Workflows.resume_run(scope, saved)
-      assert current.id == saved.id
-      assert current.status == status
-      assert current.definition == definition
-    end
-
-    refute_receive {:external_dispatch, _, _, _}
-  end
-
-  test "reconciliation of a cancelled legacy operation does not dispatch its removed node", %{
-    scope: scope
-  } do
-    {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: coding_graph()))
-    {:ok, run} = Workflows.start_run(scope, graph, nil, executor: :inline)
-    [operation] = ExternalOperations.list(scope, run.id)
-
-    run
-    |> Hermitscale.Workflows.Run.changeset(%{
-      status: :cancelled,
-      definition: retired_workflow_definition(),
-      completed_at: DateTime.utc_now(:second)
-    })
-    |> Repo.update!()
-
-    operation
-    |> Ecto.Changeset.change(node_type: "support.investigate")
-    |> Repo.update!()
-
-    assert {:ok, :complete} = perform_job(ExternalOperationWorker, %{operation_id: operation.id})
-    assert {:ok, terminal} = ExternalOperations.get(scope, operation.id)
-    assert terminal.error == %{"reason" => "run_cancelled"}
-    assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
-    refute_receive {:external_dispatch, _, _, _}
-  end
-
   test "an owner admission committed before handoff is recovered without another conversation", %{
     scope: scope
   } do
@@ -329,6 +297,45 @@ defmodule Hermitscale.Workflows.ExternalOperationsTest do
     assert session.id == resource["session_id"]
     assert [turn] = Hermitscale.Agents.list_turns(scope, session.id)
     assert turn.id == resource["id"]
+  end
+
+  test "a requested review waits for the exact durable human decision", %{scope: scope} do
+    definition =
+      coding_graph()
+      |> Map.put("nodes", [
+        %{
+          "id" => "review",
+          "type" => "reviews.request",
+          "version" => 1,
+          "params" => %{
+            "action" => "test.action",
+            "target_digest" => String.duplicate("a", 64)
+          }
+        }
+      ])
+
+    {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: definition))
+    {:ok, run} = Workflows.start_run(scope, graph, nil, executor: :inline)
+    [operation] = ExternalOperations.list(scope, run.id)
+    assert {:snooze, 5} = perform_job(ExternalOperationWorker, %{operation_id: operation.id})
+    [review] = Hermitscale.Reviews.list(scope)
+    assert review.target_digest == String.duplicate("a", 64)
+    assert Workflows.get_run!(scope, run.id).status == :running
+    assert Engine.productions(restore(run), "review") == []
+    assert {:ok, approved} = Hermitscale.Reviews.decide(scope, review.id, :approved)
+    assert approved.status == :approved
+    assert {:ok, :complete} = perform_job(ExternalOperationWorker, %{operation_id: operation.id})
+    assert {:ok, :advanced} = perform_job(ExternalOperationWorker, %{run_id: run.id})
+    complete = Workflows.get_run!(scope, run.id)
+    assert complete.status == :complete
+
+    assert [%{"review_id" => id, "decision" => "approved"}] =
+             Enum.map(
+               complete.output["value"]["review"],
+               &Map.take(&1, ["review_id", "decision"])
+             )
+
+    assert id == review.id
   end
 
   defp operation(scope, run, node_id),

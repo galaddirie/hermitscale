@@ -75,12 +75,6 @@ defmodule Hermitscale.Integrations.ExecutionAccessTest do
 
     assert {:error, :invalid_product_capability} =
              ExecutionAccess.issue_product(scope, [graph.id], ["untrusted.internal"])
-
-    for action <-
-          ~w(reviews.request reviews.decide support.subscribe support.investigate support.inspect support.reply apps.verify_defect) do
-      assert {:error, :invalid_product_capability} =
-               ExecutionAccess.issue_product(scope, [graph.id], [action])
-    end
   end
 
   test "expiration, revocation and current actor membership invalidate a bearer", %{scope: scope} do

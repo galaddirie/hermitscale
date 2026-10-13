@@ -163,7 +163,7 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
     end
   end
 
-  test "ordinary chat retains evidence without requiring a structured result", %{
+  test "current-turn output evidence is required even with an empty requested schema", %{
     scope: scope,
     session: session
   } do
@@ -183,52 +183,11 @@ defmodule Hermitscale.Agents.RuntimeE2ETest do
 
     for _case <- 1..2 do
       turn = agent_turn_fixture(scope, session)
-      assert {:ok, %{status: :succeeded} = completed} = Agents.reconcile_turn(scope, turn.id)
-      assert {:ok, _retained_patch} = Artifacts.get(scope, completed.result["patch_artifact_id"])
-      assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, completed.lease_id)
+      assert {:ok, %{status: :failed} = failed} = Agents.reconcile_turn(scope, turn.id)
+      assert failed.result["outcome"] == "invalid_result"
+      assert {:ok, _retained_patch} = Artifacts.get(scope, failed.result["patch_artifact_id"])
+      assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
     end
-  end
-
-  test "failed optional checks remain evidence without failing a completed chat turn", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
-    result = Map.put(outcome.result, "checks", [%{"name" => "explicit check", "exit_code" => 1}])
-    start_supervised!({AgentsRuntimeFake, outcomes: [%{outcome | result: result}]})
-    turn = agent_turn_fixture(scope, session, %{verification_commands: ["false"]})
-    assert {:ok, completed} = Agents.reconcile_turn(scope, turn.id)
-    assert completed.status == :succeeded
-    assert [%{"exit_code" => 1}] = completed.result["checks"]
-  end
-
-  test "verification admission rejects null input and bounds explicit checks", %{
-    scope: scope,
-    session: session
-  } do
-    for commands <- [nil, List.duplicate("true", 11), [String.duplicate("x", 4097)]] do
-      assert {:error, %Ecto.Changeset{} = changeset} =
-               Agents.submit_turn(scope, session.id, %{
-                 instructions: "Explain the code",
-                 operation_key: Ecto.UUID.generate(),
-                 verification_commands: commands
-               })
-
-      assert Keyword.has_key?(changeset.errors, :verification_commands)
-    end
-  end
-
-  test "requested structured output requires valid current-turn JSON", %{
-    scope: scope,
-    session: session
-  } do
-    outcome = success(session)
-    absent = Map.put(outcome.result, "result_evidence_present", false)
-    start_supervised!({AgentsRuntimeFake, outcomes: [%{outcome | result: absent}]})
-    turn = agent_turn_fixture(scope, session, %{result_schema: %{"type" => "object"}})
-    assert {:ok, %{status: :failed} = failed} = Agents.reconcile_turn(scope, turn.id)
-    assert failed.result["outcome"] == "invalid_result"
-    assert {:ok, %{status: :released}} = Workspaces.get_lease(scope, failed.lease_id)
   end
 
   defp success(session),

@@ -12,7 +12,8 @@ defmodule Hermitscale.Workflows.Nodes.Apps.Deploy.V1 do
       :artifact_id,
       :artifact_digest,
       :configuration_digest,
-      :expected_active_deployment
+      :expected_active_deployment,
+      :review_id
     ],
     params: [
       app_id: [type: :string, required: true],
@@ -22,6 +23,7 @@ defmodule Hermitscale.Workflows.Nodes.Apps.Deploy.V1 do
       artifact_id: [type: :string, required: true],
       artifact_digest: [type: :string, required: true],
       configuration_digest: [type: :string, required: true],
-      expected_active_deployment: [type: :any]
+      expected_active_deployment: [type: :any],
+      review_id: [type: :string]
     ]
 end

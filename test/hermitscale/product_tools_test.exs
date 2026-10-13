@@ -64,31 +64,24 @@ defmodule Hermitscale.ProductToolsTest do
     assert completed.status == :complete
   end
 
-  test "example workflow domains are not product operations", %{scope: scope} do
-    actions =
-      ~w(reviews.request reviews.decide support.subscribe support.investigate support.inspect support.reply apps.verify_defect)
+  test "review requests and decisions use the public policy contract", %{scope: scope} do
+    attrs = review_attrs_fixture() |> Map.new(fn {key, value} -> {to_string(key), value} end)
+    assert {:ok, review} = ProductTools.execute(scope, "reviews.request", attrs)
+    assert {:ok, duplicate} = ProductTools.execute(scope, "reviews.request", attrs)
+    assert duplicate.id == review.id
 
-    assert ProductTools.definitions(actions) == []
+    assert {:error, :invalid_decision} =
+             ProductTools.execute(scope, "reviews.decide", %{
+               "id" => review.id,
+               "decision" => "perhaps"
+             })
 
-    for action <- actions do
-      assert ProductTools.permission(action) == nil
-      assert {:error, :unknown_tool} = ProductTools.execute(scope, action, %{})
-    end
-  end
+    assert {:ok, approved} =
+             ProductTools.execute(scope, "reviews.decide", %{
+               "id" => review.id,
+               "decision" => "approved"
+             })
 
-  test "turn verification is explicit and publishing does not require review resources" do
-    [continue] = ProductTools.definitions(["agents.continue"])
-
-    assert continue.inputSchema.properties["verification_commands"] == %{
-             type: "array",
-             items: %{type: "string"}
-           }
-
-    refute "verification_commands" in continue.inputSchema.required
-
-    for tool <- ProductTools.definitions(["agents.publish", "deployments.request"]) do
-      refute "review_id" in tool.inputSchema.required
-      refute Map.has_key?(tool.inputSchema.properties, "verification_commands")
-    end
+    assert approved.status == :approved
   end
 end

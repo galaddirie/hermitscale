@@ -9,7 +9,7 @@ defmodule Hermitscale.Apps do
   import Ecto.Query
   alias Ecto.Changeset
   alias Hermitscale.Accounts.Scope
-  alias Hermitscale.{Agents, Artifacts, Authorization, Repo, Workspaces}
+  alias Hermitscale.{Agents, Artifacts, Authorization, Repo, Reviews, Workspaces}
 
   alias Hermitscale.Apps.{
     AccessGrant,
@@ -43,6 +43,39 @@ defmodule Hermitscale.Apps do
   def get_preview(scope, id), do: fetch(scope, Preview, id, "apps:read")
   def get_deployment(scope, id), do: fetch(scope, Deployment, id, "apps:read")
   def get_backup(scope, id), do: fetch(scope, Backup, id, "apps:read")
+
+  @doc "Selects the immutable, verified serving source for an authorized support investigation."
+  def investigation_source(scope, app_id, environment_id) do
+    with {:ok, app} <- get_app(scope, app_id),
+         {:ok, environment} <- get_environment(scope, environment_id),
+         true <- environment.app_id == app.id and environment.status == "running",
+         {:ok, deployment} <- get_deployment(scope, environment.active_deployment_id),
+         true <-
+           deployment.app_id == app.id and deployment.environment_id == environment.id and
+             deployment.status == "active" and
+             deployment.verification["served_revision"] == deployment.source_commit,
+         {:ok, artifact} <- Artifacts.get(scope, deployment.artifact_id),
+         true <-
+           artifact.owner_type == "app" and artifact.owner_id == app.id and
+             artifact.kind == "source_bundle" and artifact.digest == deployment.artifact_digest and
+             digest_bytes(artifact.content) == deployment.artifact_digest do
+      {:ok,
+       %{
+         app: app,
+         environment: environment,
+         deployment: deployment,
+         source_bundle: %{
+           "app_id" => app.id,
+           "artifact_id" => artifact.id,
+           "artifact_digest" => artifact.digest,
+           "deployed_revision" => deployment.source_commit
+         }
+       }}
+    else
+      false -> {:error, :serving_source_not_verified}
+      {:error, _reason} = error -> error
+    end
+  end
 
   def change_app(scope, attrs \\ %{}) do
     %App{org_id: Scope.organization_id!(scope), created_by_user_id: scope.user.id}
@@ -211,6 +244,139 @@ defmodule Hermitscale.Apps do
     end
   end
 
+  @doc "Explicitly wakes the current release for a bounded, read-only defect acceptance check."
+  def verify_defect(scope, app_id, environment_id, attrs) do
+    with {:ok, scope} <- execution_scope(scope, "apps:deploy"),
+         {:ok, app} <- get_app(scope, app_id),
+         {:ok, environment} <- get_environment(scope, environment_id),
+         true <- environment.app_id == app.id and environment.status == "running",
+         {:ok, deployment} <- get_deployment(scope, environment.active_deployment_id),
+         true <-
+           deployment.status == "active" and
+             deployment.verification["served_revision"] == deployment.source_commit,
+         {:ok, path, status, expected} <- defect_check(attrs),
+         {:ok, operation_key} <- uuid(value(attrs, :operation_key, Ecto.UUID.generate())),
+         {:ok, lease} <-
+           admit_activity(
+             scope,
+             environment.workspace_id,
+             "defect:" <> operation_key,
+             DateTime.add(DateTime.utc_now(), 120, :second)
+           ) do
+      proof = defect_proof(environment, deployment, lease, path, status, expected)
+
+      case Artifacts.find(scope, %{
+             owner_type: "deployment",
+             owner_id: deployment.id,
+             kind: "defect_verification",
+             digest: digest_bytes(Jason.encode!(proof))
+           }) do
+        {:ok, artifact} ->
+          with :ok <- finish_defect_activity(scope, environment, lease), do: {:ok, artifact}
+
+        {:error, :not_found} ->
+          with {:ok, _lease} <- Workspaces.validate_lease(scope, lease.id) do
+            result = verify_defect_under_lease(scope, environment, deployment, proof)
+
+            case {result, release_activity(scope, environment.workspace_id, lease.id)} do
+              {{:ok, artifact}, :ok} -> {:ok, artifact}
+              {{:error, _reason} = error, _cleanup} -> error
+              {{:ok, _artifact}, {:error, _reason} = error} -> error
+            end
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
+    else
+      false -> {:error, :deployment_not_verified}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp defect_proof(environment, deployment, lease, path, status, expected) do
+    %{
+      "app_id" => environment.app_id,
+      "environment_id" => environment.id,
+      "deployment_id" => deployment.id,
+      "source_commit" => deployment.source_commit,
+      "served_revision" => deployment.source_commit,
+      "health" => "passed",
+      "check_started_at" => DateTime.to_iso8601(lease.inserted_at),
+      "lease_id" => lease.id,
+      "path" => path,
+      "status" => status,
+      "body_digest" => expected,
+      "verified" => true
+    }
+  end
+
+  defp finish_defect_activity(_scope, _environment, %{status: :released}), do: :ok
+
+  defp finish_defect_activity(scope, environment, lease),
+    do: release_activity(scope, environment.workspace_id, lease.id)
+
+  defp verify_defect_under_lease(scope, environment, deployment, proof) do
+    with {:ok, served} <-
+           verify_served(scope, environment.workspace_id, deployment.source_commit),
+         {:ok, response} <-
+           Workspaces.app_request(scope, environment.workspace_id, proof["path"], method: :get),
+         {:ok, body} <- defect_body(response.body),
+         true <-
+           served["served_revision"] == proof["served_revision"] and
+             response.status == proof["status"] and digest_bytes(body) == proof["body_digest"] do
+      Repo.transaction(fn ->
+        current = lock!(Environment, environment.id, environment.org_id)
+        compare_active!(current, deployment.id)
+        if current.release_operation_id, do: Repo.rollback(:release_in_progress)
+
+        unwrap!(
+          Artifacts.record(scope, %{
+            owner_type: "deployment",
+            owner_id: deployment.id,
+            kind: "defect_verification",
+            content_type: "application/json",
+            content: Jason.encode!(proof)
+          })
+        )
+      end)
+    else
+      false -> {:error, :defect_check_failed}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp defect_check(attrs) do
+    path = value(attrs, :path)
+    status = value(attrs, :expected_status, 200)
+    expected = value(attrs, :expected_body_digest)
+
+    cond do
+      not is_binary(path) or byte_size(path) > 2048 ->
+        {:error, :invalid_verification_path}
+
+      not String.starts_with?(path, "/") or String.starts_with?(path, "//") or
+          String.contains?(path, [<<0>>, "\\", ".."]) ->
+        {:error, :invalid_verification_path}
+
+      not is_integer(status) or status not in 100..599 ->
+        {:error, :invalid_expected_status}
+
+      not is_binary(expected) ->
+        {:error, :invalid_expected_body_digest}
+
+      not Regex.match?(~r/\A[0-9a-f]{64}\z/, expected) ->
+        {:error, :invalid_expected_body_digest}
+
+      true ->
+        {:ok, path, status, expected}
+    end
+  end
+
+  defp defect_body(body) when is_binary(body) and byte_size(body) <= 65_536, do: {:ok, body}
+  defp defect_body(body) when is_map(body) or is_list(body), do: defect_body(Jason.encode!(body))
+  defp defect_body(_body), do: {:error, :verification_response_too_large}
+
   def list_build_sessions(scope, app_id) do
     with {:ok, app} <- get_app(scope, app_id) do
       Repo.all(
@@ -256,6 +422,38 @@ defmodule Hermitscale.Apps do
             session
         end
       end)
+    end
+  end
+
+  @doc "Links a private, source-bound support investigation to its app for follow-up build work."
+  def attach_investigation(scope, app_id, session_id, operation_key) do
+    with {:ok, scope} <- execution_scope(scope, "support:investigate"),
+         {:ok, app} <- get_app(scope, app_id),
+         {:ok, session} <- Agents.get_session(scope, session_id),
+         true <-
+           session.initiator_user_id == scope.user.id and
+             session.source_bundle["app_id"] == app.id,
+         {:ok, operation_key} <- key(operation_key) do
+      Repo.transaction(fn ->
+        _app = lock!(App, app.id, app.org_id)
+
+        case Repo.get_by(BuildSession, app_id: app.id, operation_key: operation_key) do
+          %BuildSession{session_id: id} = build when id == session.id ->
+            build
+
+          %BuildSession{} ->
+            Repo.rollback(:operation_key_conflict)
+
+          nil ->
+            %BuildSession{org_id: app.org_id, app_id: app.id, session_id: session.id}
+            |> BuildSession.changeset(%{operation_key: operation_key})
+            |> Repo.insert()
+            |> unwrap!()
+        end
+      end)
+    else
+      false -> {:error, :investigation_source_mismatch}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -477,7 +675,7 @@ defmodule Hermitscale.Apps do
   defp freeze_for_build(_scope, _workspace_id, _lease_id, _operation_id, source_commit, false),
     do: {:ok, %{"revision" => source_commit, "change_manifest" => []}}
 
-  @doc "Immutable release identity, including source, artifact, configuration and prior release."
+  @doc "Exact approval identity, including source, immutable artifact, config and prior release."
   def deployment_target_digest(scope, app_id, attrs) do
     with {:ok, input} <- deployment_input(scope, app_id, attrs) do
       {:ok, input.target_digest}
@@ -487,7 +685,16 @@ defmodule Hermitscale.Apps do
   @doc "Records deployment intent and dispatch atomically; duplicate keys cannot change the release."
   def request_deployment(scope, app_id, attrs) when is_map(attrs) do
     with {:ok, scope} <- execution_scope(scope, "apps:deploy"),
-         {:ok, input} <- deployment_input(scope, app_id, attrs) do
+         {:ok, input} <- deployment_input(scope, app_id, attrs),
+         {:ok, review_id} <- uuid(value(attrs, :review_id)),
+         :ok <-
+           Reviews.authorize_decision(
+             scope,
+             review_id,
+             "apps.deploy",
+             input.target_digest,
+             input.policy_revision
+           ) do
       result =
         Repo.transaction(fn ->
           case Repo.get_by(Deployment, org_id: input.org_id, operation_key: input.operation_key) do
@@ -512,6 +719,7 @@ defmodule Hermitscale.Apps do
                 }
                 |> Deployment.changeset(
                   Map.merge(input, %{
+                    review_id: review_id,
                     deadline: DateTime.add(DateTime.utc_now(), 900, :second)
                   })
                 )
@@ -552,6 +760,7 @@ defmodule Hermitscale.Apps do
         configuration_digest: environment.configuration_digest,
         expected_active_deployment_id:
           value(attrs, :expected_active_deployment, value(attrs, :expected_active_deployment_id)),
+        policy_revision: value(attrs, :policy_revision, 1),
         rollback_of_id: value(attrs, :rollback_of_id)
       }
 
@@ -598,7 +807,15 @@ defmodule Hermitscale.Apps do
   end
 
   defp execute_release(scope, deployment) do
-    with {:ok, environment} <- claim_release(scope, deployment),
+    with :ok <-
+           Reviews.authorize_decision(
+             scope,
+             deployment.review_id,
+             "apps.deploy",
+             deployment.target_digest,
+             deployment.policy_revision
+           ),
+         {:ok, environment} <- claim_release(scope, deployment),
          {:ok, _workspace} <- Workspaces.provision_workspace(scope, environment.workspace_id),
          {:ok, lease} <- release_lease(scope, environment, deployment),
          :ok <- install_helper(scope, environment.workspace_id, lease.id) do
@@ -1106,25 +1323,25 @@ defmodule Hermitscale.Apps do
     end
   end
 
-  @doc "Records an explicit data-recovery operation independently of code rollback."
+  @doc "Records an explicit approved data-recovery operation independently of code rollback."
   def restore_data(scope, environment_id, backup_id, attrs) do
     with {:ok, scope} <- execution_scope(scope, "apps:deploy"),
          {:ok, environment} <- get_environment(scope, environment_id),
          {:ok, backup} <- get_backup(scope, backup_id),
          true <- backup.environment_id == environment.id,
          {:ok, operation_key} <- key(value(attrs, :operation_key)),
-         {:ok, expected} <-
-           uuid(
-             value(
-               attrs,
-               :expected_active_deployment,
-               value(attrs, :expected_active_deployment_id)
-             )
-           ),
-         {:ok, target} <- restore_target_digest(scope, environment.id, backup.id) do
+         {:ok, target} <- restore_target_digest(scope, environment.id, backup.id),
+         :ok <-
+           Reviews.authorize_decision(
+             scope,
+             value(attrs, :review_id),
+             "apps.restore_data",
+             target,
+             1
+           ) do
       Repo.transaction(fn ->
         current = lock!(Environment, environment.id, environment.org_id)
-        compare_active!(current, expected)
+        compare_active!(current, environment.active_deployment_id)
 
         case Repo.get_by(DataRecovery, org_id: environment.org_id, operation_key: operation_key) do
           %DataRecovery{target_digest: ^target} = existing ->
@@ -1134,6 +1351,13 @@ defmodule Hermitscale.Apps do
             Repo.rollback(:operation_key_conflict)
 
           nil ->
+            if Repo.exists?(
+                 from r in DataRecovery,
+                   where:
+                     r.org_id == ^environment.org_id and r.review_id == ^value(attrs, :review_id)
+               ),
+               do: Repo.rollback(:review_already_used)
+
             recovery =
               %DataRecovery{
                 org_id: environment.org_id,
@@ -1143,6 +1367,7 @@ defmodule Hermitscale.Apps do
               }
               |> DataRecovery.changeset(%{
                 operation_key: operation_key,
+                review_id: value(attrs, :review_id),
                 target_digest: target,
                 expected_active_deployment_id: current.active_deployment_id,
                 deadline: DateTime.add(DateTime.utc_now(), 900, :second)
@@ -1179,7 +1404,15 @@ defmodule Hermitscale.Apps do
   end
 
   defp execute_recovery(scope, recovery) do
-    with {:ok, backup} <- get_backup(scope, recovery.backup_id),
+    with :ok <-
+           Reviews.authorize_decision(
+             scope,
+             recovery.review_id,
+             "apps.restore_data",
+             recovery.target_digest,
+             1
+           ),
+         {:ok, backup} <- get_backup(scope, recovery.backup_id),
          {:ok, environment} <-
            Repo.transaction(fn ->
              current = lock!(Environment, recovery.environment_id, recovery.org_id)
@@ -1302,7 +1535,7 @@ defmodule Hermitscale.Apps do
          do: :ok
   end
 
-  @doc "Code rollback is a fresh promotion using the old artifact and current customer data."
+  @doc "Code rollback is a fresh reviewed promotion using the old artifact and current customer data."
   def request_rollback(scope, deployment_id, attrs) do
     with {:ok, prior} <- get_deployment(scope, deployment_id) do
       request_deployment(
@@ -1386,27 +1619,31 @@ defmodule Hermitscale.Apps do
     end
   end
 
-  @doc "Public access is an explicit choice tied to the currently verified deployment."
+  def publication_target_digest(scope, environment_id, public) when is_boolean(public) do
+    with {:ok, environment} <- get_environment(scope, environment_id) do
+      {:ok,
+       digest(%{
+         action: "apps.publish",
+         environment_id: environment.id,
+         active_deployment_id: environment.active_deployment_id,
+         public: public
+       })}
+    end
+  end
+
+  @doc "Public access is a separately reviewed choice tied to the currently verified deployment."
   def publish_environment(scope, environment_id, attrs) do
     public = value(attrs, :public, true)
 
     with {:ok, scope} <- execution_scope(scope, "apps:deploy"),
          {:ok, environment} <- get_environment(scope, environment_id),
          true <- environment.status == "running" and not is_nil(environment.active_deployment_id),
-         {:ok, expected} <-
-           uuid(
-             value(
-               attrs,
-               :expected_active_deployment,
-               value(attrs, :expected_active_deployment_id)
-             )
-           ),
-         true <- is_boolean(public) do
+         {:ok, target} <- publication_target_digest(scope, environment.id, public),
+         :ok <-
+           Reviews.authorize_decision(scope, value(attrs, :review_id), "apps.publish", target, 1) do
       Repo.transaction(fn ->
         current = lock!(Environment, environment.id, environment.org_id)
-        compare_active!(current, expected)
-        if current.release_operation_id, do: Repo.rollback(:release_in_progress)
-
+        compare_active!(current, environment.active_deployment_id)
         unwrap!(Repo.update(Changeset.change(current, public: public)))
       end)
     else

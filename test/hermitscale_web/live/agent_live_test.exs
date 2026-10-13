@@ -68,40 +68,6 @@ defmodule HermitscaleWeb.AgentLiveTest do
       assert has_element?(view, "#turn-status-#{turn.id}")
     end
 
-    test "shows native turn permission controls to the executing actor", %{
-      conn: conn,
-      scope: scope
-    } do
-      session = conversation_fixture(scope)
-      turn = turn_fixture(scope, session)
-      request = %{"permission_id" => "permission-1", "command" => "Inspect workspace files"}
-
-      {:ok, approval} =
-        Agents.Approvals.request(scope, turn.id, %{
-          action: "agents.approve",
-          target_digest: Agents.Protocol.payload_digest(request)
-        })
-
-      turn
-      |> Ecto.Changeset.change(
-        status: :waiting_for_approval,
-        approval_id: approval.id,
-        runtime_state: %{"approval_request" => request}
-      )
-      |> Hermitscale.Repo.update!()
-
-      {:ok, view, _html} = live(conn, ~p"/agents/#{session.id}")
-      assert has_element?(view, "#approval-#{turn.id}")
-      assert has_element?(view, "#approve-turn-#{turn.id}")
-      assert has_element?(view, "#deny-turn-#{turn.id}")
-
-      Provider.put_response(:get_role, {:ok, %{slug: "admin", permissions: ["agents:read"]}})
-      {:ok, viewer, _html} = live(conn, ~p"/agents/#{session.id}")
-      assert has_element?(viewer, "#approval-#{turn.id}")
-      refute has_element?(viewer, "#approve-turn-#{turn.id}")
-      refute has_element?(viewer, "#deny-turn-#{turn.id}")
-    end
-
     test "updates history from committed PubSub events", %{conn: conn, scope: scope} do
       session = conversation_fixture(scope)
       {:ok, view, _html} = live(conn, ~p"/agents/#{session.id}")

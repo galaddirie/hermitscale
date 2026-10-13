@@ -60,6 +60,11 @@ defmodule HermitscaleWeb.Layouts do
             >Conversations</.link>
             <.link navigate={~p"/apps"} id="nav-apps" class="text-sm font-medium hover:text-primary">Apps</.link>
             <.link
+              navigate={~p"/reviews"}
+              id="nav-reviews"
+              class="text-sm font-medium hover:text-primary"
+            >Reviews</.link>
+            <.link
               navigate={~p"/workflows"}
               id="nav-workflows"
               class="text-sm font-medium hover:text-primary"
