@@ -17,7 +17,6 @@ defmodule Hermitscale.Agents.Session do
     field :operation_key, :string
     field :app_id, :binary_id
     field :connection_set, :map, default: %{}
-    field :source_bundle, :map, default: %{}
     field :openai_account_id, :string, virtual: true
     field :github_account_id, :string, virtual: true
     field :provider_conversation_id, :string
@@ -34,7 +33,6 @@ defmodule Hermitscale.Agents.Session do
       :recipe,
       :operation_key,
       :connection_set,
-      :source_bundle,
       :openai_account_id,
       :github_account_id
     ])

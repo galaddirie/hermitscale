@@ -10,7 +10,6 @@ defmodule Hermitscale.Apps.DataRecovery do
     field :execution_actor_user_id, :string
     field :operation_key, :string
     field :target_digest, :string
-    field :review_id, :binary_id
     field :expected_active_deployment_id, :binary_id
     field :status, :string, default: "queued"
     field :deadline, :utc_datetime_usec
@@ -24,7 +23,6 @@ defmodule Hermitscale.Apps.DataRecovery do
     |> cast(attrs, [
       :operation_key,
       :target_digest,
-      :review_id,
       :expected_active_deployment_id,
       :deadline
     ])
@@ -35,7 +33,6 @@ defmodule Hermitscale.Apps.DataRecovery do
       :execution_actor_user_id,
       :operation_key,
       :target_digest,
-      :review_id,
       :deadline
     ])
     |> unique_constraint([:org_id, :operation_key])

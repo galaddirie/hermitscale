@@ -5,9 +5,7 @@ defmodule Hermitscale.Workspaces.Evidence do
   @script """
   import os, json, sys, subprocess, hashlib, base64, stat, time, datetime
   base = sys.argv[1]
-  source_baseline = json.loads(sys.argv[3]) if len(sys.argv)>3 else None
-  declared_base = source_baseline["deployed_revision"] if source_baseline else base
-  verify_checks = sys.argv[2] == 'true'
+  verification_commands = json.loads(sys.argv[2])
   root = '/workspace'
   def run(args, timeout=90, limit=65536):
       p = subprocess.run(args, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout, input=b'')
@@ -21,14 +19,15 @@ defmodule Hermitscale.Workspaces.Evidence do
   status = run(['git','status','--porcelain'])
   untracked = run(['git','ls-files','--others','--exclude-standard','-z'],limit=256000)
   checks = []
-  if verify_checks and os.path.isfile(root + '/mix.exs'): checks.append(run(['mix','test']))
-  elif verify_checks and os.path.isfile(root + '/package.json'):
-      manifest = json.load(open(root + '/package.json'))
-      if 'test' in manifest.get('scripts', {}): checks.append(run(['npm','test','--','--runInBand']))
-      if 'build' in manifest.get('scripts', {}): checks.append(run(['npm','run','build']))
-  elif verify_checks and os.path.isfile(root + '/app.py'):
-      checks.append(run(['python3','-m','py_compile','app.py']))
-      checks.append(run(['python3','-m','unittest','discover']))
+  check_deadline = time.monotonic() + 90
+  for command in verification_commands:
+      remaining = max(0, check_deadline - time.monotonic())
+      try:
+          receipt = run(['bash','-lc',command], timeout=remaining) if remaining else {'command': ['bash','-lc',command], 'exit_code':124, 'output':'Verification deadline exceeded'}
+      except subprocess.TimeoutExpired:
+          receipt = {'command': ['bash','-lc',command], 'exit_code':124, 'output':'Verification deadline exceeded'}
+      receipt['name'] = command
+      checks.append(receipt)
   result = None
   result_present = False
   result_valid = False
@@ -84,7 +83,7 @@ defmodule Hermitscale.Workspaces.Evidence do
           metadata=os.stat(os.path.join(directory,name),follow_symlinks=False)
           if stat.S_ISREG(metadata.st_mode): storage_bytes+=metadata.st_size
   candidate_digest = hashlib.sha256(json.dumps(candidate,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
-  print(json.dumps({'storage_bytes':storage_bytes,'storage_measurement':{'path':root,'bytes_kind':'logical_regular_files','measured_at':datetime.datetime.now(datetime.timezone.utc).isoformat()},'candidate_digest':candidate_digest,'base_sha':actual_base,'local_base_sha':actual_base,'source_baseline':source_baseline, 'head_sha':head['output'].strip(), 'diff':diff['output'],
+  print(json.dumps({'storage_bytes':storage_bytes,'storage_measurement':{'path':root,'bytes_kind':'logical_regular_files','measured_at':datetime.datetime.now(datetime.timezone.utc).isoformat()},'candidate_digest':candidate_digest,'base_sha':actual_base, 'head_sha':head['output'].strip(), 'diff':diff['output'],
     'status':status['output'], 'checks':checks, 'artifacts':artifacts, 'files':files, 'manifest':manifest,
     'result':result, 'result_evidence_present':result_present, 'result_valid_json':result_valid, 'result_diagnostic':result_diagnostic, 'checks_passed':len(checks)>0 and all(c['exit_code']==0 for c in checks)}))
   """
@@ -93,24 +92,16 @@ defmodule Hermitscale.Workspaces.Evidence do
   import os,json,sys,subprocess,stat,re
   request=json.load(sys.stdin)
   base=request['base_sha']
-  marker=None
   if base:
       if not re.fullmatch('[a-f0-9]{40,64}',base): sys.exit(78)
       exists=subprocess.run(['/opt/hermitscale/bin/sandbox-launch','git','cat-file','-e',base+'^{commit}'],cwd='/workspace',stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0
-      if not exists:
-          fd=os.open('/var/lib/hermitscale/control/source-baseline.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
-          metadata=os.fstat(fd)
-          if metadata.st_uid!=0 or not stat.S_ISREG(metadata.st_mode) or metadata.st_size>8192: sys.exit(78)
-          with os.fdopen(fd) as source: marker=json.load(source)
-          if marker['deployed_revision']!=base or not re.fullmatch('[a-f0-9]{40,64}',marker['local_base_sha']): sys.exit(78)
-          base=marker['local_base_sha']
-  result=subprocess.run(['/opt/hermitscale/bin/sandbox-launch','coder','python3','-I','-c',request['script'],base,request['checks'],json.dumps(marker)])
+      if not exists: sys.exit(78)
+  result=subprocess.run(['/opt/hermitscale/bin/sandbox-launch','coder','python3','-I','-c',request['script'],base,json.dumps(request['verification_commands'])])
   sys.exit(result.returncode)
   """
 
-  def collect(workspace, lease, base_sha, options \\ []) do
-    verify_checks =
-      Keyword.get(options, :checks, DateTime.compare(lease.deadline, DateTime.utc_now()) == :gt)
+  def collect(workspace, _lease, base_sha, options \\ []) do
+    commands = Keyword.get(options, :verification_commands, [])
 
     with {:ok, sprite} <- SpriteAccess.sprite(workspace),
          {:ok, %{exit_code: 0, output: output}} <-
@@ -122,7 +113,7 @@ defmodule Hermitscale.Workspaces.Evidence do
                Jason.encode!(%{
                  script: @script,
                  base_sha: base_sha || "",
-                 checks: to_string(verify_checks)
+                 verification_commands: commands
                }),
              timeout: 180_000,
              output_limit: 16_000_000

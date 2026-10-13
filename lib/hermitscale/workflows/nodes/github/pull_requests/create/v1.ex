@@ -3,6 +3,4 @@ defmodule Hermitscale.Workflows.Nodes.GitHub.PullRequests.Create.V1 do
   use Hermitscale.Integrations.Action,
     operations: Hermitscale.Integrations.GitHub.Operations,
     operation: :pull_requests_create
-
-  def __external_operation__, do: true
 end

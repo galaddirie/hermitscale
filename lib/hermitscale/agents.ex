@@ -79,11 +79,6 @@ defmodule Hermitscale.Agents do
 
         candidate = Changeset.apply_changes(changeset)
 
-        case Hermitscale.Agents.SourceBundle.validate(scope, candidate.source_bundle) do
-          :ok -> :ok
-          {:error, reason} -> Repo.rollback(reason)
-        end
-
         if candidate.operation_key do
           identity =
             Protocol.payload_digest(%{
@@ -107,7 +102,7 @@ defmodule Hermitscale.Agents do
             else: nil
 
         if existing do
-          fields = [:title, :repository, :base_sha, :recipe, :connection_set, :source_bundle]
+          fields = [:title, :repository, :base_sha, :recipe, :connection_set]
 
           if Map.take(existing, fields) != Map.take(candidate, fields),
             do: Repo.rollback(:session_key_conflict)
@@ -505,7 +500,7 @@ defmodule Hermitscale.Agents do
                runtime_state: worker,
                worker_epoch: if(last, do: last["epoch"], else: current.worker_epoch),
                worker_cursor: if(last, do: last["cursor"], else: current.worker_cursor),
-               review_id: Map.get(outcome, :review_id, current.review_id),
+               approval_id: Map.get(outcome, :approval_id, current.approval_id),
                provider_conversation_id: worker["provider_session_id"],
                result: Map.get(outcome, :result, current.result),
                error:
@@ -586,8 +581,6 @@ defmodule Hermitscale.Agents do
 
   defp validate_outcome(scope, session, turn, %{status: status, result: result} = outcome)
        when status in [:succeeded, :failed, :interrupted, :cancelled] and is_map(result) do
-    result = Map.put(result, "base_sha", Map.get(result, "local_base_sha", result["base_sha"]))
-
     with {:ok, exports} <- export_workspace_files(scope, session, Map.get(result, "files", [])),
          candidate = %{
            "base_sha" => result["base_sha"],
@@ -683,10 +676,12 @@ defmodule Hermitscale.Agents do
 
   defp export_workspace_files(_scope, _session, _files), do: {:error, :invalid_export}
 
-  def answer_review(scope, turn_id, decision) do
+  def answer_approval(scope, turn_id, decision) do
     with {:ok, scope} <- execution_scope(scope),
          {:ok, turn} <- get_turn(scope, turn_id),
-         {:ok, review} <- Hermitscale.Reviews.decide(scope, turn.review_id, decision),
+         true <- turn.status == :waiting_for_approval,
+         {:ok, approval} <-
+           Hermitscale.Agents.Approvals.decide(scope, turn.approval_id, decision),
          {:ok, session} <- get_session(scope, turn.session_id),
          {:ok, lease} <- Workspaces.get_lease(scope, turn.lease_id),
          request = turn.runtime_state["approval_request"],
@@ -694,9 +689,9 @@ defmodule Hermitscale.Agents do
          :ok <-
            if(decision == :approved,
              do:
-               Hermitscale.Reviews.authorize_decision(
+               Hermitscale.Agents.Approvals.authorize_decision(
                  scope,
-                 review.id,
+                 approval.id,
                  "agents.approve",
                  Protocol.payload_digest(request),
                  1
@@ -716,7 +711,7 @@ defmodule Hermitscale.Agents do
                  "request_id" => request["request_id"],
                  "response" => if(decision == :approved, do: "approved", else: "denied")
                },
-               review.id
+               approval.id
              )
            ) do
       transaction_and_broadcast(session.id, fn ->
@@ -984,7 +979,8 @@ defmodule Hermitscale.Agents do
         turn.instructions,
         turn.budget_cents,
         turn.timeout_seconds,
-        turn.result_schema
+        turn.result_schema,
+        turn.verification_commands
       ])
     )
     |> Base.encode16(case: :lower)

@@ -3,7 +3,6 @@ defmodule Hermitscale.Artifacts do
   alias Hermitscale.{Repo, Authorization}
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.Artifacts.Artifact
-  import Ecto.Query
 
   def record(scope, attrs) do
     content = Map.get(attrs, :content, Map.get(attrs, "content"))
@@ -48,7 +47,7 @@ defmodule Hermitscale.Artifacts do
     with :ok <- permission(scope), {:ok, id} <- Ecto.UUID.cast(id) do
       case Repo.get_by(Artifact, id: id, org_id: Scope.organization_id!(scope)) do
         %Artifact{created_by_user_id: actor} = artifact when actor == scope.user.id ->
-          if creator_read?(scope, artifact) or review_evidence?(scope, artifact),
+          if creator_read?(scope, artifact),
             do: {:ok, artifact},
             else: {:error, :not_found}
 
@@ -59,8 +58,8 @@ defmodule Hermitscale.Artifacts do
             else: {:error, :not_found}
           )
 
-        %Artifact{} = artifact ->
-          if review_evidence?(scope, artifact), do: {:ok, artifact}, else: {:error, :not_found}
+        %Artifact{} ->
+          {:error, :not_found}
 
         nil ->
           {:error, :not_found}
@@ -94,7 +93,7 @@ defmodule Hermitscale.Artifacts do
     do:
       if(
         Enum.any?(
-          ~w(agents:read agents:run apps:read apps:write apps:deploy reviews:read reviews:decide),
+          ~w(agents:read agents:run apps:read apps:write apps:deploy),
           &(Authorization.authorize(scope, &1) == :ok)
         ),
         do: :ok,
@@ -114,62 +113,4 @@ defmodule Hermitscale.Artifacts do
     do: Authorization.authorize(scope, "agents:read") == :ok
 
   defp creator_read?(scope, _artifact), do: Authorization.authorize(scope, "apps:read") == :ok
-
-  defp review_evidence?(scope, artifact) do
-    org = Scope.organization_id!(scope)
-    actor = scope.user.id
-
-    if artifact.owner_type == "session" and artifact.kind == "workspace_file" and
-         Authorization.authorize(scope, "reviews:decide") == :ok do
-      snapshots =
-        Repo.all(
-          from r in Hermitscale.Reviews.Review,
-            join: snapshot in Artifact,
-            on:
-              fragment("?::text", snapshot.id) ==
-                fragment("?->>'patch_snapshot_artifact_id'", r.target),
-            where:
-              r.org_id == ^org and r.action == "agents.publish_branch" and
-                ^actor in r.eligible_approver_ids and r.expires_at > ^DateTime.utc_now(:second),
-            where:
-              snapshot.org_id == ^org and snapshot.owner_type == "session" and
-                snapshot.owner_id == ^artifact.owner_id and snapshot.kind == "patch_snapshot" and
-                fragment("?->>'session_id'", r.target) == ^artifact.owner_id,
-            select: snapshot.content,
-            limit: 100
-        )
-
-      Enum.any?(snapshots, fn content ->
-        case Jason.decode(content) do
-          {:ok, %{"exports" => exports}} when is_list(exports) ->
-            Enum.any?(exports, fn
-              %{"artifact_id" => id, "digest" => digest} ->
-                id == artifact.id and digest == artifact.digest
-
-              _invalid ->
-                false
-            end)
-
-          _invalid ->
-            false
-        end
-      end)
-    else
-      if Authorization.authorize(scope, "reviews:decide") == :ok do
-        Repo.exists?(
-          from r in Hermitscale.Reviews.Review,
-            where:
-              r.org_id == ^org and r.action == "agents.publish_branch" and
-                ^actor in r.eligible_approver_ids and
-                r.expires_at > ^DateTime.utc_now(:second),
-            where: fragment("?->>'session_id'", r.target) == ^artifact.owner_id,
-            where:
-              fragment("?->>'patch_snapshot_artifact_id'", r.target) == ^artifact.id or
-                fragment("?->>'patch_artifact_id'", r.target) == ^artifact.id
-        )
-      else
-        false
-      end
-    end
-  end
 end

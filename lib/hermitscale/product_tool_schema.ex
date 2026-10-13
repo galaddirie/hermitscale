@@ -11,28 +11,21 @@ defmodule Hermitscale.ProductToolSchema do
     "agents.continue" => ~w(session_id instructions operation_key),
     "agents.cancel" => ~w(turn_id),
     "agents.publish" =>
-      ~w(session_id branch base_sha manifest message candidate_digest patch_snapshot_artifact_id review_id operation_key),
-    "reviews.request" => ~w(action target target_digest operation_key),
-    "reviews.decide" => ~w(id decision),
+      ~w(session_id branch base_sha manifest message candidate_digest patch_snapshot_artifact_id operation_key),
     "apps.inspect" => ~w(id),
     "apps.create" => ~w(name slug operation_key),
     "apps.build" => ~w(app_id operation_key),
     "apps.preview" => ~w(app_id session_id source_commit operation_key),
     "apps.logs" => ~w(app_id),
-    "apps.verify_defect" => ~w(app_id environment_id path expected_status expected_body_digest),
     "deployments.request" =>
-      ~w(app_id environment_id session_id source_commit artifact_id artifact_digest configuration_digest review_id operation_key),
-    "deployments.inspect" => ~w(id),
-    "support.subscribe" => ~w(app_id environment_id connection ticket_prefix operation_key),
-    "support.investigate" => ~w(subscription_id ticket_id operation_key),
-    "support.inspect" => ~w(id),
-    "support.reply" => ~w(case_id body outcome review_id operation_key)
+      ~w(app_id environment_id session_id source_commit artifact_id artifact_digest configuration_digest operation_key),
+    "deployments.inspect" => ~w(id)
   }
-  @optional ~w(status schema_version repository base_sha recipe connection_set title instructions budget_cents timeout_seconds result_schema expected_active_deployment_id expected_active_deployment policy_revision eligible_approver_ids expiry_seconds deployment_id defect_evidence_id limit input)
+  @optional ~w(status schema_version repository base_sha recipe connection_set title instructions budget_cents timeout_seconds result_schema expected_active_deployment_id expected_active_deployment limit input)
 
   def schema(name) do
     required = Map.fetch!(@required, name)
-    properties = Map.new(Enum.uniq(required ++ @optional), &{&1, field_schema(&1)})
+    properties = Map.new(Enum.uniq(required ++ optional(name)), &{&1, field_schema(&1)})
     %{type: "object", properties: properties, required: required, additionalProperties: false}
   end
 
@@ -42,27 +35,30 @@ defmodule Hermitscale.ProductToolSchema do
     valid =
       Enum.all?(required, &Map.has_key?(args, &1)) and
         Enum.all?(args, fn {key, value} ->
-          key in (required ++ @optional) and valid_value?(field_schema(key), value)
+          key in (required ++ optional(name)) and valid_value?(field_schema(key), value)
         end)
 
     if valid, do: :ok, else: {:error, :invalid_arguments}
   end
 
+  defp optional("agents.continue"), do: ["verification_commands" | @optional]
+  defp optional(_name), do: @optional
+
   defp field_schema("input"), do: %{}
 
   defp field_schema(name)
-       when name in ~w(definition connection connection_set result_schema target),
+       when name in ~w(definition connection_set result_schema),
        do: %{type: "object"}
 
-  defp field_schema(name) when name in ~w(manifest eligible_approver_ids),
+  defp field_schema(name) when name in ~w(manifest verification_commands),
     do: %{type: "array", items: %{type: "string"}}
 
   defp field_schema(name)
-       when name in ~w(budget_cents timeout_seconds policy_revision expiry_seconds limit schema_version expected_status),
+       when name in ~w(budget_cents timeout_seconds limit schema_version),
        do: %{type: "integer"}
 
   defp field_schema(name)
-       when name in ~w(expected_active_deployment_id expected_active_deployment deployment_id),
+       when name in ~w(expected_active_deployment_id expected_active_deployment),
        do: %{type: ["string", "null"]}
 
   defp field_schema(_name), do: %{type: "string"}

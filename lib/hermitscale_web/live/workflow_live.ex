@@ -390,17 +390,19 @@ defmodule HermitscaleWeb.WorkflowLive do
 
   defp select_node(socket, id) do
     node = Enum.find(socket.assigns.definition["nodes"], &(&1["id"] == id))
-    module = Catalog.fetch!(node["type"], node["version"])
 
-    help =
-      Enum.map(module.spec().params_schema, fn {key, opts} ->
-        %{
-          name: Atom.to_string(key),
-          required: Keyword.get(opts, :required, false),
-          doc: Keyword.get(opts, :doc, ""),
-          type: inspect(Keyword.fetch!(opts, :type))
-        }
-      end)
+    {socket, help} =
+      case Catalog.fetch(node["type"], node["version"]) do
+        {:ok, module} ->
+          {socket, parameter_help(module)}
+
+        {:error, :not_found} ->
+          {put_flash(
+             socket,
+             :error,
+             "This action is unavailable. Remove it and select a catalog action."
+           ), []}
+      end
 
     attrs = %{
       "params" => Jason.encode!(node["params"], pretty: true),
@@ -414,6 +416,17 @@ defmodule HermitscaleWeb.WorkflowLive do
       :node_form,
       editor_form(:node_config, %{params: :string, connection: :string, policy: :string}, attrs)
     )
+  end
+
+  defp parameter_help(module) do
+    Enum.map(module.spec().params_schema, fn {key, opts} ->
+      %{
+        name: Atom.to_string(key),
+        required: Keyword.get(opts, :required, false),
+        doc: Keyword.get(opts, :doc, ""),
+        type: inspect(Keyword.fetch!(opts, :type))
+      }
+    end)
   end
 
   defp refresh_canvas(socket) do
@@ -585,7 +598,7 @@ defmodule HermitscaleWeb.WorkflowLive do
             <p class="mb-3 text-xs uppercase tracking-[0.2em] text-base-content/50">
               Automate the work
             </p><h1 class="text-4xl font-semibold tracking-tight">Workflows</h1><p class="mt-3 max-w-xl text-base-content/60">
-              Connect coding, reviews, apps, and the services your team uses.
+              Connect agents, apps, and the services your team uses.
             </p>
           </header>
           <div class="grid gap-8 lg:grid-cols-[1fr_340px]">
@@ -887,7 +900,7 @@ defmodule HermitscaleWeb.WorkflowLive do
                     label="Input (JSON)"
                     rows="4"
                   /><p class="mb-4 text-xs leading-6 text-base-content/55">
-                    Runs use the saved definition. Coding, publication and deployment follow their normal budgets and review policies.
+                    Runs use the saved definition. Coding, publication and deployment follow their configured budgets and actor permissions.
                   </p><button
                     id="start-workflow-run"
                     class="btn btn-primary btn-sm w-full"

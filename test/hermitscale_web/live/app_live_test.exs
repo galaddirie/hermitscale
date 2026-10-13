@@ -33,7 +33,7 @@ defmodule HermitscaleWeb.AppLiveTest do
     assert AppsRuntimeFake.calls() == []
 
     view
-    |> form("#new-app-form", app: %{name: "Research notes", slug: "research-notes"})
+    |> form("#new-app-form", app: %{name: "Research app", slug: "research-app"})
     |> render_submit()
 
     {path, _flash} = assert_redirect(view)
@@ -46,7 +46,7 @@ defmodule HermitscaleWeb.AppLiveTest do
     build
     |> form("#app-build-form",
       build: %{
-        instructions: "Build a searchable note board",
+        instructions: "Build a research dashboard",
         budget_cents: 500,
         timeout_seconds: 1800
       }
@@ -58,7 +58,7 @@ defmodule HermitscaleWeb.AppLiveTest do
     assert AppsRuntimeFake.calls() == []
   end
 
-  test "prepares exact reviewed release and shows verified deployment evidence", %{
+  test "prepares an immutable release and shows verified deployment evidence", %{
     conn: conn,
     scope: scope
   } do
@@ -70,10 +70,10 @@ defmodule HermitscaleWeb.AppLiveTest do
     |> form("#app-release-form", release: %{source_commit: String.duplicate("a", 40)})
     |> render_submit()
 
-    assert has_element?(view, "#deployment-review")
-    assert has_element?(view, "#approve-app-deployment")
+    assert has_element?(view, "#deployment-confirmation")
+    assert has_element?(view, "#confirm-app-action")
     assert Apps.list_deployments(scope, app.id) == []
-    view |> element("#approve-app-deployment") |> render_click()
+    view |> element("#confirm-app-action") |> render_click()
     {path, _flash} = assert_redirect(view)
     [deployment] = Apps.list_deployments(scope, app.id)
     assert path == ~p"/apps/#{app.id}/deployments/#{deployment.id}"

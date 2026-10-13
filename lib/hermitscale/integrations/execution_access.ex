@@ -5,7 +5,7 @@ defmodule Hermitscale.Integrations.ExecutionAccess do
   alias Hermitscale.Accounts.Scope
   alias Hermitscale.Integrations.{Capability, ConnectedAccounts}
 
-  @product_actions ~w(workflows.list workflows.inspect workflows.validate workflows.create runs.start runs.status agents.inspect agents.continue agents.cancel agents.publish reviews.request reviews.decide apps.inspect apps.create apps.build apps.preview apps.logs apps.verify_defect deployments.request deployments.inspect support.subscribe support.investigate support.inspect support.reply)
+  @product_actions ~w(workflows.list workflows.inspect workflows.validate workflows.create runs.start runs.status agents.inspect agents.continue agents.cancel agents.publish apps.inspect apps.create apps.build apps.preview apps.logs deployments.request deployments.inspect)
 
   def issue(scope, attrs) do
     with :ok <- authorize_issuance(scope, attrs) do

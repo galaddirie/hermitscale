@@ -87,8 +87,7 @@ defmodule Hermitscale.Workspaces.Recipe do
            initialize_checkout(
              sprite,
              workspace,
-             Keyword.get(options, :source_credential),
-             Keyword.get(options, :source_bundle)
+             Keyword.get(options, :source_credential)
            ),
          :ok <- ensure_worker(sprite),
          {:ok, _policy} <-
@@ -181,7 +180,7 @@ defmodule Hermitscale.Workspaces.Recipe do
     end
   end
 
-  defp initialize_checkout(sprite, workspace, source_credential, source_bundle) do
+  defp initialize_checkout(sprite, workspace, source_credential) do
     setup = @source_seed_script
 
     config = %{
@@ -190,8 +189,7 @@ defmodule Hermitscale.Workspaces.Recipe do
       source_credential: credential_value(source_credential),
       recipe: workspace.recipe,
       scaffold: @scaffold,
-      scaffold_test: @scaffold_test,
-      source_bundle: source_bundle_config(source_bundle)
+      scaffold_test: @scaffold_test
     }
 
     case SpriteSDK.capture(sprite, "sudo", ["-n", "python3", "-I", "-c", setup],
@@ -201,7 +199,6 @@ defmodule Hermitscale.Workspaces.Recipe do
          ) do
       {:ok, %{exit_code: 0}} -> :ok
       {:ok, %{exit_code: 77}} -> {:error, :invalid_repository}
-      {:ok, %{exit_code: 80}} -> {:error, :source_bundle_rejected}
       {:ok, %{exit_code: _code}} -> {:error, :source_checkout_failed}
       {:error, _reason} = error -> error
     end
@@ -265,14 +262,6 @@ defmodule Hermitscale.Workspaces.Recipe do
       "HOME" => "/home/hermitworker",
       "PATH" => "/.sprite/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     }
-  end
-
-  defp source_bundle_config(nil), do: nil
-
-  defp source_bundle_config(%{content: content} = source) when is_binary(content) do
-    source
-    |> Map.take([:artifact_id, :app_id, :artifact_digest, :deployed_revision])
-    |> Map.put(:content, Base.encode64(content))
   end
 
   defp credential_value(nil), do: nil

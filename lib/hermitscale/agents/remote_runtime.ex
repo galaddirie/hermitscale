@@ -1,6 +1,7 @@
 defmodule Hermitscale.Agents.RemoteRuntime do
   @moduledoc "Bounded reconciliation of one remote journal operation; never an independent retry loop."
-  alias Hermitscale.{Workspaces, Reviews}
+  alias Hermitscale.Workspaces
+  alias Hermitscale.Agents.Approvals
   alias Hermitscale.Integrations.ExecutionAccess
   alias Hermitscale.Agents.Protocol
 
@@ -65,32 +66,29 @@ defmodule Hermitscale.Agents.RemoteRuntime do
         operation["approval_request"] != nil ->
           approval = operation["approval_request"]
 
-          with {:ok, review} <-
-                 Reviews.request(scope, %{
-                   operation_key: "worker:" <> turn.id <> ":" <> approval["request_id"],
+          with {:ok, permission} <-
+                 Approvals.request(scope, turn.id, %{
                    action: "agents.approve",
                    target_digest: Protocol.payload_digest(approval),
-                   target: approval,
-                   policy_revision: 1,
-                   eligible_approver_ids: [scope.user.id]
+                   policy_revision: 1
                  }) do
-            case review.status do
-              :requested ->
+            case permission.status do
+              :pending ->
                 {:ok,
                  %{
                    status: :waiting_for_approval,
                    events: events,
                    worker_state: operation,
-                   review_id: review.id
+                   approval_id: permission.id
                  }}
 
               decision when decision in [:approved, :rejected] ->
                 with :ok <-
                        if(decision == :approved,
                          do:
-                           Reviews.authorize_decision(
+                           Approvals.authorize_decision(
                              scope,
-                             review.id,
+                             permission.id,
                              "agents.approve",
                              Protocol.payload_digest(approval),
                              1
@@ -111,7 +109,7 @@ defmodule Hermitscale.Agents.RemoteRuntime do
                              "response" =>
                                if(decision == :approved, do: "approved", else: "denied")
                            },
-                           review.id
+                           permission.id
                          )
                        ) do
                   {:ok,
@@ -119,7 +117,7 @@ defmodule Hermitscale.Agents.RemoteRuntime do
                      status: :running,
                      events: events,
                      worker_state: current,
-                     review_id: review.id
+                     approval_id: permission.id
                    }}
                 end
             end
@@ -148,7 +146,8 @@ defmodule Hermitscale.Agents.RemoteRuntime do
       result =
         with {:ok, base} <- Hermitscale.Agents.Publications.current_base_sha(scope, session.id) do
           Workspaces.collect_evidence(scope, workspace.id, lease.id, base,
-            checks: outcome == :succeeded
+            verification_commands:
+              if(outcome == :succeeded, do: turn.verification_commands, else: [])
           )
         end
 
@@ -178,14 +177,10 @@ defmodule Hermitscale.Agents.RemoteRuntime do
       {:error, reason}
       when reason in [:operation_not_found, :worker_unavailable, :worker_not_started] ->
         with {:ok, env} <- ExecutionAccess.provider_env(scope, session, turn),
-             {:ok, bundle} <-
-               Hermitscale.Agents.SourceBundle.resolve(scope, session.source_bundle),
-             {:ok, source} <-
-               if(bundle == nil, do: source_credential(scope, session), else: {:ok, nil}),
+             {:ok, source} <- source_credential(scope, session),
              {:ok, _} <-
                Workspaces.prepare_turn(scope, workspace.id, lease, turn, env,
-                 source_credential: source,
-                 source_bundle: bundle
+                 source_credential: source
                ),
              {:ok, state} <-
                Workspaces.worker_command(
@@ -218,17 +213,20 @@ defmodule Hermitscale.Agents.RemoteRuntime do
 
   defp start_payload(session, turn) do
     %{
-      "prompt" =>
-        turn.instructions <>
-          "\nWrite the final structured result to .hermitscale/result.json matching this JSON schema: " <>
-          Jason.encode!(turn.result_schema) <>
-          ". Run the repository's tests. Hermitscale independently records verification commands after completion. Do not commit, publish changes or deploy."
+      "prompt" => turn.instructions <> result_instruction(turn.result_schema)
     }
     |> then(fn payload ->
       if session.provider_conversation_id,
         do: Map.put(payload, "provider_conversation_id", session.provider_conversation_id),
         else: payload
     end)
+  end
+
+  defp result_instruction(schema) when schema == %{}, do: ""
+
+  defp result_instruction(schema) do
+    "\nWrite the final structured result to .hermitscale/result.json matching this JSON schema: " <>
+      Jason.encode!(schema)
   end
 
   defp events(scope, workspace, turn, lease, operation) do

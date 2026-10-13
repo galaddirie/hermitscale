@@ -82,7 +82,6 @@ defmodule HermitscaleWeb.UserAuthTest do
     deployment_id = Ecto.UUID.generate()
 
     for {view, action, params, expected} <- [
-          {HermitscaleWeb.ReviewsLive, :show, %{"id" => id}, "/reviews/" <> id},
           {HermitscaleWeb.AppLive, :build, %{"id" => id}, "/apps/" <> id <> "/build"},
           {HermitscaleWeb.AppLive, :deployment, %{"id" => id, "deployment_id" => deployment_id},
            "/apps/" <> id <> "/deployments/" <> deployment_id},

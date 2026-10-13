@@ -26,7 +26,7 @@ defmodule Hermitscale.AccountsFixtures do
 
   def role_permissions_fixture("admin"),
     do:
-      ~w(workflows:run workflows:edit workflows:activate connections:manage members:manage widgets:pipes:manage widgets:users-table:manage agents:read agents:run agents:publish workspaces:read workspaces:write apps:read apps:write apps:deploy reviews:read reviews:request reviews:decide support:investigate support:reply)
+      ~w(workflows:run workflows:edit workflows:activate connections:manage members:manage widgets:pipes:manage widgets:users-table:manage agents:read agents:run agents:publish workspaces:read workspaces:write apps:read apps:write apps:deploy)
 
   def role_permissions_fixture("editor"), do: ~w(workflows:run workflows:edit workflows:activate)
   def role_permissions_fixture("runner"), do: ~w(workflows:run)

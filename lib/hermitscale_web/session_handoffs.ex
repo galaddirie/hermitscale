@@ -90,10 +90,10 @@ defmodule HermitscaleWeb.SessionHandoffs do
 
   defp valid_return_to?(path) when is_binary(path) do
     case String.split(path, "/", trim: false) do
-      ["", root] when root in ~w(agents apps reviews workflows) ->
+      ["", root] when root in ~w(agents apps workflows) ->
         true
 
-      ["", root, id] when root in ~w(agents apps reviews) ->
+      ["", root, id] when root in ~w(agents apps) ->
         match?({:ok, _uuid}, Ecto.UUID.cast(id))
 
       ["", "apps", id, "build"] ->

@@ -68,7 +68,7 @@ defmodule Hermitscale.Apps.EndToEndTest do
 
     assert {:ok, turn} =
              Apps.submit_build_turn(scope, app.id, session.id, %{
-               instructions: "Build searchable notes",
+               instructions: "Build an app",
                operation_key: Ecto.UUID.generate()
              })
 
@@ -103,9 +103,9 @@ defmodule Hermitscale.Apps.EndToEndTest do
     scope: scope
   } do
     attrs = %{
-      name: "Retryable notes",
-      slug: "retryable-notes",
-      repository: "owner/notes",
+      name: "Retryable app",
+      slug: "retryable-app",
+      repository: "owner/app",
       operation_key: Ecto.UUID.generate()
     }
 
@@ -162,56 +162,63 @@ defmodule Hermitscale.Apps.EndToEndTest do
     assert Remote.calls() == calls
   end
 
-  test "review binds source artifact, configuration and expected prior release", %{
+  test "deployment intent binds immutable artifact, configuration and prior release", %{
     scope: scope,
     app: app,
     session: session
   } do
     attrs = deployment_attrs_fixture(scope, app, session)
-    review = approve_deployment_fixture(scope, app, attrs)
-
-    assert {:error, :review_mismatch_or_not_approved} =
-             Apps.request_deployment(
-               scope,
-               app.id,
-               attrs
-               |> Map.put(:review_id, review.id)
-               |> Map.put(:source_commit, String.duplicate("b", 40))
-             )
 
     assert {:error, :artifact_digest_mismatch} =
              Apps.request_deployment(
                scope,
                app.id,
-               attrs
-               |> Map.put(:review_id, review.id)
-               |> Map.put(:artifact_digest, String.duplicate("0", 64))
+               Map.put(attrs, :artifact_digest, String.duplicate("0", 64))
              )
 
     assert {:error, :configuration_changed} =
              Apps.request_deployment(
                scope,
                app.id,
-               attrs
-               |> Map.put(:review_id, review.id)
-               |> Map.put(:configuration_digest, "changed")
+               Map.put(attrs, :configuration_digest, "changed")
              )
 
-    assert {:ok, deployment} =
-             Apps.request_deployment(scope, app.id, Map.put(attrs, :review_id, review.id))
-
+    assert {:ok, deployment} = Apps.request_deployment(scope, app.id, attrs)
     assert deployment.status == "queued"
     assert_enqueued(worker: ReleaseWorker, args: %{deployment_id: deployment.id})
 
-    assert {:ok, same} =
-             Apps.request_deployment(scope, app.id, Map.put(attrs, :review_id, review.id))
+    assert {:error, :operation_key_conflict} =
+             Apps.request_deployment(
+               scope,
+               app.id,
+               Map.put(attrs, :source_commit, String.duplicate("b", 40))
+             )
 
+    assert {:ok, same} = Apps.request_deployment(scope, app.id, attrs)
     assert same.id == deployment.id
     assert {:ok, deployment} = Apps.reconcile_deployment(deployment.id)
     assert deployment.status == "active"
     assert deployment.verification["served_revision"] == attrs.source_commit
     assert {:ok, artifact} = Artifacts.get(scope, deployment.artifact_id)
     assert artifact.digest == attrs.artifact_digest
+  end
+
+  test "deployment admission and execution enforce the actor's app permission", %{
+    scope: scope,
+    app: app,
+    session: session
+  } do
+    attrs = deployment_attrs_fixture(scope, app, session)
+    denied = %{scope | membership: %{scope.membership | permissions: ["apps:read"]}}
+    calls = Remote.calls()
+
+    assert {:error, :forbidden} = Apps.request_deployment(denied, app.id, attrs)
+    assert Remote.calls() == calls
+
+    assert {:ok, deployment} = Apps.request_deployment(scope, app.id, attrs)
+    Hermitscale.AuthTest.Provider.put_response(:list_memberships, {:ok, []})
+    assert {:error, :execution_actor_ineligible} = Apps.reconcile_deployment(deployment.id)
+    assert Remote.calls() == calls
   end
 
   test "competing releases cannot replace an unexpected active deployment", %{
@@ -221,14 +228,12 @@ defmodule Hermitscale.Apps.EndToEndTest do
   } do
     first = deployment_attrs_fixture(scope, app, session)
     second = deployment_attrs_fixture(scope, app, session, String.duplicate("b", 40))
-    first_review = approve_deployment_fixture(scope, app, first)
-    second_review = approve_deployment_fixture(scope, app, second)
 
     {:ok, first_record} =
-      Apps.request_deployment(scope, app.id, Map.put(first, :review_id, first_review.id))
+      Apps.request_deployment(scope, app.id, first)
 
     {:ok, second_record} =
-      Apps.request_deployment(scope, app.id, Map.put(second, :review_id, second_review.id))
+      Apps.request_deployment(scope, app.id, second)
 
     assert {:ok, promoted} = Apps.reconcile_deployment(first_record.id)
     calls = Remote.calls()
@@ -246,16 +251,16 @@ defmodule Hermitscale.Apps.EndToEndTest do
     first = deployment_fixture(scope, app, session)
     {:ok, environment} = Apps.get_environment(scope, first.environment_id)
     assert environment.workspace_id != session.workspace_id
-    Remote.add_write(environment.workspace_id, "Customer note")
+    Remote.add_write(environment.workspace_id, "Customer record")
     second = deployment_fixture(scope, app, session, String.duplicate("b", 40))
-    assert Remote.data(environment.workspace_id) == ["Customer note"]
+    assert Remote.data(environment.workspace_id) == ["Customer record"]
     assert {:ok, current} = Apps.get_environment(scope, environment.id)
     assert current.workspace_id == environment.workspace_id
     assert current.active_deployment_id == second.id
     assert {:ok, backup} = Apps.get_backup(scope, second.backup_id)
     assert backup.verification["restoration"] == "verified"
     assert {:ok, backup_content} = Artifacts.read(scope, backup.artifact_id)
-    assert Jason.decode!(backup_content)["notes"] == ["Customer note"]
+    assert Jason.decode!(backup_content)["records"] == ["Customer record"]
     assert {:ok, old} = Apps.get_deployment(scope, first.id)
     assert old.status == "superseded"
   end
@@ -266,10 +271,9 @@ defmodule Hermitscale.Apps.EndToEndTest do
     session: session
   } do
     attrs = deployment_attrs_fixture(scope, app, session)
-    review = approve_deployment_fixture(scope, app, attrs)
 
     {:ok, admitted} =
-      Apps.request_deployment(scope, app.id, Map.put(attrs, :review_id, review.id))
+      Apps.request_deployment(scope, app.id, attrs)
 
     Remote.lose_marker_response()
     assert {:ok, deployment} = Apps.reconcile_deployment(admitted.id)
@@ -294,8 +298,7 @@ defmodule Hermitscale.Apps.EndToEndTest do
     {:ok, environment} = Apps.get_environment(scope, first.environment_id)
     Remote.add_write(environment.workspace_id, "Created after first publication")
     attrs = deployment_attrs_fixture(scope, app, session, String.duplicate("b", 40))
-    review = approve_deployment_fixture(scope, app, attrs)
-    {:ok, failed} = Apps.request_deployment(scope, app.id, Map.put(attrs, :review_id, review.id))
+    {:ok, failed} = Apps.request_deployment(scope, app.id, attrs)
     Remote.fail_activation()
     assert {:error, :service_failed} = Apps.reconcile_deployment(failed.id)
     assert {:ok, failed} = Apps.get_deployment(scope, failed.id)
@@ -306,7 +309,7 @@ defmodule Hermitscale.Apps.EndToEndTest do
     assert Remote.data(environment.workspace_id) == ["Created after first publication"]
   end
 
-  test "code rollback and data recovery require distinct exact approvals", %{
+  test "code rollback preserves writes while explicit data recovery replaces them", %{
     scope: scope,
     app: app,
     session: session
@@ -329,27 +332,34 @@ defmodule Hermitscale.Apps.EndToEndTest do
       operation_key: Ecto.UUID.generate()
     }
 
-    review = approve_deployment_fixture(scope, app, rollback_attrs)
-
     assert {:ok, rollback} =
              Apps.request_rollback(
                scope,
                first.id,
-               Map.put(rollback_attrs, :review_id, review.id)
+               rollback_attrs
              )
 
     assert {:ok, %{status: "active"}} = Apps.reconcile_deployment(rollback.id)
     assert Remote.data(environment.workspace_id) == ["Before upgrade", "After upgrade"]
 
-    assert {:error, :review_mismatch_or_not_approved} =
-             Apps.restore_data(scope, environment.id, second.backup_id, %{
-               review_id: review.id,
+    denied = %{scope | membership: %{scope.membership | permissions: ["apps:read"]}}
+
+    assert {:error, :forbidden} =
+             Apps.restore_data(denied, environment.id, second.backup_id, %{
+               expected_active_deployment: rollback.id,
                operation_key: Ecto.UUID.generate()
              })
 
-    assert {:ok, target} = Apps.restore_target_digest(scope, environment.id, second.backup_id)
-    data_review = approve_fixture(scope, "apps.restore_data", target)
-    recovery_attrs = %{review_id: data_review.id, operation_key: Ecto.UUID.generate()}
+    assert {:error, :active_deployment_changed} =
+             Apps.restore_data(scope, environment.id, second.backup_id, %{
+               expected_active_deployment: second.id,
+               operation_key: Ecto.UUID.generate()
+             })
+
+    recovery_attrs = %{
+      expected_active_deployment: rollback.id,
+      operation_key: Ecto.UUID.generate()
+    }
 
     assert {:ok, recovery} =
              Apps.restore_data(scope, environment.id, second.backup_id, recovery_attrs)
@@ -367,9 +377,9 @@ defmodule Hermitscale.Apps.EndToEndTest do
     assert {:ok, _same} = Apps.reconcile_recovery(recovery.id)
     assert Remote.data(environment.workspace_id) == ["Before upgrade", "After recovery"]
 
-    assert {:error, :review_already_used} =
+    assert {:error, :active_deployment_changed} =
              Apps.restore_data(scope, environment.id, second.backup_id, %{
-               review_id: data_review.id,
+               expected_active_deployment: first.id,
                operation_key: Ecto.UUID.generate()
              })
   end
@@ -401,19 +411,25 @@ defmodule Hermitscale.Apps.EndToEndTest do
     assert Remote.calls() == calls
   end
 
-  test "published public access is an explicit review bound to the verified active release", %{
+  test "published public access is an explicit action bound to the active release", %{
     scope: scope,
     app: app,
     session: session
   } do
     deployment = deployment_fixture(scope, app, session)
+    denied = %{scope | membership: %{scope.membership | permissions: ["apps:read"]}}
+
+    assert {:error, :forbidden} =
+             Apps.publish_environment(denied, deployment.environment_id, %{
+               expected_active_deployment: deployment.id,
+               public: true
+             })
+
     assert {:error, :private_environment} = Apps.public_url(scope, deployment.environment_id)
-    {:ok, target} = Apps.publication_target_digest(scope, deployment.environment_id, true)
-    review = approve_fixture(scope, "apps.publish", target)
 
     assert {:ok, environment} =
              Apps.publish_environment(scope, deployment.environment_id, %{
-               review_id: review.id,
+               expected_active_deployment: deployment.id,
                public: true
              })
 
@@ -432,11 +448,20 @@ defmodule Hermitscale.Apps.EndToEndTest do
     assert {:ok, %{workspace_id: workspace_id}} = Apps.resolve_access("public-" <> environment.id)
     assert workspace_id == environment.workspace_id
 
-    assert {:error, :review_mismatch_or_not_approved} =
+    assert {:error, :active_deployment_changed} =
              Apps.publish_environment(scope, environment.id, %{
-               review_id: review.id,
+               expected_active_deployment: Ecto.UUID.generate(),
                public: false
              })
+
+    assert {:ok, private} =
+             Apps.publish_environment(scope, environment.id, %{
+               expected_active_deployment: deployment.id,
+               public: false
+             })
+
+    refute private.public
+    assert {:error, :private_environment} = Apps.public_url(scope, environment.id)
   end
 
   test "backup policy schedules durable exports and duplicate operation keys reuse one backup", %{
@@ -468,114 +493,6 @@ defmodule Hermitscale.Apps.EndToEndTest do
       worker: Hermitscale.Apps.BackupWorker,
       args: %{environment_id: environment.id}
     )
-  end
-
-  test "defect verification binds a live response digest to the active served release", %{
-    scope: scope,
-    app: app,
-    session: session
-  } do
-    deployment = deployment_fixture(scope, app, session)
-    health = Jason.encode!(%{"revision" => deployment.source_commit, "database" => "ok"})
-    expected = :crypto.hash(:sha256, health) |> Base.encode16(case: :lower)
-    operation_key = Ecto.UUID.generate()
-
-    assert {:ok, artifact} =
-             Apps.verify_defect(scope, app.id, deployment.environment_id, %{
-               path: "/__hermitscale/health",
-               expected_status: 200,
-               expected_body_digest: expected,
-               operation_key: operation_key
-             })
-
-    assert artifact.kind == "defect_verification"
-    assert artifact.owner_type == "deployment"
-    assert artifact.owner_id == deployment.id
-    assert {:ok, content} = Artifacts.read(scope, artifact.id)
-    proof = Jason.decode!(content)
-    assert proof["verified"]
-    assert proof["source_commit"] == deployment.source_commit
-    assert proof["body_digest"] == expected
-    calls = Remote.calls()
-
-    assert {:ok, same} =
-             Apps.verify_defect(scope, app.id, deployment.environment_id, %{
-               path: "/__hermitscale/health",
-               expected_status: 200,
-               expected_body_digest: expected,
-               operation_key: operation_key
-             })
-
-    assert same.id == artifact.id
-    assert Remote.calls() == calls
-
-    assert {:error, :defect_check_failed} =
-             Apps.verify_defect(scope, app.id, deployment.environment_id, %{
-               path: "/__hermitscale/health",
-               expected_body_digest: String.duplicate("0", 64)
-             })
-
-    assert {:error, :invalid_verification_path} =
-             Apps.verify_defect(scope, app.id, deployment.environment_id, %{
-               path: "https://other.example.test",
-               expected_body_digest: expected
-             })
-
-    assert {:error, :execution_actor_ineligible} =
-             Apps.verify_defect(app_scope_fixture(), app.id, deployment.environment_id, %{
-               path: "/",
-               expected_body_digest: expected
-             })
-  end
-
-  test "support source selection verifies serving identity and app ownership without waking compute",
-       %{
-         scope: scope,
-         app: app,
-         session: session
-       } do
-    deployment = deployment_fixture(scope, app, session)
-    calls = Remote.calls()
-
-    assert {:ok, source} = Apps.investigation_source(scope, app.id, deployment.environment_id)
-    assert source.deployment.id == deployment.id
-
-    assert source.source_bundle == %{
-             "app_id" => app.id,
-             "artifact_id" => deployment.artifact_id,
-             "artifact_digest" => deployment.artifact_digest,
-             "deployed_revision" => deployment.source_commit
-           }
-
-    assert {:error, :not_found} =
-             Apps.investigation_source(app_scope_fixture(), app.id, deployment.environment_id)
-
-    other_app = app_fixture(scope)
-    [other_environment] = Apps.list_environments(scope, other_app.id)
-
-    assert {:error, :serving_source_not_verified} =
-             Apps.investigation_source(scope, app.id, other_environment.id)
-
-    assert {:ok, foreign_source} =
-             Artifacts.record(scope, %{
-               owner_type: "app",
-               owner_id: other_app.id,
-               kind: "source_bundle",
-               content_type: "application/x-tar",
-               content: "another app's code"
-             })
-
-    deployment
-    |> Ecto.Changeset.change(
-      artifact_id: foreign_source.id,
-      artifact_digest: foreign_source.digest
-    )
-    |> Hermitscale.Repo.update!()
-
-    assert {:error, :serving_source_not_verified} =
-             Apps.investigation_source(scope, app.id, deployment.environment_id)
-
-    assert Remote.calls() == calls
   end
 
   defp restore(key, nil), do: Application.delete_env(:hermitscale, key)

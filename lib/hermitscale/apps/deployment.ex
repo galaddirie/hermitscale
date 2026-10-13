@@ -19,8 +19,6 @@ defmodule Hermitscale.Apps.Deployment do
     field :artifact_digest, :string
     field :configuration_digest, :string
     field :expected_active_deployment_id, :binary_id
-    field :review_id, :binary_id
-    field :policy_revision, :integer, default: 1
     field :lease_id, :binary_id
     field :status, :string, default: "queued"
     field :verification, :map, default: %{}
@@ -43,8 +41,6 @@ defmodule Hermitscale.Apps.Deployment do
       :artifact_digest,
       :configuration_digest,
       :expected_active_deployment_id,
-      :review_id,
-      :policy_revision,
       :lease_id,
       :status,
       :verification,
@@ -66,8 +62,6 @@ defmodule Hermitscale.Apps.Deployment do
       :recipe,
       :artifact_digest,
       :configuration_digest,
-      :review_id,
-      :policy_revision,
       :status,
       :verification,
       :error,

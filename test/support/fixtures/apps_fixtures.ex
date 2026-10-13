@@ -1,6 +1,6 @@
 defmodule Hermitscale.AppsFixtures do
   @moduledoc false
-  alias Hermitscale.{Apps, AccountsFixtures, Reviews}
+  alias Hermitscale.{Apps, AccountsFixtures}
 
   def app_scope_fixture do
     scope = AccountsFixtures.organization_scope_fixture()
@@ -20,8 +20,8 @@ defmodule Hermitscale.AppsFixtures do
         scope,
         Map.merge(
           %{
-            name: "Team notes",
-            slug: "notes-" <> Integer.to_string(System.unique_integer([:positive]))
+            name: "Example app",
+            slug: "example-app-" <> Integer.to_string(System.unique_integer([:positive]))
           },
           attrs
         )
@@ -53,25 +53,11 @@ defmodule Hermitscale.AppsFixtures do
     }
   end
 
-  def approve_deployment_fixture(scope, app, attrs) do
-    {:ok, target} = Apps.deployment_target_digest(scope, app.id, attrs)
-    approve_fixture(scope, "apps.deploy", target, "review:" <> attrs.operation_key)
-  end
-
-  def approve_fixture(scope, action, target, key \\ Ecto.UUID.generate()) do
-    {:ok, review} =
-      Reviews.request(scope, %{action: action, target_digest: target, operation_key: key})
-
-    {:ok, review} = Reviews.decide(scope, review.id, :approved)
-    review
-  end
-
   def deployment_fixture(scope, app, session, commit \\ String.duplicate("a", 40)) do
     attrs = deployment_attrs_fixture(scope, app, session, commit)
-    review = approve_deployment_fixture(scope, app, attrs)
 
     {:ok, deployment} =
-      Apps.request_deployment(scope, app.id, Map.put(attrs, :review_id, review.id))
+      Apps.request_deployment(scope, app.id, attrs)
 
     {:ok, deployment} = Apps.reconcile_deployment(deployment.id)
     deployment

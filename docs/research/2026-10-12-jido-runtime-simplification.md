@@ -2,6 +2,8 @@
 
 Date: October 12, 2026. Scope: simplifying the proposed [Agents and Apps design](../agent-apps-design.md). This note checks current first-party source; it does not install dependencies or claim runtime qualification. It complements the earlier [Jido assessment](2026-10-12-jido-agents-apps-assessment.md) with a concrete reuse topology.
 
+Status: Historical package assessment. References to support or research agents are hypothetical composition examples, not implemented platform domains. The [current design](../agent-apps-design.md) and [implementation](../agent-apps-implementation.md) define the shipped scope.
+
 ## Recommendation
 
 Use Jido core for the active conversation coordinator, Shell and VFS for supported Sprite command/file operations, and evaluate Harness inside a small Elixir worker on each conversation Sprite. This can remove bespoke process management and protocol translation from the proposed runner. Keep Hermitscale's durable operations, authorization, resource ownership, and deployment rules. This is a proposed composition of existing library interfaces, not an upstream turnkey integration.

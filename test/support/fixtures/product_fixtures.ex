@@ -1,6 +1,6 @@
 defmodule Hermitscale.ProductFixtures do
   @moduledoc false
-  alias Hermitscale.{Auth, AuthTest.Provider, Reviews, Workflows}
+  alias Hermitscale.{Auth, AuthTest.Provider, Workflows}
   alias Hermitscale.Integrations.ExecutionAccess
 
   def authenticated_product_fixture do
@@ -45,28 +45,6 @@ defmodule Hermitscale.ProductFixtures do
 
     {:ok, graph} = Workflows.create_graph(scope, attrs)
     graph
-  end
-
-  def review_attrs_fixture(attrs \\ %{}) do
-    Map.merge(
-      %{
-        operation_key: Ecto.UUID.generate(),
-        action: "reviews.test",
-        target: %{"branch" => "fix/ENG-7", "manifest" => ["lib/fix.ex"]},
-        target_digest:
-          Hermitscale.Agents.Protocol.payload_digest(%{
-            "branch" => "fix/ENG-7",
-            "manifest" => ["lib/fix.ex"]
-          }),
-        policy_revision: 1
-      },
-      Map.new(attrs)
-    )
-  end
-
-  def review_fixture(scope, attrs \\ %{}) do
-    {:ok, review} = Reviews.request(scope, review_attrs_fixture(attrs))
-    review
   end
 
   def product_capability_fixture(scope, resources, actions, options \\ []) do

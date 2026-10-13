@@ -67,8 +67,6 @@ defmodule HermitscaleWeb.Router do
       live "/apps/:id", AppLive, :show
       live "/apps/:id/build", AppLive, :build
       live "/apps/:id/deployments/:deployment_id", AppLive, :deployment
-      live "/reviews", ReviewsLive, :index
-      live "/reviews/:id", ReviewsLive, :show
       live "/workflows", WorkflowLive, :index
       live "/workflows/:id", WorkflowLive, :show
     end

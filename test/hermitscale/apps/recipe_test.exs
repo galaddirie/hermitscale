@@ -118,8 +118,8 @@ defmodule Hermitscale.Apps.RecipeTest do
     (data / "uploads" / "hello.txt").write_text("Customer upload")
     source = sqlite3.connect(str(data / "app.sqlite"))
     source.execute("PRAGMA journal_mode=WAL")
-    source.execute("CREATE TABLE notes (body TEXT)")
-    source.execute("INSERT INTO notes VALUES ('Before backup')")
+    source.execute("CREATE TABLE sample_records (value TEXT)")
+    source.execute("INSERT INTO sample_records VALUES ('Before backup')")
     source.commit()
     assert (data / "app.sqlite-wal").exists()
     def command(action, operation, digest=None):
@@ -128,19 +128,19 @@ defmodule Hermitscale.Apps.RecipeTest do
         return json.loads(subprocess.check_output(args, text=True).splitlines()[-1])
     saved = command("backup", backup)
     assert saved["restoration"] == "verified"
-    source.execute("INSERT INTO notes VALUES ('After backup')")
+    source.execute("INSERT INTO sample_records VALUES ('After backup')")
     source.commit()
     source.close()
     incoming = pathlib.Path(root) / "incoming"
     (incoming / (recovery + ".backup.tar")).write_bytes((incoming / (backup + ".backup.tar")).read_bytes())
     command("restore", recovery, saved["digest"])
     with sqlite3.connect(str(data / "app.sqlite")) as db:
-        assert db.execute("SELECT body FROM notes").fetchall() == [("Before backup",)]
-        db.execute("INSERT INTO notes VALUES ('After recovery')")
+        assert db.execute("SELECT value FROM sample_records").fetchall() == [("Before backup",)]
+        db.execute("INSERT INTO sample_records VALUES ('After recovery')")
         db.commit()
     command("restore", recovery, saved["digest"])
     with sqlite3.connect(str(data / "app.sqlite")) as db:
-        assert db.execute("SELECT body FROM notes").fetchall() == [("Before backup",), ("After recovery",)]
+        assert db.execute("SELECT value FROM sample_records").fetchall() == [("Before backup",), ("After recovery",)]
     assert (data / "uploads" / "hello.txt").read_text() == "Customer upload"
     print("verified")
     """
