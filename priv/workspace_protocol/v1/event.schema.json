@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "operation_id",
+    "epoch",
+    "type",
+    "version",
+    "cursor",
+    "payload"
+  ],
+  "properties": {
+    "workspace_id": {
+      "type": "string"
+    },
+    "operation_id": {
+      "type": "string"
+    },
+    "epoch": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}

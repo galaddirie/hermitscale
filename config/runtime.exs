@@ -1,5 +1,57 @@
 import Config
 
+if config_env() == :dev and File.regular?(Path.expand("../.env", __DIR__)) do
+  Path.expand("../.env", __DIR__)
+  |> File.read!()
+  |> String.split("\n")
+  |> Enum.each(fn line ->
+    case Regex.run(~r/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*(.*)$/, line) do
+      [_, name, value] ->
+        if System.get_env(name) == nil do
+          System.put_env(name, value |> String.trim() |> String.trim("\"") |> String.trim("'"))
+        end
+
+      nil ->
+        :ok
+    end
+  end)
+end
+
+if token = System.get_env("SPRITES_API_KEY") do
+  config :hermitscale, Hermitscale.Workspaces,
+    management_adapter: Hermitscale.Workspaces.SpritesManagement
+
+  config :hermitscale, Hermitscale.Workspaces.SpritesManagement, token: token
+end
+
+gateway_url = System.get_env("INFERENCE_GATEWAY_URL", "http://localhost:4000/inference/v1")
+models = System.get_env("CODING_ALLOWED_MODELS", "gpt-5.1-codex") |> String.split(",", trim: true)
+
+config :hermitscale, Hermitscale.Integrations.ExecutionAccess,
+  gateway_url: gateway_url,
+  models: models
+
+if input_rate = System.get_env("CODING_INPUT_MICROS_PER_MILLION") do
+  output_rate = System.fetch_env!("CODING_OUTPUT_MICROS_PER_MILLION")
+
+  rates =
+    Map.new(
+      models,
+      &{&1,
+       %{
+         input_micros_per_million: String.to_integer(input_rate),
+         output_micros_per_million: String.to_integer(output_rate),
+         version: System.get_env("CODING_RATE_VERSION", "configured-v1")
+       }}
+    )
+
+  config :hermitscale, Hermitscale.Integrations.InferenceGateway, rates: rates
+end
+
+config :hermitscale, Hermitscale.Apps,
+  gateway_host: System.get_env("APP_GATEWAY_HOST", "apps.hermitscale.local"),
+  gateway_scheme: System.get_env("APP_GATEWAY_SCHEME", "https")
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration

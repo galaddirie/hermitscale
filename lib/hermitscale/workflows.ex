@@ -14,6 +14,7 @@ defmodule Hermitscale.Workflows do
     Compiler,
     Credentials,
     Engine,
+    ExternalOperations,
     Graph,
     Policy,
     Replay,
@@ -42,9 +43,61 @@ defmodule Hermitscale.Workflows do
     changeset = Graph.create_changeset(%Graph{}, attrs, scope)
 
     with :ok <- Authorization.authorize(scope, "workflows:edit"),
-         {:ok, changeset} <- prepare_graph(changeset, scope) do
-      Repo.insert(changeset)
+         {:ok, operation_key} <- graph_operation_key(attrs) do
+      case {operation_key, changeset.valid?} do
+        {nil, _valid?} -> insert_graph(changeset, scope)
+        {_key, false} -> {:error, changeset}
+        {key, true} -> keyed_create_graph(scope, changeset, key)
+      end
     end
+  end
+
+  defp graph_operation_key(attrs) do
+    case Map.fetch(stringify_keys(attrs), "operation_key") do
+      :error -> {:ok, nil}
+      {:ok, key} when is_binary(key) and byte_size(key) in 8..128 -> {:ok, key}
+      {:ok, _invalid} -> {:error, :invalid_operation_key}
+    end
+  end
+
+  defp insert_graph(changeset, scope) do
+    with {:ok, prepared} <- prepare_graph(changeset, scope), do: Repo.insert(prepared)
+  end
+
+  defp keyed_create_graph(scope, changeset, key) do
+    org = Scope.organization_id!(scope)
+    actor = scope.user.id
+
+    intent =
+      changeset
+      |> Ecto.Changeset.apply_changes()
+      |> Map.take([:id, :schema_version, :name, :definition, :status])
+      |> json_payload()
+
+    digest = Hermitscale.Agents.Protocol.payload_digest(intent)
+    identity = :crypto.hash(:sha256, :erlang.term_to_binary({org, actor, key}, [:deterministic]))
+    lock = rem(:binary.decode_unsigned(binary_part(identity, 0, 8)), 9_223_372_036_854_775_807)
+
+    Repo.transaction(fn ->
+      Repo.query!("SELECT pg_advisory_xact_lock($1)", [lock])
+
+      case Repo.get_by(Graph, org_id: org, created_by_user_id: actor, operation_key: key) do
+        %Graph{admission_digest: ^digest} = graph ->
+          graph
+
+        %Graph{} ->
+          Repo.rollback(:operation_key_conflict)
+
+        nil ->
+          changeset =
+            Ecto.Changeset.change(changeset, operation_key: key, admission_digest: digest)
+
+          case insert_graph(changeset, scope) do
+            {:ok, graph} -> graph
+            {:error, reason} -> Repo.rollback(reason)
+          end
+      end
+    end)
   end
 
   def update_graph(%Scope{} = scope, %Graph{} = graph, attrs) do
@@ -62,7 +115,8 @@ defmodule Hermitscale.Workflows do
   defp prepare_graph(changeset, scope) do
     definition = Ecto.Changeset.get_field(changeset, :definition)
 
-    with :ok <- Validator.validate(definition),
+    with :ok <- authorize_activation(changeset, scope),
+         :ok <- Validator.validate(definition),
          {:ok, definition} <- Credentials.select_accounts(scope, definition),
          :ok <- Validator.validate(definition) do
       {:ok,
@@ -76,6 +130,13 @@ defmodule Hermitscale.Workflows do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp authorize_activation(changeset, scope) do
+    if Ecto.Changeset.get_field(changeset, :status) == :active and
+         changeset.data.status != :active,
+       do: Authorization.authorize(scope, "workflows:activate"),
+       else: :ok
   end
 
   def change_graph(%Scope{} = scope, %Graph{} = graph, attrs \\ %{}) do
@@ -99,17 +160,26 @@ defmodule Hermitscale.Workflows do
     end
   end
 
-  defp insert_run(%Graph{} = graph, attrs, context, initiator, trigger_id) do
+  defp insert_run(
+         %Graph{} = graph,
+         attrs,
+         context,
+         initiator,
+         trigger_id,
+         admission_digest \\ nil
+       ) do
     attrs =
       attrs
       |> stringify_keys()
       |> Map.put_new("id", Ecto.UUID.generate())
       |> Map.put("workflow_graph_id", graph.id)
+      |> Map.put("definition", graph.definition)
 
     %Run{
       initiated_by_user_id: initiator,
       execution_actor_user_id: context.actor_user_id,
       trigger_id: trigger_id,
+      admission_digest: admission_digest,
       account_selections: Credentials.selections(graph.definition)
     }
     |> Run.changeset(attrs)
@@ -123,6 +193,23 @@ defmodule Hermitscale.Workflows do
     |> join(:inner, [run], graph in assoc(run, :graph))
     |> where([_run, graph], graph.org_id == ^org_id)
     |> Repo.get!(id)
+  end
+
+  @doc "Reads up to 100 retained runs for an authorized graph without starting compute."
+  def list_runs(%Scope{} = scope, graph_id) do
+    if Enum.any?(~w(workflows:run workflows:edit), &(Authorization.authorize(scope, &1) == :ok)) do
+      org = Scope.organization_id!(scope)
+
+      Repo.all(
+        from run in Run,
+          join: graph in assoc(run, :graph),
+          where: graph.org_id == ^org and graph.id == ^graph_id,
+          order_by: [desc: run.inserted_at, desc: run.id],
+          limit: 100
+      )
+    else
+      {:error, :forbidden}
+    end
   end
 
   @doc false
@@ -162,6 +249,82 @@ defmodule Hermitscale.Workflows do
   end
 
   defp do_start_run(%Graph{} = graph, input, opts, context, initiator, trigger_id) do
+    case Keyword.fetch(opts, :run_id) do
+      :error ->
+        do_admit_run(graph, input, opts, context, initiator, trigger_id)
+
+      {:ok, key} when is_binary(key) and byte_size(key) in 8..128 ->
+        keyed_start(graph, input, opts, context, initiator, trigger_id, key)
+
+      {:ok, _invalid_key} ->
+        {:error, :invalid_operation_key}
+    end
+  end
+
+  defp keyed_start(graph, input, opts, context, initiator, trigger_id, key) do
+    identity =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary({context.organization_id, context.actor_user_id, key}, [
+          :deterministic
+        ])
+      )
+
+    id = "operation:" <> Base.encode16(identity, case: :lower)
+
+    digest =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary({graph.id, graph.definition, json_payload(input), trigger_id}, [
+          :deterministic
+        ])
+      )
+      |> Base.encode16(case: :lower)
+
+    lock = rem(:binary.decode_unsigned(binary_part(identity, 0, 8)), 9_223_372_036_854_775_807)
+
+    result =
+      Repo.transaction(fn ->
+        Repo.query!("SELECT pg_advisory_xact_lock($1)", [lock])
+
+        case Repo.get(Run, id) do
+          %Run{admission_digest: ^digest, execution_actor_user_id: actor} = run
+          when actor == context.actor_user_id ->
+            {:existing, run}
+
+          %Run{} ->
+            Repo.rollback(:operation_key_conflict)
+
+          nil ->
+            opts =
+              opts
+              |> Keyword.put(:admission_id, id)
+              |> Keyword.put(:admission_digest, digest)
+              |> Keyword.put(:executor, :queued)
+
+            case do_admit_run(graph, input, opts, context, initiator, trigger_id) do
+              {:ok, run} -> {:new, run}
+              {:error, reason} -> Repo.rollback(reason)
+            end
+        end
+      end)
+
+    case result do
+      {:ok, {:new, run}} ->
+        case Keyword.get(opts, :executor) do
+          :inline -> ExternalOperations.advance(run.id, opts)
+          _executor -> {:ok, run}
+        end
+
+      {:ok, {:existing, run}} ->
+        {:ok, run}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp do_admit_run(%Graph{} = graph, input, opts, context, initiator, trigger_id) do
     now = DateTime.utc_now(:second)
 
     with {:ok, workflow} <- Compiler.compile(graph.definition),
@@ -173,32 +336,112 @@ defmodule Hermitscale.Workflows do
              Keyword.get(opts, :run_context, %{}),
              context
            ),
-         workflow <- Workflow.put_run_context(workflow, run_context),
-         {:ok, run} <-
-           insert_run(
-             graph,
-             %{input: json_payload(input), status: :running, started_at: now},
-             context,
-             initiator,
-             trigger_id
-           ),
-         {store_module, store_state} <- Runic.Runner.get_store(@runner),
-         {:ok, _cursor} <- store_module.append(run.id, [definition_event], store_state),
-         {:ok, _pid} <-
-           Runic.Runner.start_workflow(
-             @runner,
-             run.id,
-             workflow,
-             runner_opts(opts, graph.definition)
-           ),
-         :ok <-
-           Runic.Runner.run(
-             @runner,
-             run.id,
-             Engine.input(input, run.id),
-             run_opts(opts, run_context)
-           ) do
-      run_result(run, opts)
+         workflow <- Workflow.put_run_context(workflow, run_context) do
+      admit_execution(
+        graph,
+        workflow,
+        definition_event,
+        input,
+        opts,
+        run_context,
+        context,
+        initiator,
+        trigger_id,
+        now
+      )
+    end
+  end
+
+  defp admit_execution(
+         graph,
+         workflow,
+         definition_event,
+         input,
+         opts,
+         run_context,
+         context,
+         initiator,
+         trigger_id,
+         now
+       ) do
+    admission = fn ->
+      attrs = %{input: json_payload(input), status: :running, started_at: now}
+
+      attrs =
+        case Keyword.fetch(opts, :admission_id) do
+          {:ok, id} -> Map.put(attrs, :id, id)
+          :error -> attrs
+        end
+
+      with {:ok, run} <-
+             insert_run(
+               graph,
+               attrs,
+               context,
+               initiator,
+               trigger_id,
+               Keyword.get(opts, :admission_digest)
+             ),
+           {store_module, store_state} <- Runic.Runner.get_store(@runner),
+           {:ok, _cursor} <- store_module.append(run.id, [definition_event], store_state) do
+        {:ok, run}
+      end
+    end
+
+    case ExternalOperations.external_definition?(graph.definition) or
+           Keyword.has_key?(opts, :admission_id) do
+      true ->
+        result =
+          Repo.transaction(fn ->
+            with {:ok, run} <- admission.(),
+                 {:ok, run} <-
+                   ExternalOperations.start(
+                     run,
+                     workflow,
+                     input,
+                     Keyword.put(opts, :executor, :queued)
+                   ) do
+              run
+            else
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end)
+
+        with {:ok, run} <- result do
+          case Keyword.get(opts, :executor) do
+            :inline -> ExternalOperations.advance(run.id, opts)
+            _executor -> {:ok, run}
+          end
+        end
+
+      false ->
+        with {:ok, run} <- admission.(),
+             do: start_execution(run, workflow, input, opts, run_context)
+    end
+  end
+
+  defp start_execution(run, workflow, input, opts, run_context) do
+    case ExternalOperations.external_definition?(run.definition) or run.admission_digest != nil do
+      true ->
+        ExternalOperations.start(run, workflow, input, opts)
+
+      false ->
+        with {:ok, _pid} <-
+               Runic.Runner.start_workflow(
+                 @runner,
+                 run.id,
+                 workflow,
+                 runner_opts(opts, run.definition)
+               ),
+             :ok <-
+               Runic.Runner.run(
+                 @runner,
+                 run.id,
+                 Engine.input(input, run.id),
+                 run_opts(opts, run_context)
+               ) do
+          run_result(run, opts)
+        end
     end
   end
 
@@ -211,9 +454,10 @@ defmodule Hermitscale.Workflows do
   end
 
   defp do_resume_run(%Run{} = run, opts) do
-    run
-    |> Repo.preload(:graph)
-    |> resume_with_graph(opts)
+    case ExternalOperations.external_definition?(run.definition) or run.admission_digest != nil do
+      true -> ExternalOperations.advance(run.id, opts)
+      false -> run |> Repo.preload(:graph) |> resume_with_graph(opts)
+    end
   end
 
   defp resume_with_graph(%Run{graph: nil}, _opts), do: {:error, :missing_graph}
@@ -225,10 +469,11 @@ defmodule Hermitscale.Workflows do
       required_permissions: resume_permissions(run)
     }
 
-    definition = Credentials.with_selections(graph.definition, run.account_selections)
+    admitted_definition = run.definition || graph.definition
+    definition = Credentials.with_selections(admitted_definition, run.account_selections)
 
     with {:ok, _actor_scope} <- Authorization.execution_scope(context),
-         {:ok, base_workflow} <- Compiler.compile(graph.definition),
+         {:ok, base_workflow} <- Compiler.compile(admitted_definition),
          {:ok, run_context} <-
            Credentials.resolve_run_context(
              definition,
@@ -245,7 +490,7 @@ defmodule Hermitscale.Workflows do
         @runner,
         run.id,
         workflow,
-        runner_opts(opts, graph.definition)
+        runner_opts(opts, admitted_definition)
         |> Keyword.merge(run_opts(opts, run_context))
         |> Keyword.put(:resumed, true)
       )
@@ -274,7 +519,11 @@ defmodule Hermitscale.Workflows do
 
   def mark_run_complete(run_id, %Workflow{} = workflow) do
     run = run_id |> get_run_for_system!() |> Repo.preload(:graph)
-    complete_run(run, workflow, terminal_ids(run.graph.definition))
+
+    case ExternalOperations.waiting?(run_id) do
+      true -> {:error, :waiting_for_external_operations}
+      false -> complete_run(run, workflow, terminal_ids(run.definition || run.graph.definition))
+    end
   end
 
   defp complete_run(run, workflow, terminal_ids) do
@@ -355,6 +604,11 @@ defmodule Hermitscale.Workflows do
 
   defp run_notification(%Run{status: :complete, id: id}), do: {:run_complete, id}
   defp run_notification(%Run{status: :failed, id: id}), do: {:run_failed, id}
+
+  @doc false
+  def broadcast_run_result(%Run{status: status} = run) when status in [:complete, :failed] do
+    Phoenix.PubSub.broadcast(Hermitscale.PubSub, run_topic(run.id), run_notification(run))
+  end
 
   @doc """
   Subscribes the caller to `{:run_complete, id}` or `{:run_failed, id}` events.

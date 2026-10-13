@@ -9,6 +9,14 @@ defmodule Hermitscale.Workflows.ReplayTest do
   alias Runic.Workflow
 
   describe "restore/2" do
+    test "scheduler matcher fingerprints survive independent compilation" do
+      graph = failing_math_graph()
+      first = Compiler.compile!(graph)
+      second = Compiler.compile!(graph)
+      assert Replay.definition_event(first) == Replay.definition_event(second)
+      assert {:ok, _workflow} = Replay.restore([Replay.definition_event(first)], second)
+    end
+
     test "completed map work is replayed without repeating accepted mapper effects" do
       base =
         Workflow.new()

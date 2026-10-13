@@ -26,8 +26,11 @@ config :hermitscale,
 config :hermitscale, Oban,
   engine: Oban.Engines.Basic,
   repo: Hermitscale.Repo,
-  queues: [default: 10, triggers: 10],
-  plugins: [{Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7}]
+  queues: [default: 10, triggers: 10, agents: 5, apps: 3, workflow_operations: 5, publications: 3],
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 60 * 60 * 24 * 7},
+    {Oban.Plugins.Cron, crontab: [{"0 * * * *", Hermitscale.Apps.BackupScheduler}]}
+  ]
 
 config :hermitscale, Hermitscale.Triggers,
   start_runtime?: true,
@@ -103,7 +106,8 @@ config :phoenix, :filter_parameters, [
   "state",
   "access_token",
   "refresh_token",
-  "workos_session"
+  "workos_session",
+  "sealed_session"
 ]
 
 # Import environment specific config. This must remain at the bottom

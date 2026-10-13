@@ -1,33 +1,29 @@
 defmodule HermitscaleWeb.PageControllerTest do
   use HermitscaleWeb.ConnCase, async: true
 
-  test "GET / renders the generated Phoenix starter page", %{conn: conn} do
+  test "GET / offers browser sign-in and states execution availability", %{conn: conn} do
     document =
       conn
       |> get(~p"/")
       |> html_response(200)
       |> LazyHTML.from_document()
 
-    assert Enum.count(
-             LazyHTML.query(document, "a[href='https://phoenix.hexdocs.pm/overview.html']")
-           ) == 1
+    assert Enum.count(LazyHTML.query(document, "#home-sign-in[href='/auth/login']")) == 1
 
-    assert Enum.count(
-             LazyHTML.query(document, "a[href='https://github.com/phoenixframework/phoenix']")
-           ) == 1
+    assert Enum.count(LazyHTML.query(document, "#home-runtime-status")) == 1
   end
 
-  test "the starter page does not process WorkOS browser cookies", %{conn: conn} do
+  test "obsolete browser cookies grant no authority", %{conn: conn} do
     conn = conn |> put_req_cookie("_hermitscale_workos", "obsolete-session") |> get(~p"/")
     assert conn.status == 200
     refute Map.has_key?(conn.resp_cookies, "_hermitscale_workos")
-    refute Map.has_key?(conn.assigns, :current_scope)
+    assert conn.assigns.current_scope == nil
   end
 
-  test "custom authentication and workspace routes are absent" do
+  test "obsolete authentication and workspace routes remain absent" do
     for {method, path} <- [
           {"GET", "/auth/sign-in"},
-          {"GET", "/auth/workos/callback"},
+          {"GET", "/auth/callback"},
           {"DELETE", "/users/log-out"},
           {"GET", "/workspaces"}
         ] do

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "workspace_id": "workspace_fixture",
+  "operation_id": "operation_fixture",
+  "command_id": "command_fixture",
+  "generation": 1,
+  "payload_digest": "a4d78e8e30a475b394f49a688196d9173aae39d425a190eba1432e1467e716ce",
+  "deadline": "2099-01-01T00:00:00Z",
+  "type": "start",
+  "payload": {
+    "prompt": "Inspect the retained workspace"
+  }
+}

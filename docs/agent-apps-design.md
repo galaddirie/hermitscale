@@ -1,6 +1,6 @@
 # Hermitscale Agents and Apps Software Design
 
-Status: Jido-based implementation design; qualification gates remain open  
+Status: Implemented; current contracts and verification are recorded in [the implementation notes](agent-apps-implementation.md)\
 Date: October 12, 2026  
 Repository baseline: `5cdc6f2`  
 Audience: Product and engineering
@@ -9,7 +9,7 @@ Hermitscale will let users run coding tasks, collaborate with agents through cha
 
 Hermitscale owns authorization, durable task history, workflow continuation, approvals, deployment records, and the user experience. The default workspace lifecycle remains **create → work → sleep → resume** on one retained Sprite per conversation. Completing work releases compute activity; deleting files is a separate retention decision. Published app environments use separate persistent Sprites.
 
-This document is the implementation plan for the whole feature: chat, workflow execution, workspaces, apps, publication, and support automation. These capabilities are not yet implemented. The [runtime simplification research](research/2026-10-12-jido-runtime-simplification.md) records the inspected package revisions and evidence behind the qualification gates. This design supersedes the direct-runner recommendation in the [earlier assessment](research/2026-10-12-jido-agents-apps-assessment.md).
+This document preserves the original design and delivery plan for chat, workflow execution, workspaces, apps, publication, and support automation. The complete implementation is described in [the implementation notes](agent-apps-implementation.md), including the distinction between automated fixture evidence and live service execution. The [runtime simplification research](research/2026-10-12-jido-runtime-simplification.md) records the inspected package revisions and evidence behind the original qualification gates. This design supersedes the direct-runner recommendation in the [earlier assessment](research/2026-10-12-jido-agents-apps-assessment.md).
 
 ## Design decisions and ownership
 
@@ -226,6 +226,7 @@ lib/hermitscale/
   integrations/execution_access.ex   # credential delivery and renewal
   integrations/inference_gateway.ex  # fixed upstream, expiry, and model metering
   integrations/deliveries.ex          # external effect intent and reconciliation
+  mcp/server.ex                      # ExMCP handler for scoped product tools
   reviews.ex                         # action-bound decisions
   artifacts.ex                       # authorized stored evidence
   usage.ex                           # compute, storage, and model accounting
@@ -235,7 +236,7 @@ lib/hermitscale_web/
   user_auth.ex                       # browser/LiveView bridge to existing WorkOS auth
   live/agent_live.ex                  # conversation, reviews, evidence, and changes
   live/app_live.ex                    # app overview, build, and deployments
-  controllers/mcp_controller.ex      # authenticated product-tool transport
+  mcp.ex                             # bearer-authenticated ExMCP HTTP mount
   app_gateway.ex                     # isolated preview/app origin and routing
 
 workspace_worker/                    # separate Linux Elixir release
@@ -461,6 +462,8 @@ Serialize promotion and data maintenance. Reconcile remote activation and the Po
 The small-app profile permits maintenance windows and prohibits automatic destructive migrations. Replacement environments remain an option for stateless/external-database apps. Moving a SQLite app to another Sprite requires a verified data transfer, fenced writes, and explicit cutover; a fresh machine per release is not the default.
 
 ## Hermitscale MCP
+
+Use ExMCP for HTTP transport and protocol negotiation. Its handler delegates to the existing product interfaces; Hermitscale retains capability validation, current actor permissions, resource restrictions, call budgets and mutation idempotency. Mount `/mcp` in a token-authenticated router scope outside the browser and JSON-only API pipelines so ExMCP handles JSON/SSE negotiation. Support stateless `server/discover` and legacy `initialize` sessions, bind sessions to the capability and organization, and revalidate the bearer on every request.
 
 Expose the public product interfaces through a small authenticated tool surface. Initial tools cover workflow listing/inspection, definition validation and creation, run start/status, app inspection, preview requests, bounded logs, and deployment requests. Add conversation inspection/continuation when the caller has explicit authority. Tool names such as `workflows.validate`, `runs.start`, `apps.preview`, and `deployments.request` describe product operations, not package internals.
 

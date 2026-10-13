@@ -127,28 +127,46 @@ numbers_debug_math_definition = %{
   "vars" => %{"multiplier" => 20}
 }
 
-existing_graphs = Map.new(Workflows.list_graphs(), &{&1.id, &1})
+case {Mix.env(), System.get_env("DEV_SEED_ORG_ID"), System.get_env("DEV_SEED_USER_ID")} do
+  {:dev, org_id, actor_id}
+  when is_binary(org_id) and org_id != "" and is_binary(actor_id) and actor_id != "" ->
+    context = %Hermitscale.Integrations.ExecutionContext{
+      organization_id: org_id,
+      actor_user_id: actor_id,
+      required_permissions: ["workflows:edit", "workflows:run", "workflows:activate"]
+    }
 
-Enum.each([example_order_rollup_definition, numbers_debug_math_definition], fn definition ->
-  attrs = %{
-    id: definition["id"],
-    name: definition["name"],
-    schema_version: definition["schema_version"],
-    definition: definition,
-    status: :active
-  }
+    {:ok, scope} = Hermitscale.Authorization.execution_scope(context)
+    suffix = :crypto.hash(:sha256, org_id) |> Base.encode16(case: :lower) |> binary_part(0, 12)
+    existing_graphs = Map.new(Workflows.list_graphs(scope), &{&1.id, &1})
 
-  seeded_graph =
-    case Map.get(existing_graphs, attrs.id) do
-      %Graph{} = graph -> Workflows.update_graph(graph, attrs)
-      nil -> Workflows.create_graph(attrs)
-    end
+    Enum.each([example_order_rollup_definition, numbers_debug_math_definition], fn definition ->
+      definition = Map.update!(definition, "id", &(&1 <> "_" <> suffix))
 
-  case seeded_graph do
-    {:ok, %Graph{id: id, name: name}} ->
-      IO.puts("Seeded workflow graph #{id} (#{name})")
+      attrs = %{
+        id: definition["id"],
+        name: definition["name"],
+        schema_version: definition["schema_version"],
+        definition: definition,
+        status: :active
+      }
 
-    {:error, changeset} ->
-      raise "failed to seed example workflow graph: #{inspect(changeset.errors)}"
-  end
-end)
+      result =
+        case Map.fetch(existing_graphs, attrs.id) do
+          {:ok, %Graph{} = graph} -> Workflows.update_graph(scope, graph, attrs)
+          :error -> Workflows.create_graph(scope, attrs)
+        end
+
+      {:ok, %Graph{id: id}} = result
+      IO.puts("Seeded workflow graph #{id}")
+    end)
+
+  {:dev, nil, nil} ->
+    :ok
+
+  {:dev, _org_id, _actor_id} ->
+    raise "set both DEV_SEED_ORG_ID and DEV_SEED_USER_ID to an existing authorized development actor"
+
+  {_environment, _org_id, _actor_id} ->
+    :ok
+end

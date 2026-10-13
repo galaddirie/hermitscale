@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace command v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "operation_id",
+    "command_id",
+    "payload_digest",
+    "deadline",
+    "type",
+    "version",
+    "generation",
+    "payload"
+  ],
+  "properties": {
+    "workspace_id": {
+      "type": "string"
+    },
+    "operation_id": {
+      "type": "string"
+    },
+    "command_id": {
+      "type": "string"
+    },
+    "payload_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "deadline": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "start",
+        "inspect",
+        "cancel",
+        "approve",
+        "read_events",
+        "ack_events"
+      ]
+    },
+    "version": {
+      "const": 1
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payload": {
+      "type": "object"
+    }
+  }
+}
