@@ -21,8 +21,6 @@ defmodule Hermitscale.Workflows.Graph do
   schema "workflow_graphs" do
     field :org_id, :string
     field :created_by_user_id, :string
-    field :operation_key, :string
-    field :admission_digest, :string
 
     field :schema_version, :integer, default: 1
     field :name, :string
@@ -46,8 +44,6 @@ defmodule Hermitscale.Workflows.Graph do
     |> put_change(:created_by_user_id, user_id)
     |> validate_authoring()
     |> validate_required([:created_by_user_id])
-    |> unique_constraint(:id, name: :workflow_graphs_pkey)
-    |> unique_constraint([:org_id, :created_by_user_id, :operation_key])
   end
 
   @doc false

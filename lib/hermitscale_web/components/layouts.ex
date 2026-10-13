@@ -35,60 +35,37 @@ defmodule HermitscaleWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="border-b border-base-300 bg-base-100 px-4 sm:px-6 lg:px-8">
-      <div class="mx-auto flex min-h-20 max-w-6xl flex-wrap items-center justify-between gap-4 py-4">
-        <a
-          href={~p"/"}
-          id="brand-home"
-          class="inline-flex items-center gap-2 font-semibold tracking-tight"
-        >
-          <span class="flex size-8 items-center justify-center rounded-lg bg-base-content text-base-100"><.icon
-            name="hero-command-line"
-            class="size-5"
-          /></span>
-          Hermitscale
+    <header class="navbar px-4 sm:px-6 lg:px-8">
+      <div class="flex-1">
+        <a href="/" class="flex-1 flex w-fit items-center gap-2">
+          <img src={~p"/images/logo.svg"} width="36" />
+          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
         </a>
-        <nav
-          aria-label="Main navigation"
-          class="flex w-full flex-wrap items-center gap-x-4 gap-y-3 sm:w-auto sm:gap-x-5"
-        >
-          <%= if @current_scope do %>
-            <.link
-              navigate={~p"/agents"}
-              id="nav-conversations"
-              class="text-sm font-medium hover:text-primary"
-            >Conversations</.link>
-            <.link navigate={~p"/apps"} id="nav-apps" class="text-sm font-medium hover:text-primary">Apps</.link>
-            <.link
-              navigate={~p"/reviews"}
-              id="nav-reviews"
-              class="text-sm font-medium hover:text-primary"
-            >Reviews</.link>
-            <.link
-              navigate={~p"/workflows"}
-              id="nav-workflows"
-              class="text-sm font-medium hover:text-primary"
-            >Workflows</.link>
-            <span class="hidden max-w-48 truncate text-xs text-base-content/55 sm:block">{Map.get(
-              @current_scope.user,
-              :email
-            ) || @current_scope.user.id}</span>
-            <.link
-              href={~p"/auth/logout"}
-              method="delete"
-              id="nav-sign-out"
-              class="btn btn-ghost btn-sm"
-            >Sign out</.link>
-          <% else %>
-            <.link href={~p"/auth/login"} id="nav-sign-in" class="btn btn-primary btn-sm">Sign in</.link>
-          <% end %>
-          <.theme_toggle />
-        </nav>
+      </div>
+      <div class="flex-none">
+        <ul class="flex flex-column px-1 space-x-4 items-center">
+          <li>
+            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
+          </li>
+          <li>
+            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
+          </li>
+          <li>
+            <.theme_toggle />
+          </li>
+          <li>
+            <a href="https://phoenix.hexdocs.pm/overview.html" class="btn btn-primary">
+              Get Started <span aria-hidden="true">&rarr;</span>
+            </a>
+          </li>
+        </ul>
       </div>
     </header>
 
-    <main class="min-h-[calc(100vh-5rem)] bg-base-200/35 px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
-      {render_slot(@inner_block)}
+    <main class="px-4 py-20 sm:px-6 lg:px-8">
+      <div class="mx-auto max-w-2xl space-y-4">
+        {render_slot(@inner_block)}
+      </div>
     </main>
 
     <.flash_group flash={@flash} />
@@ -155,9 +132,6 @@ defmodule HermitscaleWeb.Layouts do
       <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=light]_&]:left-1/3 [[data-theme=dark]_&]:left-2/3 [[data-theme-source=system]_&]:!left-0 transition-[left]" />
 
       <button
-        id="theme-system"
-        type="button"
-        aria-label="Use system theme"
         class="flex p-2 cursor-pointer w-1/3"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="system"
@@ -166,9 +140,6 @@ defmodule HermitscaleWeb.Layouts do
       </button>
 
       <button
-        id="theme-light"
-        type="button"
-        aria-label="Use light theme"
         class="flex p-2 cursor-pointer w-1/3"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="light"
@@ -177,9 +148,6 @@ defmodule HermitscaleWeb.Layouts do
       </button>
 
       <button
-        id="theme-dark"
-        type="button"
-        aria-label="Use dark theme"
         class="flex p-2 cursor-pointer w-1/3"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="dark"

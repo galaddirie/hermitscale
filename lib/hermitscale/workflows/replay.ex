@@ -37,24 +37,12 @@ defmodule Hermitscale.Workflows.Replay do
       base.graph.edges,
       base.graph.edge_properties,
       base.components,
-      canonical_policies(base.scheduler_policies),
+      base.scheduler_policies,
       base.run_context
     }
 
     fingerprint = :crypto.hash(:sha256, :erlang.term_to_binary(definition, [:deterministic]))
     %DefinitionRecorded{fingerprint: fingerprint}
-  end
-
-  # Compiled PCRE resources have a fresh reference on each compilation. Their
-  # authored source and options identify a scheduler matcher across restarts.
-  defp canonical_policies(policies) do
-    Enum.map(policies, fn
-      {{:name, %Regex{} = matcher}, policy} ->
-        {{:name, {:regex, Regex.source(matcher), Regex.opts(matcher)}}, policy}
-
-      entry ->
-        entry
-    end)
   end
 
   @doc """

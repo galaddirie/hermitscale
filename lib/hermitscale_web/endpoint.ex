@@ -11,8 +11,6 @@ defmodule HermitscaleWeb.Endpoint do
     same_site: "Lax"
   ]
 
-  plug HermitscaleWeb.AppGateway
-
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
@@ -47,25 +45,13 @@ defmodule HermitscaleWeb.Endpoint do
 
   plug Hermitscale.Triggers.WebhookPlug
 
-  plug :parse_body
+  plug Plug.Parsers,
+    parsers: [:urlencoded, :multipart, :json],
+    pass: ["*/*"],
+    json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
   plug HermitscaleWeb.Router
-
-  # ExMCP must receive the original JSON body, including malformed envelopes,
-  # so it can validate and return protocol errors through its HTTP transport.
-  defp parse_body(%Plug.Conn{path_info: ["mcp" | _path]} = conn, _opts), do: conn
-
-  defp parse_body(conn, _opts) do
-    Plug.Parsers.call(
-      conn,
-      Plug.Parsers.init(
-        parsers: [:urlencoded, :multipart, :json],
-        pass: ["*/*"],
-        json_decoder: Phoenix.json_library()
-      )
-    )
-  end
 end

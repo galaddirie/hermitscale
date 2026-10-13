@@ -18,8 +18,6 @@ defmodule Hermitscale.Workflows.Run do
     field :execution_actor_user_id, :string
     field :trigger_id, :string
     field :account_selections, :map, default: %{}
-    field :definition, :map
-    field :admission_digest, :string
 
     field :owner, :string
     field :lease_expires_at, :utc_datetime
@@ -41,7 +39,6 @@ defmodule Hermitscale.Workflows.Run do
     |> cast(attrs, [
       :id,
       :workflow_graph_id,
-      :definition,
       :status,
       :owner,
       :lease_expires_at,

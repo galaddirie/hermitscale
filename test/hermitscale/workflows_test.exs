@@ -485,7 +485,7 @@ defmodule Hermitscale.WorkflowsTest do
       assert run.output == %{"value" => %{"summer" => [60]}}
     end
 
-    test "resumes the admitted definition after graph connections change", %{scope: scope} do
+    test "rejects persisted events after graph connections change", %{scope: scope} do
       definition = rewirable_map_reduce_graph()
       assert {:ok, graph} = Workflows.create_graph(scope, graph_attrs(definition: definition))
       assert {:ok, run} = Workflows.start_run(scope, graph, %{}, executor: :inline)
@@ -499,10 +499,8 @@ defmodule Hermitscale.WorkflowsTest do
 
       assert {:ok, _graph} = Workflows.update_graph(scope, graph, %{definition: changed})
 
-      assert {:ok, _pid} = Workflows.resume_run(scope, run, executor: :inline)
-      assert {:ok, workflow} = Runic.Runner.get_workflow(Hermitscale.WorkflowRunner, run.id)
-      assert Hermitscale.Workflows.Engine.productions(workflow, "sum") == [10]
-      assert :ok = Runic.Runner.stop(Hermitscale.WorkflowRunner, run.id, persist: false)
+      assert {:error, :incompatible_workflow_events} =
+               Workflows.resume_run(scope, run, executor: :inline)
     end
 
     test "resumes from persisted events using the stored graph definition", %{scope: scope} do

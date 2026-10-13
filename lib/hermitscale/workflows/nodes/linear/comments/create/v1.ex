@@ -3,6 +3,4 @@ defmodule Hermitscale.Workflows.Nodes.Linear.Comments.Create.V1 do
   use Hermitscale.Integrations.Action,
     operations: Hermitscale.Integrations.Linear.Operations,
     operation: :comments_create
-
-  def __external_operation__, do: true
 end
