@@ -40,7 +40,7 @@ defmodule Hermitscale.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:phoenix, "~> 1.8.8"},
+      {:phoenix, "~> 1.8.9"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
@@ -61,6 +61,7 @@ defmodule Hermitscale.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      {:sprites, "~> 0.2.4"},
       {:jose, "~> 1.11"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},

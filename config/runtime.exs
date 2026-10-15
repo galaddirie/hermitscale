@@ -36,6 +36,16 @@ auth_provider =
 
 config :hermitscale, Hermitscale.Auth, provider: auth_provider
 
+sprites_token =
+  case System.get_env("SPRITES_API_KEY") do
+    token when token in [nil, ""] -> System.get_env("SPRITE_TOKEN")
+    token -> token
+  end
+
+config :hermitscale, Hermitscale.Workspaces.SpritesClient,
+  token: sprites_token,
+  base_url: System.get_env("SPRITES_API_BASE_URL", "https://api.sprites.dev")
+
 config :hermitscale, Hermitscale.Triggers.Webhooks,
   base_url: System.get_env("INTEGRATION_WEBHOOK_BASE_URL", "")
 
