@@ -46,6 +46,10 @@ config :hermitscale, Hermitscale.Workspaces.SpritesClient,
   token: sprites_token,
   base_url: System.get_env("SPRITES_API_BASE_URL", "https://api.sprites.dev")
 
+if apps_domain = System.get_env("APPS_DOMAIN") do
+  config :hermitscale, Hermitscale.Apps, domain: apps_domain
+end
+
 config :hermitscale, Hermitscale.Triggers.Webhooks,
   base_url: System.get_env("INTEGRATION_WEBHOOK_BASE_URL", "")
 

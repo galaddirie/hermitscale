@@ -15,6 +15,8 @@ config :hermitscale, Hermitscale.Repo,
 
 config :hermitscale, Oban, testing: :manual
 
+config :hermitscale, Hermitscale.Apps, domain: "apps.test"
+
 config :hermitscale, Hermitscale.WorkOS.Client,
   api_key: "sk_test_hermitscale",
   client_id: "client_test_hermitscale",

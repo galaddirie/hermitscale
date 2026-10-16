@@ -1,6 +1,8 @@
 import Config
 
 # Configure your database
+config :hermitscale, Hermitscale.Apps, domain: "apps.localhost"
+
 config :hermitscale, Hermitscale.Repo,
   username: "postgres",
   password: "postgres",

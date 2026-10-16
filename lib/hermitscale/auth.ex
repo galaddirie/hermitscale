@@ -50,6 +50,9 @@ defmodule Hermitscale.Auth do
     end
   end
 
+  @doc "Exchanges a code for a verified identity without selecting a workspace."
+  def exchange_code(code, metadata \\ %{}), do: provider().exchange_code(code, metadata)
+
   @doc "Ensures a personal workspace and selects it when the verified session has no tenant."
   def establish(
         %{current_scope: scope, sealed_session: sealed_session} = authentication,

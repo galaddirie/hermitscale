@@ -84,6 +84,28 @@ defmodule Hermitscale.Workspaces.SpritesClient do
   end
 
   @doc """
+  Sends a request to a private Sprite URL with the API token. The response body
+  is a `Req.Response.Async` stream owned by the caller.
+  """
+  def url_request(url, opts) do
+    config = config()
+
+    [
+      url: url,
+      auth: {:bearer, Keyword.fetch!(config, :token)},
+      into: :self,
+      raw: true,
+      compressed: false,
+      redirect: false,
+      retry: false,
+      receive_timeout: 60_000
+    ]
+    |> Keyword.merge(Keyword.get(config, :req_options, []))
+    |> Keyword.merge(opts)
+    |> Req.request()
+  end
+
+  @doc """
   Starts a command and sends its events to `:owner` (default: the caller):
   `{:stdout | :stderr, %{ref: ref}, bytes}`, `{:exit, %{ref: ref}, code}`,
   `{:error, %{ref: ref}, reason}`, and with `session_info: true`,

@@ -88,6 +88,37 @@ log stays on the Sprite's disk for anyone who needs it.
 Runs have no concurrency limit. A workspace can have several at once, and coordinating
 them is up to the user.
 
+### Apps
+
+An app publishes a workspace's HTTP service at `https://<slug>.<apps domain>` (for
+example `*.hermitscale.app`). The apps domain is separate from the product domain so
+user code can never read or set Hermitscale cookies. Each workspace has at most one app,
+because a Sprite has one HTTP service.
+
+**In Postgres.** A `workspace_apps` row: workspace, organization, slug, access
+(`org | public`), and the Sprite URL. Editing an app means editing its workspace (files,
+services, runs). There are no versions: changes are live, and a checkpoint is the undo.
+
+**Proxy.** A plug in front of the router handles requests for the apps domain:
+
+1. Look up the app by slug.
+2. `public` apps pass through. `org` apps require an app session cookie for that app.
+3. Forward the request to the Sprite URL with our Sprites token. Sprite URLs stay
+   private (`auth: "sprite"`), so the proxy is the only way in.
+4. Strip Hermitscale cookies, `Authorization`, and spoofed `x-hermitscale-*` headers.
+   For `org` apps, add `x-hermitscale-user-id` and `x-hermitscale-user-email`.
+5. Stream the response back.
+
+**Sign-in for `org` apps.** The app host redirects to the identity provider with a
+signed state and a nonce cookie. The callback on the main host exchanges the code,
+checks for an active membership in the app's organization, and redirects to
+`/_hermitscale/session` on the app host with a 60-second handoff token. The app host
+checks the nonce and sets a host-only 12-hour session cookie. Membership is checked at
+sign-in, so removal takes effect when the cookie expires.
+
+**Limits for now.** No WebSocket forwarding. Apps can't receive their own `Authorization`
+header, and the paths `/_hermitscale/*` and `/live/*` are reserved on app hosts.
+
 ## Composition (examples, not implementation)
 
 These show what users can build from the primitives. They are not modules, schemas,
@@ -108,7 +139,8 @@ or code paths.
 - Hermitscale-managed credentials. Callers pass env values to a run, and we never
   persist them. Sprites Connectors are the intended later path.
 - Approvals, deployment records, usage metering, retention policies, and backups.
-- Browser UI and a private-URL proxy. These depend on browser auth, which doesn't exist yet.
+- Browser UI. App management is a backend API until the main app has browser sign-in.
+- App versions, selected-people sharing, external viewers, custom domains, and analytics.
 
 ## Trade-offs
 

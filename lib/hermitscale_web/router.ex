@@ -20,6 +20,12 @@ defmodule HermitscaleWeb.Router do
     get "/", PageController, :home
   end
 
+  scope "/apps/auth", HermitscaleWeb do
+    pipe_through :browser
+
+    get "/callback", AppAuthController, :callback
+  end
+
   # Other scopes may use custom stacks.
   # scope "/api", HermitscaleWeb do
   #   pipe_through :api

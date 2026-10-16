@@ -88,6 +88,9 @@ and URL settings. Set `SPRITES_API_KEY` on the server and apply the workspace
 migration. See [workspaces](docs/workspaces.md) for the backend API. Browser
 screens remain deferred.
 
+`Hermitscale.Apps` publishes a workspace's HTTP service at `<slug>.$APPS_DOMAIN`,
+either to the organization or publicly. See [apps](docs/apps.md).
+
 The removal migration preserves workflow records, replaces known local identity
 IDs with their WorkOS mappings, cancels pending identity-sync jobs, and drops the
 old projection tables. Unmapped legacy records remain orphaned rather than being

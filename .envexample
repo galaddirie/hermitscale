@@ -5,6 +5,8 @@ WORKOS_API_KEY=
 # Server-side Fly Sprites token (SPRITE_TOKEN is also accepted).
 SPRITES_API_KEY=
 # SPRITES_API_BASE_URL=https://api.sprites.dev
+# Apps are served at <slug>.$APPS_DOMAIN. Use a domain separate from the main app.
+# APPS_DOMAIN=hermitscale.app
 
 # Public HTTPS origin serving the backend /hooks/:token endpoint.
 INTEGRATION_WEBHOOK_BASE_URL=
