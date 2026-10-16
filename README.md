@@ -81,13 +81,12 @@ Provider requests validate current membership, permissions, scopes, and allowed
 destinations before vending credential material. Runs preserve actor provenance
 and account selections for resume. Legacy credential binding formats are rejected.
 
-`Hermitscale.Workspaces` provisions organization-owned Fly Sprites. Every active
-member can create and use any workspace in their organization, regardless of who
-created it or which workflow permissions they have. The context supports command
-execution and streaming, files, checkpoints, and services, with no application
-count or usage quotas. Set `SPRITES_API_KEY` on the server and apply the workspace
-migration. See [workspaces](docs/workspaces.md) for the scoped backend API,
-provisioning recovery, and command lifecycle. Browser screens remain deferred.
+`Hermitscale.Workspaces` provisions organization-owned Fly Sprites. Members with
+`workflows:run` can create and use any workspace in their organization. The
+context supports command execution and streaming, files, checkpoints, services,
+and URL settings. Set `SPRITES_API_KEY` on the server and apply the workspace
+migration. See [workspaces](docs/workspaces.md) for the backend API. Browser
+screens remain deferred.
 
 The removal migration preserves workflow records, replaces known local identity
 IDs with their WorkOS mappings, cancels pending identity-sync jobs, and drops the
