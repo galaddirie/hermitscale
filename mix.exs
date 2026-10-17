@@ -61,6 +61,7 @@ defmodule Hermitscale.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      {:mint_web_socket, "~> 1.0"},
       {:sprites, "~> 0.2.4"},
       {:jose, "~> 1.11"},
       {:telemetry_metrics, "~> 1.0"},

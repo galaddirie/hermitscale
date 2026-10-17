@@ -22,7 +22,8 @@ defmodule Hermitscale.Application do
        store_opts: [repo: Hermitscale.Repo]},
       {Hermitscale.Triggers.Supervisor, []},
       # Start to serve requests, typically the last entry
-      HermitscaleWeb.Endpoint
+      HermitscaleWeb.Endpoint,
+      HermitscaleWeb.AppsEndpoint
     ]
 
     # See https://elixir.hexdocs.pm/Supervisor.html
@@ -36,6 +37,7 @@ defmodule Hermitscale.Application do
   @impl true
   def config_change(changed, _new, removed) do
     HermitscaleWeb.Endpoint.config_change(changed, removed)
+    HermitscaleWeb.AppsEndpoint.config_change(changed, removed)
     :ok
   end
 end

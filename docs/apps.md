@@ -6,9 +6,12 @@ An app publishes a workspace's HTTP service at `https://<slug>.<APPS_DOMAIN>`. S
 ## Configuration
 
 - `APPS_DOMAIN`: a domain separate from the main app, such as `hermitscale.app`, with
-  wildcard DNS and TLS for `*.APPS_DOMAIN` pointing at Hermitscale. Dev uses
-  `apps.localhost`; without it, apps are disabled. Consider adding the domain to the
+  wildcard DNS and TLS for `*.APPS_DOMAIN`. Dev uses `apps.localhost`; without it, apps
+  are disabled. Consider adding the domain to the
   [Public Suffix List](https://publicsuffix.org) so apps can't share cookies.
+- `APPS_PORT` (default `4001`): apps are served by `HermitscaleWeb.AppsEndpoint`, a
+  separate listener from the main app's `PORT`. Route `*.APPS_DOMAIN` to this port at
+  the load balancer. In dev, apps are at `http://<slug>.apps.localhost:4001`.
 - Register `<main host>/apps/auth/callback` as a redirect URI with the identity provider.
 
 ## API
@@ -46,10 +49,17 @@ The app receives `x-hermitscale-user-id` and `x-hermitscale-user-email` for sign
 visitors. These headers are always stripped from incoming requests, along with
 `Authorization` and Hermitscale cookies, so apps can trust them.
 
+## WebSockets, Phoenix, and Livebook
+
+WebSocket upgrades are forwarded, and the apps endpoint declares no sockets of its own, so
+Phoenix LiveView (`/live/websocket`, `/live/longpoll`) and Livebook work as apps. The app
+must accept its public host as an origin, for example `PHX_HOST=<slug>.<APPS_DOMAIN>` or
+`check_origin: ["//*.<APPS_DOMAIN>"]`. For `org` apps, the proxy also rejects upgrades whose
+`Origin` is not the app's own host.
+
 ## Limits
 
-- No WebSocket forwarding yet.
 - Request bodies are capped at 25 MB.
-- `/_hermitscale/*` and `/live/*` are reserved on app hosts.
+- `/_hermitscale/*` is reserved on app hosts.
 - The Sprite URL stays private; the proxy authenticates to it with the Sprites token.
   Setting a workspace's URL auth to `public` would expose it outside the proxy.

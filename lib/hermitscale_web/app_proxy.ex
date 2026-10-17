@@ -1,10 +1,11 @@
 defmodule HermitscaleWeb.AppProxy do
   @moduledoc """
-  Serves `<slug>.<apps domain>` by forwarding requests to the app's private Sprite URL.
+  Serves `<slug>.<apps domain>` on `HermitscaleWeb.AppsEndpoint` by forwarding
+  requests, including WebSocket upgrades, to the app's private Sprite URL.
 
   Public apps pass through. Org apps need a host-only session cookie, obtained by
   signing in through `HermitscaleWeb.AppAuthController` and the handoff at
-  `/_hermitscale/session`. Requests to other hosts continue down the pipeline.
+  `/_hermitscale/session`. Other hosts get a 404.
   """
 
   @behaviour Plug
@@ -17,6 +18,7 @@ defmodule HermitscaleWeb.AppProxy do
   alias Hermitscale.Apps.App
   alias Hermitscale.Auth
   alias Hermitscale.Workspaces.SpritesClient
+  alias HermitscaleWeb.AppProxy.WebSocket
 
   @session_cookie "_hs_app"
   @nonce_cookie "_hs_app_nonce"
@@ -32,18 +34,22 @@ defmodule HermitscaleWeb.AppProxy do
     "OPTIONS" => :options
   }
   @hop_by_hop ~w(connection keep-alive proxy-authenticate proxy-authorization te trailer transfer-encoding upgrade)
-  @dropped_request_headers ["host", "authorization", "content-length" | @hop_by_hop]
+  @websocket_handshake ~w(sec-websocket-key sec-websocket-version sec-websocket-extensions)
+  @dropped_request_headers ["host", "authorization", "content-length"] ++
+                             @hop_by_hop ++ @websocket_handshake
 
   @impl true
   def init(opts), do: opts
 
   @impl true
   def call(conn, _opts) do
-    case app_host(conn.host, Apps.domain()) do
-      :other -> conn
-      {:app, nil} -> conn |> serve(nil) |> halt()
-      {:app, slug} -> conn |> serve(Apps.get_app_by_slug(slug)) |> halt()
-    end
+    app =
+      case app_slug(conn.host, Apps.domain()) do
+        nil -> nil
+        slug -> Apps.get_app_by_slug(slug)
+      end
+
+    conn |> serve(app) |> halt()
   end
 
   @doc false
@@ -57,13 +63,12 @@ defmodule HermitscaleWeb.AppProxy do
         max_age: @max_ages[kind]
       )
 
-  defp app_host(_host, nil), do: :other
-  defp app_host(domain, domain), do: {:app, nil}
+  defp app_slug(_host, nil), do: nil
 
-  defp app_host(host, domain) do
+  defp app_slug(host, domain) do
     case String.ends_with?(host, "." <> domain) do
-      true -> {:app, String.replace_suffix(host, "." <> domain, "")}
-      false -> :other
+      true -> String.replace_suffix(host, "." <> domain, "")
+      false -> nil
     end
   end
 
@@ -113,6 +118,50 @@ defmodule HermitscaleWeb.AppProxy do
   end
 
   defp forward(conn, app, user) do
+    case WebSockAdapter.UpgradeValidation.validate_upgrade(conn) do
+      :ok -> forward_websocket(conn, app, user)
+      {:error, _not_an_upgrade} -> forward_http(conn, app, user)
+    end
+  end
+
+  defp forward_websocket(conn, app, user) do
+    with :ok <- check_origin(conn, user),
+         {:ok, upstream} <-
+           SpritesClient.url_websocket(upstream_url(app, conn), request_headers(conn, user)) do
+      conn
+      |> put_upstream_protocol(upstream.headers)
+      |> WebSockAdapter.upgrade(WebSocket, upstream, timeout: :infinity)
+    else
+      :cross_origin ->
+        send_resp(conn, 403, "Cross-origin WebSocket rejected")
+
+      {:error, %Mint.WebSocket.UpgradeFailureError{status_code: status}}
+      when status in 400..499 ->
+        send_resp(conn, status, "WebSocket upgrade rejected")
+
+      {:error, _reason} ->
+        send_resp(conn, 502, "App unavailable")
+    end
+  end
+
+  # Org apps authenticate with a cookie, so only their own pages may open sockets.
+  defp check_origin(_conn, nil), do: :ok
+
+  defp check_origin(conn, _user) do
+    case get_req_header(conn, "origin") do
+      [] -> :ok
+      [origin | _] -> if URI.parse(origin).host == conn.host, do: :ok, else: :cross_origin
+    end
+  end
+
+  defp put_upstream_protocol(conn, headers) do
+    case List.keyfind(headers, "sec-websocket-protocol", 0) do
+      {name, protocol} -> put_resp_header(conn, name, protocol)
+      nil -> conn
+    end
+  end
+
+  defp forward_http(conn, app, user) do
     with {:ok, method} <- Map.fetch(@methods, conn.method),
          {:ok, body, conn} <- read_body(conn, length: @max_body_bytes),
          {:ok, response} <-

@@ -53,6 +53,12 @@ config :hermitscale, HermitscaleWeb.Endpoint,
   pubsub_server: Hermitscale.PubSub,
   live_view: [signing_salt: "HQUwIGrq"]
 
+# Serves published apps on a separate listener; see HermitscaleWeb.AppsEndpoint.
+config :hermitscale, HermitscaleWeb.AppsEndpoint,
+  url: [host: "localhost"],
+  adapter: Bandit.PhoenixAdapter,
+  render_errors: [formats: [html: HermitscaleWeb.ErrorHTML], layout: false]
+
 # Configure LiveView
 config :phoenix_live_view,
   # the attribute set on all root tags. Used for Phoenix.LiveView.ColocatedCSS.

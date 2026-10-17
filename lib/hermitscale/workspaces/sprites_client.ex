@@ -1,7 +1,7 @@
 defmodule Hermitscale.Workspaces.SpritesClient do
   @moduledoc """
   Fly Sprites client. REST calls use Req; commands use the official SDK's
-  WebSocket transport.
+  WebSocket transport; WebSockets to Sprite URLs use Mint.WebSocket.
 
   Configure `:token`, `:base_url`, and optional `:req_options` under this module.
   Non-2xx responses return `{:error, :not_found}`, `{:error, :conflict}`, or
@@ -104,6 +104,81 @@ defmodule Hermitscale.Workspaces.SpritesClient do
     |> Keyword.merge(opts)
     |> Req.request()
   end
+
+  @doc """
+  Opens a WebSocket to a private Sprite URL with the API token and completes the
+  handshake. The connection is in active mode and owned by the caller.
+
+  Returns `%{conn: conn, ref: ref, websocket: websocket, headers: headers, data: data}`,
+  where `data` holds frame bytes that arrived with the handshake. A non-101 reply
+  returns `{:error, %Mint.WebSocket.UpgradeFailureError{}}`.
+  """
+  def url_websocket(url, headers, opts \\ []) do
+    token = Keyword.fetch!(config(), :token)
+    timeout = Keyword.get(opts, :timeout, 15_000)
+    uri = URI.parse(url)
+    {scheme, ws_scheme} = if uri.scheme == "https", do: {:https, :wss}, else: {:http, :ws}
+    path = (uri.path || "/") <> if(uri.query, do: "?" <> uri.query, else: "")
+
+    with {:ok, conn} <-
+           Mint.HTTP.connect(scheme, uri.host, uri.port,
+             protocols: [:http1],
+             mode: :passive,
+             transport_opts: [timeout: timeout]
+           ),
+         {:ok, conn, ref} <-
+           Mint.WebSocket.upgrade(ws_scheme, conn, path, [
+             {"authorization", "Bearer " <> token} | headers
+           ]),
+         {:ok, conn, response} <- await_upgrade(conn, ref, %{data: []}, timeout),
+         {:ok, conn, websocket} <-
+           Mint.WebSocket.new(conn, ref, response.status, response.headers),
+         {:ok, conn} <- Mint.HTTP.set_mode(conn, :active) do
+      {:ok,
+       %{
+         conn: conn,
+         ref: ref,
+         websocket: websocket,
+         headers: response.headers,
+         data: IO.iodata_to_binary(response.data)
+       }}
+    else
+      {:error, conn, reason} ->
+        Mint.HTTP.close(conn)
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp await_upgrade(conn, ref, response, timeout) do
+    case Mint.WebSocket.recv(conn, 0, timeout) do
+      {:ok, conn, responses} ->
+        response = Enum.reduce(responses, response, &collect_upgrade(&1, ref, &2))
+
+        case response do
+          %{done: true} -> {:ok, conn, response}
+          _pending -> await_upgrade(conn, ref, response, timeout)
+        end
+
+      {:error, conn, reason, _responses} ->
+        {:error, conn, reason}
+    end
+  end
+
+  defp collect_upgrade({:status, ref, status}, ref, response),
+    do: Map.put(response, :status, status)
+
+  defp collect_upgrade({:headers, ref, headers}, ref, response),
+    do: Map.put(response, :headers, headers)
+
+  defp collect_upgrade({:done, ref}, ref, response), do: Map.put(response, :done, true)
+
+  defp collect_upgrade({:data, ref, data}, ref, %{done: true} = response),
+    do: Map.update!(response, :data, &[&1, data])
+
+  defp collect_upgrade(_body_or_other, _ref, response), do: response
 
   @doc """
   Starts a command and sends its events to `:owner` (default: the caller):

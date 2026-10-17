@@ -31,6 +31,8 @@ config :hermitscale, HermitscaleWeb.Endpoint,
     tailwind: {Tailwind, :install_and_run, [:hermitscale, ~w(--watch)]}
   ]
 
+config :hermitscale, HermitscaleWeb.AppsEndpoint, http: [ip: {127, 0, 0, 1}]
+
 # ## SSL Support
 #
 # In order to use HTTPS in development, a self-signed

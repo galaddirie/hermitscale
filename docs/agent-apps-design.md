@@ -99,7 +99,9 @@ because a Sprite has one HTTP service.
 (`org | public`), and the Sprite URL. Editing an app means editing its workspace (files,
 services, runs). There are no versions: changes are live, and a checkpoint is the undo.
 
-**Proxy.** A plug in front of the router handles requests for the apps domain:
+**Proxy.** A separate endpoint (`HermitscaleWeb.AppsEndpoint`, on its own port) serves
+the apps domain. It has no sockets or router, so every path, including Phoenix's `/live`,
+reaches the proxy plug:
 
 1. Look up the app by slug.
 2. `public` apps pass through. `org` apps require an app session cookie for that app.
@@ -107,7 +109,8 @@ services, runs). There are no versions: changes are live, and a checkpoint is th
    private (`auth: "sprite"`), so the proxy is the only way in.
 4. Strip Hermitscale cookies, `Authorization`, and spoofed `x-hermitscale-*` headers.
    For `org` apps, add `x-hermitscale-user-id` and `x-hermitscale-user-email`.
-5. Stream the response back.
+5. Stream the response back, or for WebSocket upgrades, open a socket to the Sprite URL
+   and relay frames both ways. `org` apps only accept upgrades from their own origin.
 
 **Sign-in for `org` apps.** The app host redirects to the identity provider with a
 signed state and a nonce cookie. The callback on the main host exchanges the code,
@@ -116,8 +119,8 @@ checks for an active membership in the app's organization, and redirects to
 checks the nonce and sets a host-only 12-hour session cookie. Membership is checked at
 sign-in, so removal takes effect when the cookie expires.
 
-**Limits for now.** No WebSocket forwarding. Apps can't receive their own `Authorization`
-header, and the paths `/_hermitscale/*` and `/live/*` are reserved on app hosts.
+**Limits for now.** Apps can't receive their own `Authorization` header, and
+`/_hermitscale/*` is reserved on app hosts.
 
 ## Composition (examples, not implementation)
 

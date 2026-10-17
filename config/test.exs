@@ -40,6 +40,10 @@ config :hermitscale, HermitscaleWeb.Endpoint,
   secret_key_base: "nCDNbte9HSuM9rCn8CoJTa/zm9aBfo0ZKwdsqkxdTwvbNp5ETadJ1p0vBwYI5vfW",
   server: false
 
+config :hermitscale, HermitscaleWeb.AppsEndpoint,
+  http: [ip: {127, 0, 0, 1}, port: 4003],
+  server: false
+
 # In test we don't send emails
 config :hermitscale, Hermitscale.Mailer, adapter: Swoosh.Adapters.Test
 

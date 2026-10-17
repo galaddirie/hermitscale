@@ -18,10 +18,14 @@ import Config
 # script that automatically sets the env var above.
 if System.get_env("PHX_SERVER") do
   config :hermitscale, HermitscaleWeb.Endpoint, server: true
+  config :hermitscale, HermitscaleWeb.AppsEndpoint, server: true
 end
 
 config :hermitscale, HermitscaleWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+
+config :hermitscale, HermitscaleWeb.AppsEndpoint,
+  http: [port: String.to_integer(System.get_env("APPS_PORT", "4001"))]
 
 auth_provider =
   case System.get_env("AUTH_PROVIDER") do
@@ -143,6 +147,11 @@ if config_env() == :prod do
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
+    secret_key_base: secret_key_base
+
+  config :hermitscale, HermitscaleWeb.AppsEndpoint,
+    url: [host: System.get_env("APPS_DOMAIN") || host, port: 443, scheme: "https"],
+    http: [ip: {0, 0, 0, 0, 0, 0, 0, 0}],
     secret_key_base: secret_key_base
 
   # ## SSL Support

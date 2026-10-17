@@ -91,7 +91,7 @@ defmodule Hermitscale.Apps do
 
   @doc "The app's public URL."
   def app_url(%App{slug: slug}) do
-    %URI{HermitscaleWeb.Endpoint.struct_url() | host: "#{slug}.#{domain()}"}
+    %URI{HermitscaleWeb.AppsEndpoint.struct_url() | host: "#{slug}.#{domain()}"}
     |> URI.to_string()
   end
 
