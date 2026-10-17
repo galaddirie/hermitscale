@@ -28,7 +28,10 @@ defmodule Hermitscale.WorkspacesFixtures do
       {:get_service, :get_service, ["web"]},
       {:put_service, :put_service, ["web", %{"cmd" => "server", "http_port" => 4000}]},
       {:delete_service, :delete_service, ["web"]},
-      {:update_url_settings, :update_url_settings, [%{"auth" => "public"}]}
+      {:update_url_settings, :update_url_settings, [%{"auth" => "public"}]},
+      {:get_network_policy, :get_network_policy, []},
+      {:put_network_policy, :put_network_policy,
+       [[%{"include" => "defaults"}, %{"domain" => "*", "action" => "deny"}]]}
     ]
   end
 end

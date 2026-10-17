@@ -33,7 +33,7 @@ composed from these primitives by the user. None of it is special-cased in our c
 | Processes that come back after sleep | Services restart on cold boot; the HTTP service auto-starts on request |
 | Save points | Copy-on-write checkpoints with comments; last five mounted read-only |
 | Serve HTTP | Per-Sprite URL with `sprite` (private) or `public` auth |
-| Egress control and brokered credentials | Network policy; Connectors |
+| Egress control and brokered credentials | Network policy; Connectors (for Hermitscale-owned keys; user credentials go through our broker, see [ADR-0001](adr/0001-broker-workspace-credentials.md)) |
 
 ## Primitives
 
@@ -139,8 +139,9 @@ or code paths.
 
 - Workflow nodes and triggers (a later pass will add "start run" and "run finished").
 - Agent frameworks (Jido, Harness, ACP), on-Sprite workers, and custom protocols.
-- Hermitscale-managed credentials. Callers pass env values to a run, and we never
-  persist them. Sprites Connectors are the intended later path.
+- Passing provider credentials into a Sprite. Workspaces reach provider APIs and Git
+  through the Hermitscale credential broker instead; see
+  [ADR-0001](adr/0001-broker-workspace-credentials.md).
 - Approvals, deployment records, usage metering, retention policies, and backups.
 - Browser UI. App management is a backend API until the main app has browser sign-in.
 - App versions, selected-people sharing, external viewers, custom domains, and analytics.

@@ -46,6 +46,26 @@ defmodule Hermitscale.Workspaces.SpritesClientTest do
       assert :ok = SpritesClient.delete("hs-one")
     end
 
+    test "gets and sets the network policy" do
+      rules = [%{"include" => "defaults"}, %{"domain" => "*", "action" => "deny"}]
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        assert {conn.method, conn.request_path} == {"POST", "/v1/sprites/hs-one/policy/network"}
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        assert Jason.decode!(body) == %{"rules" => rules}
+        Req.Test.json(conn, %{"rules" => rules})
+      end)
+
+      assert {:ok, %{"rules" => ^rules}} = SpritesClient.put_network_policy("hs-one", rules)
+
+      Req.Test.expect(__MODULE__, fn conn ->
+        assert {conn.method, conn.request_path} == {"GET", "/v1/sprites/hs-one/policy/network"}
+        Req.Test.json(conn, %{"rules" => rules})
+      end)
+
+      assert {:ok, %{"rules" => ^rules}} = SpritesClient.get_network_policy("hs-one")
+    end
+
     test "maps non-2xx responses without retrying" do
       for {status, reason} <- [
             {404, :not_found},

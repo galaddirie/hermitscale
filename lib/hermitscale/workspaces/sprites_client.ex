@@ -26,6 +26,11 @@ defmodule Hermitscale.Workspaces.SpritesClient do
   def update_url_settings(name, settings),
     do: request(:put, sprite_path(name), json: %{url_settings: settings})
 
+  def get_network_policy(name), do: request(:get, sprite_path(name, "/policy/network"))
+
+  def put_network_policy(name, rules),
+    do: request(:post, sprite_path(name, "/policy/network"), json: %{rules: rules})
+
   def read_file(name, path),
     do: request(:get, sprite_path(name, "/fs/read"), params: [path: path], decode_body: false)
 

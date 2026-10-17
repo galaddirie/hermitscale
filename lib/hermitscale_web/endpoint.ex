@@ -44,6 +44,7 @@ defmodule HermitscaleWeb.Endpoint do
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Hermitscale.Triggers.WebhookPlug
+  plug HermitscaleWeb.CredentialBroker
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],

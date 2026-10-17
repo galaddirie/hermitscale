@@ -46,7 +46,16 @@ defmodule Hermitscale.Integrations.Request do
 
   defp build_request(method, url, opts) do
     opts
-    |> Keyword.take([:json, :body, :params, :headers, :plug, :receive_timeout, :retry_delay])
+    |> Keyword.take([
+      :json,
+      :body,
+      :params,
+      :headers,
+      :plug,
+      :receive_timeout,
+      :retry_delay,
+      :decode_body
+    ])
     |> Keyword.merge(
       method: method,
       url: url,

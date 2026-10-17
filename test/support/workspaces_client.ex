@@ -30,7 +30,9 @@ defmodule Hermitscale.WorkspacesTest.Client do
         get_service: 2,
         put_service: 3,
         delete_service: 2,
-        update_url_settings: 2
+        update_url_settings: 2,
+        get_network_policy: 1,
+        put_network_policy: 2
       ] do
     args = Macro.generate_arguments(arity, __MODULE__)
 

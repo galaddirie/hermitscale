@@ -119,6 +119,22 @@ defmodule Hermitscale.Workspaces do
   def update_url_settings(scope, reference, settings),
     do: call_sprite(scope, reference, :update_url_settings, [settings])
 
+  @doc "Fetches the Sprite's egress network policy."
+  def get_network_policy(scope, reference),
+    do: call_sprite(scope, reference, :get_network_policy, [])
+
+  @doc """
+  Replaces the Sprite's egress network policy, such as
+  `[%{include: "defaults"}, %{domain: "hermitscale.example", action: "allow"}, %{domain: "*", action: "deny"}]`.
+  An empty list removes enforcement. Because the policy is a security control,
+  this also requires `connections:manage`.
+  """
+  def put_network_policy(scope, reference, rules) when is_list(rules) do
+    with :ok <- Authorization.authorize(scope, "connections:manage") do
+      call_sprite(scope, reference, :put_network_policy, [rules])
+    end
+  end
+
   defp call_sprite(scope, reference, operation, args) do
     with {:ok, workspace} <- fetch_workspace(scope, reference) do
       apply(client(), operation, [workspace.sprite_name | args])

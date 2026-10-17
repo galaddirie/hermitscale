@@ -92,6 +92,15 @@ defmodule Hermitscale.WorkspacesTest do
       assert {:error, :forbidden} = Workspaces.list_workspaces(nil)
     end
 
+    test "changing the network policy also requires connections:manage", %{scope: scope} do
+      workspace = workspace_fixture(scope)
+      runner = put_in(scope.membership.permissions, ["workflows:run"])
+
+      assert {:ok, _policy} = Workspaces.get_network_policy(runner, workspace)
+      assert {:error, :forbidden} = Workspaces.put_network_policy(runner, workspace, [])
+      refute Enum.any?(Client.calls(), &match?({:put_network_policy, _args}, &1))
+    end
+
     test "uses the stored Sprite name, not a supplied struct's", %{scope: scope} do
       workspace = workspace_fixture(scope)
       forged = %{workspace | sprite_name: "stolen"}

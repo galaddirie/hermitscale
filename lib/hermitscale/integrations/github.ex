@@ -21,7 +21,8 @@ defmodule Hermitscale.Integrations.GitHub do
         "admin:org" => ["write:org", "read:org"],
         "write:org" => ["read:org"]
       },
-      destinations: network_domains()
+      destinations: network_domains(),
+      git_host: "github.com"
     }
   end
 end
